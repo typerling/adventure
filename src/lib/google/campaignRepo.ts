@@ -11,7 +11,17 @@ import type {
   Difficulty,
 } from '@/types/campaign'
 import { DEFAULT_SETTINGS } from '@/types/campaign'
-import type { CharacterRow, InventoryItem, LoreEntry, MapNode } from '@/types/sheets'
+import type {
+  CharacterRow,
+  InventoryItem,
+  LoreEntry,
+  MapNode,
+  Monster,
+  Npc,
+  Quest,
+  Skill,
+  TimelineEvent,
+} from '@/types/sheets'
 
 export const ROOT_FOLDER_NAME = 'AI Adventure'
 
@@ -218,11 +228,11 @@ export async function loadSheetSnapshot(spreadsheetId: string) {
   return {
     Character: decodeTab<CharacterRow>('Character', raw.Character),
     Inventory: decodeTab<InventoryItem>('Inventory', raw.Inventory),
-    Skills: decodeTab('Skills', raw.Skills),
-    NPCs: decodeTab('NPCs', raw.NPCs),
-    Monsters: decodeTab('Monsters', raw.Monsters),
-    Timeline: decodeTab('Timeline', raw.Timeline),
-    Quests: decodeTab('Quests', raw.Quests),
+    Skills: decodeTab<Skill>('Skills', raw.Skills),
+    NPCs: decodeTab<Npc>('NPCs', raw.NPCs),
+    Monsters: decodeTab<Monster>('Monsters', raw.Monsters),
+    Timeline: decodeTab<TimelineEvent>('Timeline', raw.Timeline),
+    Quests: decodeTab<Quest>('Quests', raw.Quests),
     Map: decodeTab<MapNode>('Map', raw.Map),
     Lore: decodeTab<LoreEntry>('Lore', raw.Lore),
   }
