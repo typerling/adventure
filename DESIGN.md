@@ -1,4 +1,4 @@
-# AI Adventure — Design Doc (v0.1)
+# AI Adventure — Design Doc (v0.2)
 
 A solo, audiobook-like RPG web app. An AI plays the Dungeon Master and every NPC/creature.
 You play a character you define yourself, in a world/scenario you define yourself, under rules
@@ -19,7 +19,8 @@ implementation starts.
 | AI backend | **Hybrid.** Phase 1 ships a "manual bridge": the app builds the full DM prompt, you copy it into claude.ai/chatgpt.com yourself, paste the reply back in. The AI call itself sits behind one `AIProvider` interface so a `claude-api` / `openai-api` provider (your own key) can be dropped in later with zero changes to the rest of the app. |
 | Speech-to-text | Default: browser-native (Web Speech API), free, no setup. Toggle to ElevenLabs (Scribe) STT if you add a key. |
 | Text-to-speech | Toggle between three providers at any time: browser-native (`SpeechSynthesis`), ElevenLabs, or a local Hugging Face model running in-browser (via `transformers.js`, WASM/WebGPU — no server). |
-| Backend / storage | **No server, no database.** Google Drive is the only backend. All game state (character, inventory, world, story log, summaries, map) lives as structured JSON/Markdown files in a Drive folder, read and written directly by the browser via the Drive API. |
+| Backend / storage | **No server, no database.** Google Drive is the only backend. You pick a Drive folder in Settings; the app bootstraps it. **Markdown files** hold prose (campaign setup, story transcript, rolling summary, long lore write-ups). **Google Sheets** hold everything tabular/list-like (inventory, stats, skills, NPCs, monsters, timeline, quests, map nodes) — one spreadsheet per campaign, one tab per entity type, read/written via the Sheets API. |
+| UI stack | React + TypeScript + **Tailwind CSS** + **shadcn/ui** components. |
 | Hosting | Static single-page app (Vite + React + TypeScript), deployable anywhere static (or run locally). Installable as a PWA so it behaves like an app on your phone. |
 | Process | Design doc (this doc) first → sign-off → build in phases. |
 
@@ -27,24 +28,41 @@ implementation starts.
 
 ## 2. Why Google-Drive-only is workable
 
-The Drive API supports the `drive.file` OAuth scope: the app can only see/create files it
-itself created (plus one folder you pick to hold everything), never your whole Drive. That
-keeps the OAuth consent screen simple and keeps your Drive private from the app's perspective.
-All reads/writes go directly from your browser to Google's API — nothing passes through a
-third-party server.
+Two Google APIs, both called directly from the browser, nothing passing through a third-party
+server:
 
-The tradeoff: no server-side database means no complex queries. The data model below is
-designed so that everything the app needs on a given screen is a **single small file read**,
-not a query across many files — indexes are maintained as flat JSON files updated on write.
+- **Drive API v3** — folder picking/creation, creating the Markdown files and the campaign
+  spreadsheet, listing campaigns. Scope: `drive.file` (the app only ever sees files/folders it
+  created or that you explicitly picked via the Drive file picker — never your whole Drive).
+- **Sheets API v4** — reading/writing cell ranges inside each campaign's spreadsheet. This
+  needs the broader `spreadsheets` scope, because the Sheets API's own authorization doesn't
+  recognize `drive.file` grants the way the Drive API does. That's the one real scope
+  trade-off of this design: the OAuth consent screen will ask for "see, edit, create, and
+  delete your Google Sheets spreadsheets," not just "files this app creates." Worth flagging
+  since it's broader than the Drive-only version of this design — happy to revisit if that's
+  a dealbreaker, but there's no narrower official scope that still allows cell-range
+  read/write.
+- Every full-state read is a single `spreadsheets.values.batchGet` call across all tabs
+  (Character, Inventory, NPCs, Monsters, Timeline, Quests, Map, ...) — one HTTP round trip
+  regardless of how many tabs exist. Writes from a turn's `state_delta` are batched the same
+  way with `batchUpdate` / `values.append`.
+
+The tradeoff of having no server-side database: no complex cross-file queries, and Sheets
+enforces some latency per API call. The data model is designed so a given screen needs at most
+one Sheets batch call plus one Drive file read — never an open-ended search.
 
 ---
 
 ## 3. Tech stack
 
 - **Vite + React + TypeScript** — client-only SPA, no backend to operate.
-- **Google Identity Services + Drive API v3** (`drive.file` scope) for storage/auth.
-- **Zustand** (or plain context) for in-memory session state; Drive is the source of truth,
-  local state is a cache with optimistic writes.
+- **Tailwind CSS + shadcn/ui** for styling/components (Dialog/Stepper for the setup wizard,
+  Tabs for the Codex, Card for entity entries, Command/Combobox where useful, Sonner for
+  toasts on validation errors).
+- **Google Identity Services** for auth; **Drive API v3** (`drive.file`) for folder/file
+  management; **Sheets API v4** (`spreadsheets`) for all tabular reads/writes.
+- **Zustand** (or plain context) for in-memory session state; Drive/Sheets are the source of
+  truth, local state is a cache with optimistic writes reconciled against API responses.
 - **PWA** (manifest + service worker) — installable on a phone, mic access works over HTTPS.
 - No build-time dependency on any AI vendor SDK in Phase 1 (manual bridge needs none). Phase 2
   adds a thin `fetch`-based client per provider, called directly from the browser with a
@@ -54,53 +72,54 @@ not a query across many files — indexes are maintained as flat JSON files upda
 
 ## 4. Data model & Google Drive folder structure
 
-One root folder ("AI Adventure"), one subfolder per **campaign** (a campaign = one character +
-one world + one continuous story). Structure is deliberately genre-agnostic — "stats", "items",
-"entities" are free-form bags of properties, not fixed D&D fields, so the same schema works for
-a cyberpunk heist, a cozy fantasy village, or a horror survival game.
+One root folder (you choose it in Settings — call it "AI Adventure"), one subfolder per
+**campaign** (a campaign = one character + one world + one continuous story). Structure is
+deliberately genre-agnostic — sheet columns and stat fields are free-form, not fixed D&D
+fields, so the same schema works for a cyberpunk heist, a cozy fantasy village, or a horror
+survival game. **Prose lives in Markdown, everything list-shaped lives in one Google Sheet.**
 
 ```
 AI Adventure/
   campaigns/
-    <campaign-id>/
-      campaign.json          # name, genre/theme, tone, created date, difficulty, house rules,
-                              #   player's stated expectations, current turn number
-      character.json         # name, description, stats (free-form key/value), skills,
-                              #   level/XP (optional — only if the ruleset uses them),
-                              #   status effects, inventory[]
-      settings.json           # per-campaign voice provider choices, narration style
+    <campaign-name>/
+      campaign.md              # YAML frontmatter (name, genre/theme, difficulty, created date,
+                                #   current turn, current location, house rules) + prose body:
+                                #   world/scenario setup and your stated expectations, written
+                                #   at campaign creation and human-readable/editable anytime.
+      settings.md               # per-campaign voice provider choices, narration style (frontmatter)
       world/
-        lore.json             # world-bible entries: {id, type: location|faction|concept|item,
-                              #   name, summary, tags, discovered: bool}
-        map.json              # graph: nodes (locations, coords optional, discovered/rumored/
-                              #   unexplored, description) + edges (routes between nodes)
-      entities/
-        npcs.json             # index of named characters met: {id, name, description,
-                              #   relationship, status (alive/dead/unknown), last_seen_turn}
-        monsters.json         # bestiary: {id, name, description, threat_notes, encounters[]}
-      events/
-        timeline.json         # major event log: {turn, title, summary, tags}
-        quests.json           # active/completed quest/goal tracker
+        lore/
+          <slug>.md              # one file per long-form lore entry (a location history, a
+                                 #   faction writeup, ...) — linked from the Lore sheet tab by
+                                 #   filename; short entries just live in the sheet, no file.
       story/
         log/
-          0001.md ... NNNN.md   # raw transcript, chunked ~50 turns per file (keeps files small
-                                 #   and Drive reads cheap; index below points into them)
-          index.json             # {chunkFile, turnRange, byteOffset?} per chunk
+          0001.md ... NNNN.md    # raw transcript, chunked ~50 turns per file (keeps files small
+                                 #   and reads cheap)
         summary/
-          rolling.json          # current condensed summary fed to the AI each turn
-          checkpoints/          # archived summaries at major milestones (for the map/codex UI,
-                                 #   not for prompting)
-      state/
-        current.json           # single canonical snapshot: location, active scene, party,
-                                 #   turn number, difficulty — this + rolling summary + last
-                                 #   ~6 raw turns is the entire context sent to the AI
+          rolling.md             # current condensed summary fed to the AI each turn — plain
+                                 #   prose, overwritten in place
+          checkpoints/            # archived rolling.md snapshots at re-summarization points
+      "<campaign-name> — Data" (Google Sheet, one file, one tab per entity type):
+        Character    # single-row-ish key/value: name, description, stats (free columns),
+                      #   level/XP if used, status effects (comma list)
+        Inventory    # id, name, qty, description, tags, acquired_turn, active(bool)
+        Skills       # id, name, rank/level, description
+        NPCs         # id, name, description, relationship, status, last_seen_turn
+        Monsters     # id, name, description, threat_notes, status, last_encountered_turn
+        Timeline     # turn, title, summary, tags
+        Quests       # id, title, status, description, updated_turn
+        Map          # id, name, type, state(discovered/rumored/unexplored), connects_to,
+                      #   description, x, y (coords optional — layout can also be force-directed)
+        Lore         # id, type, name, summary, tags, discovered(bool), detail_file (optional,
+                      #   points at world/lore/<slug>.md for the long version)
 ```
 
-Every file is small, independently readable/writable, and mirrors one UI panel 1:1
-(Inventory panel ↔ `character.json`, Codex ↔ `world/lore.json` + `entities/*.json`, Map ↔
-`world/map.json`, Timeline ↔ `events/timeline.json`). This is the "efficient structuring" the
-brief asked for: it scales to any theme because nothing is hard-coded to D&D fields, and the
-app never has to load more than a few KB to render any given screen.
+Every screen maps 1:1 to either one Markdown file or one Sheets tab (Inventory panel ↔
+`Inventory` tab, Codex ↔ `NPCs`/`Monsters`/`Lore` tabs + linked lore `.md` files, Map ↔ `Map`
+tab, Timeline ↔ `Timeline`/`Quests` tabs). This is the "efficient structuring" the brief asked
+for: nothing is hard-coded to D&D fields, tabular data is easy to skim/edit by hand directly in
+Sheets between sessions, and prose stays prose instead of being awkwardly stuffed into cells.
 
 ---
 
@@ -138,33 +157,37 @@ contract so the app can parse it. **Two-part output:**
   present alongside them regardless of what's suggested.
 - The **system prompt** sent every turn (built by the app, shown in full in manual mode so
   you can inspect/edit it before pasting) includes: DM persona + tone, the difficulty rules
-  (§7), the world/character setup from campaign creation, the current `state/current.json`,
-  the rolling summary, the last ~6 raw turns, and a fixed instruction block requiring the
-  `state` JSON contract and telling the model to **only** report changes that are consistent
-  with the supplied state (no inventing items you already have, no NPCs dying twice, etc.) —
-  this is the "review against documented information" the brief asked for, folded into
-  generation rather than a separate pass, since a separate AI review pass would double the
-  copy/paste burden in manual mode.
-- **Deterministic validation always runs client-side** before any `state_delta` is applied:
-  can't remove an item not currently held, can't set HP below the ruleset's floor, can't
-  revive a `dead` NPC without an explicit resurrection tag, etc. A failed validation doesn't
-  silently drop the turn — it's shown to you with a one-click "regenerate with a correction
-  note" action (in manual mode: an amended prompt to re-paste; in API mode: automatic retry).
+  (§7), the world/character setup from `campaign.md`, a fresh `batchGet` snapshot of the
+  Character/Inventory/NPCs/Monsters/Map/Quests tabs, the rolling summary from `rolling.md`,
+  the last ~6 raw turns, and a fixed instruction block requiring the `state` JSON contract and
+  telling the model to **only** report changes that are consistent with the supplied state (no
+  inventing items you already have, no NPCs dying twice, etc.) — this is the "review against
+  documented information" the brief asked for, folded into generation rather than a separate
+  pass, since a separate AI review pass would double the copy/paste burden in manual mode.
+- **Deterministic validation always runs client-side** before any `state_delta` is written back
+  to the sheet: can't remove an item not currently held, can't set HP below the ruleset's
+  floor, can't revive a `dead` NPC without an explicit resurrection tag, etc. A failed
+  validation doesn't silently drop the turn — it's shown to you with a one-click "regenerate
+  with a correction note" action (in manual mode: an amended prompt to re-paste; in API mode:
+  automatic retry). Once validated, the delta is applied as sheet writes: `values.append` for
+  new Inventory/NPC/Monster/Timeline/Map rows, a targeted `values.update` for Character
+  stat/status changes.
 - **Phase 2, API mode only:** an optional second, cheap pass ("critic pass") that re-checks
-  the drafted turn against `state/current.json` before showing it to you, toggleable in
+  the drafted turn against the latest sheet snapshot before showing it to you, toggleable in
   settings since it costs an extra API call per turn.
 
 ---
 
 ## 6. Summarization strategy
 
-- `summary_update` from every turn is appended to `story/summary/rolling.json` (cheap, no
-  extra AI call — it's part of the same generation).
+- `summary_update` from every turn is folded into `story/summary/rolling.md` (cheap, no extra
+  AI call — it's part of the same generation; the file is just overwritten with the new text).
 - Every ~15 turns (configurable), the app prompts a **full re-summarization**: send the
   current rolling summary + the last 15 raw turns, ask for a single tightened paragraph that
-  replaces it. This keeps the rolling summary bounded (roughly constant size) instead of
-  growing forever, which is what actually lets the "AI doesn't need a giant context" goal
-  hold up over a 200-turn campaign.
+  replaces it. Before overwriting, the previous version is copied into
+  `story/summary/checkpoints/`. This keeps the rolling summary bounded (roughly constant size)
+  instead of growing forever, which is what actually lets the "AI doesn't need a giant context"
+  goal hold up over a 200-turn campaign.
 - Raw transcript is never summarized away — it's archived in `story/log/*.md` purely for you
   to read back / for the map & codex UIs to backfill from if you edit the summary by hand.
 
@@ -172,7 +195,7 @@ contract so the app can parse it. **Two-part output:**
 
 ## 7. Difficulty
 
-A single setting per campaign (`campaign.json: difficulty`), one of `Story / Easy / Standard /
+A single setting per campaign (`campaign.md` frontmatter: `difficulty`), one of `Story / Easy / Standard /
 Hard / Brutal` (or a numeric 1–5 if you'd rather), injected into the system prompt as concrete
 DM instructions, e.g.:
 
@@ -214,9 +237,10 @@ interface TTSProvider { speak(text: string, opts?: {voice?: string}): Promise<vo
 Research into existing solo/AI-GM tools and TTRPG design:
 
 - **NovelAI's Lorebook / "World Info"** — keyed lore entries only get injected into context
-  when relevant, instead of dumping the whole world bible every turn. → We do the same:
-  `world/lore.json` entries are tagged, and the prompt-builder only pulls entries tagged with
-  the current location/active NPCs, not the whole file.
+  when relevant, instead of dumping the whole world bible every turn. → We do the same: the
+  `Lore` sheet tab is tagged, and the prompt-builder only pulls entries tagged with the
+  current location/active NPCs (plus their linked `.md` file if `detail_file` is set), not
+  the whole tab.
 - **PbtA / Ironsworn "fail forward"** — failure should complicate, not stall, the story; a
   miss becomes a twist, not a dead end. → Baked into the Standard-and-below difficulty
   instructions (§7) as the default narrative posture, so a free-text action that "doesn't
@@ -238,18 +262,20 @@ Sources: [DriveThruRPG — PbtA introduction](https://pages.drivethrurpg.com/pow
 
 ## 10. UI/UX screens
 
-1. **Campaign setup wizard** — character (name/description/stats/skills), starting
-   inventory, world & scenario prompt, tone/expectations free-text, difficulty picker.
-   Produces the initial `campaign.json` / `character.json` / `world/*` files.
+1. **Campaign setup wizard** (shadcn Dialog/Stepper) — character (name/description/stats/
+   skills), starting inventory, world & scenario prompt, tone/expectations free-text,
+   difficulty picker. On finish: creates the campaign folder, `campaign.md`, and the
+   `<campaign-name> — Data` spreadsheet with all tabs pre-headered.
 2. **Play screen** (the core loop) — narration text (with a "read aloud" toggle driving the
    active TTS provider), option buttons, free-text box, mic button, and — in manual mode — a
    "Copy DM prompt" button plus a "Paste AI reply" box with inline validation errors.
-3. **Codex** — tabs for Inventory, Stats/Skills, NPCs, Monsters, Lore, Timeline/Quests. Each
-   tab is a thin read view over its corresponding Drive file.
-4. **Map** — the discovered-location graph from `world/map.json`, rendered as connected nodes
-   that reveal as `new_locations` deltas land; undiscovered edges hinted but greyed out.
-5. **Settings** — AI mode (manual/API + key), STT provider + key, TTS provider + key/voice
-   assignments, Drive folder picker, summarization cadence.
+3. **Codex** (shadcn Tabs) — Inventory, Stats/Skills, NPCs, Monsters, Lore, Timeline/Quests.
+   Each tab is a thin read view over its corresponding sheet tab (Lore entries expand to their
+   linked Markdown file when present).
+4. **Map** — the discovered-location graph from the `Map` sheet tab, rendered as connected
+   nodes that reveal as `new_locations` deltas land; undiscovered edges hinted but greyed out.
+5. **Settings** — Drive folder picker, AI mode (manual/API + key), STT provider + key, TTS
+   provider + key/voice assignments, summarization cadence.
 
 ---
 
@@ -265,10 +291,19 @@ Sources: [DriveThruRPG — PbtA introduction](https://pages.drivethrurpg.com/pow
 
 ## 12. Open risks / things to confirm before or during Phase 1
 
-- Drive API from a pure static SPA needs an OAuth **Client ID** registered in a Google Cloud
-  project (free, but you need to create it and add yourself as a test user, or publish the
-  consent screen). I'll need you to create this and hand me the Client ID — I can't provision
-  Google Cloud resources on your behalf.
+- Both APIs need an OAuth **Client ID** registered in a Google Cloud project, with the Drive
+  API and Sheets API enabled on it (free, few-minute setup, but you need to create it, add
+  yourself as a test user, and hand me the Client ID — I can't provision Google Cloud
+  resources on your behalf).
+- The `spreadsheets` scope (§2) is broader than pure `drive.file` — it can see/edit any Sheet
+  in your Drive, not just ones this app created. Practically the app only ever touches sheets
+  it created itself, but Google's consent screen will still show the broader grant. Flagging
+  in case that changes your storage preference before Phase 1 starts.
+- Sheets API default quota is 300 read/write requests per minute per project — a non-issue for
+  single-player use, but worth knowing if a turn ever needs unusually many calls.
+- If you hand-edit a campaign's spreadsheet in the Drive UI while the app is mid-turn, last
+  write wins — the app should be treated as the primary writer, with manual edits made between
+  turns rather than concurrently.
 - `transformers.js` local TTS model choice/size is still to be pinned down in Phase 2 — will
   benchmark a couple of small models for phone feasibility before committing to one.
 - Manual-bridge UX (copy prompt → paste reply) is inherently more friction than a live API
