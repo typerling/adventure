@@ -10,7 +10,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   if (!isGoogleConfigured) {
     return (
       <div className="flex min-h-svh items-center justify-center p-6">
-        <Card className="max-w-md">
+        <Card className="w-full max-w-md">
           <CardHeader>
             <CardTitle>Google Drive isn't configured yet</CardTitle>
             <CardDescription>

@@ -1,32 +1,31 @@
-# React + TypeScript + Vite
+# AI Adventure
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+A solo, audiobook-style AI-narrated adventure game. See [DESIGN.md](./DESIGN.md) for the full
+architecture, data model, and rationale. This is a client-only React + TypeScript SPA — all game
+state lives in a Google Drive folder you own (Markdown files for prose, Google Sheets for
+everything tabular), with no server or database of its own.
 
-Currently, two official plugins are available:
+## Status
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Phase 1 (MVP) is implemented: campaign setup wizard, the manual copy/paste DM turn loop, the
+deterministic state validator, and the Codex/Dashboard screens. Voice (STT/TTS) and the map graph
+view are stubbed for Phase 2; a direct AI API mode is stubbed for Phase 3 (see DESIGN.md §11).
 
-## React Compiler
+## Setup
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+1. `npm install`
+2. Create a Google Cloud project, enable the **Drive API** and **Sheets API**, and create an
+   OAuth **Client ID** (Web application type). Add `http://localhost:5173` (and your deployed
+   origin, if any) to Authorized JavaScript origins. See DESIGN.md §12 for the scope tradeoffs.
+3. Copy `.env.example` to `.env` and set `VITE_GOOGLE_CLIENT_ID` to that Client ID.
+4. `npm run dev`
 
-## Expanding the Oxlint configuration
+Without step 2/3, the app boots to a "Google Drive isn't configured yet" screen rather than
+crashing — everything else is wired up and ready as soon as credentials are added.
 
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
+## Scripts
 
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
-```
-
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+- `npm run dev` — start the dev server
+- `npm run build` — typecheck + production build
+- `npm run lint` — oxlint
+- `npm run preview` — preview the production build locally
