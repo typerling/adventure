@@ -197,9 +197,9 @@ export function Settings() {
   }
 
   return (
-    <div className="mx-auto flex max-w-xl flex-col gap-4 px-6 py-8">
+    <div className="mx-auto flex max-w-xl flex-col gap-4 px-4 py-6 sm:px-6 sm:py-8">
       <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Settings</h1>
+        <h1 className="font-heading text-2xl font-medium text-foreground">Settings</h1>
         <Button asChild size="sm" variant="ghost">
           <Link to={campaignId ? `/play/${campaignId}` : '/'}>
             <ArrowLeft className="size-4" />

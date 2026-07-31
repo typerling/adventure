@@ -1,16 +1,29 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { toast } from 'sonner'
-import { CircleAlert, Loader2, Mic, MicOff, Square, Volume2 } from 'lucide-react'
+import {
+  ArrowUp,
+  ChevronRight,
+  CircleAlert,
+  Compass,
+  Feather,
+  Footprints,
+  Loader2,
+  Mic,
+  MicOff,
+  Sparkles,
+  Square,
+  Volume2,
+} from 'lucide-react'
 import { useCampaign } from '@/hooks/useCampaign'
 import { usePlayHeaderStore } from '@/store/playHeaderStore'
+import { cn } from '@/lib/utils'
 import type { TtsProvider as TtsProviderKind } from '@/types/campaign'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import { Separator } from '@/components/ui/separator'
 import {
   Dialog,
   DialogContent,
@@ -27,6 +40,16 @@ import { generateClaudeReply } from '@/lib/ai/claudeProvider'
 import { describeLocalModelProgress, generateLocalReply } from '@/lib/ai/localModel'
 
 type DialogStage = 'closed' | 'prompt'
+
+/** Options are arbitrary AI-generated strings with no inherent icon/color meaning — these just
+ * cycle to give the choice list the same varied, illustrated-card look as a fixed icon per option
+ * would, without pretending to understand what each option is about. */
+const OPTION_ICONS = [Footprints, Compass, Feather, Sparkles]
+const OPTION_COLORS = [
+  'bg-primary text-primary-foreground',
+  'bg-secondary text-secondary-foreground',
+  'bg-accent text-accent-foreground',
+]
 
 export function Play() {
   const { campaignId } = useParams<{ campaignId: string }>()
@@ -330,26 +353,28 @@ export function Play() {
   }
 
   return (
-    <div className="mx-auto flex max-w-3xl flex-col gap-4 px-6 py-8">
+    <div className="mx-auto flex max-w-3xl flex-col gap-4 px-4 py-6 sm:px-6 sm:py-8">
       {campaign.meta.difficulty !== 'Standard' && (
         <div className="flex justify-end">
           <Badge variant="secondary">{campaign.meta.difficulty}</Badge>
         </div>
       )}
 
-      <Separator />
-
-      <ScrollArea className="h-[50vh] rounded-md border p-4">
+      {/* Padding lives on the inner content, not on ScrollArea itself — Radix's Viewport clips
+          at its own edge, and text sitting exactly flush against that clip boundary triggers a
+          software-rasterization glyph artifact in some renderers. A wrapper div inside the
+          clipped viewport keeps glyphs safely away from the clip edge. */}
+      <ScrollArea className="h-[50vh] rounded-2xl border border-border/60 bg-card/70 shadow-sm">
         {recentTurns.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
+          <p className="p-4 font-serif text-sm text-muted-foreground italic sm:p-5">
             No story yet — describe your first action below to begin.
           </p>
         ) : (
-          <div className="flex flex-col gap-6">
+          <div className="flex flex-col gap-6 p-4 sm:p-5">
             {recentTurns.map((t) => (
               <div key={t.turn} className="flex flex-col gap-2">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="text-sm font-medium text-muted-foreground">
+                  <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
                     Turn {t.turn} — you: {t.playerAction}
                   </p>
                   {ttsAvailable && (
@@ -364,7 +389,7 @@ export function Play() {
                     </Button>
                   )}
                 </div>
-                <p className="whitespace-pre-wrap text-sm leading-relaxed">{t.narrative}</p>
+                <p className="font-serif text-base leading-relaxed whitespace-pre-wrap">{t.narrative}</p>
               </div>
             ))}
             <div ref={bottomRef} />
@@ -375,12 +400,30 @@ export function Play() {
       {voiceLoadMessage && <p className="text-xs text-muted-foreground">{voiceLoadMessage}</p>}
 
       {options.length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {options.map((opt) => (
-            <Button key={opt} variant="outline" size="sm" onClick={() => startTurn(opt)} disabled={generating}>
-              {opt}
-            </Button>
-          ))}
+        <div className="flex flex-col gap-2.5">
+          {options.map((opt, i) => {
+            const Icon = OPTION_ICONS[i % OPTION_ICONS.length]
+            return (
+              <button
+                key={opt}
+                type="button"
+                onClick={() => startTurn(opt)}
+                disabled={generating}
+                className="group flex items-center gap-3 rounded-2xl border border-border/60 bg-card px-3.5 py-3 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md disabled:pointer-events-none disabled:opacity-50"
+              >
+                <span
+                  className={cn(
+                    'flex size-10 shrink-0 items-center justify-center rounded-xl',
+                    OPTION_COLORS[i % OPTION_COLORS.length],
+                  )}
+                >
+                  <Icon className="size-5" />
+                </span>
+                <span className="min-w-0 flex-1 font-heading text-base leading-snug text-foreground">{opt}</span>
+                <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+              </button>
+            )
+          })}
         </div>
       )}
 
@@ -397,19 +440,20 @@ export function Play() {
         </div>
       )}
 
-      <div className="flex gap-2">
+      <div className="flex items-end gap-2 rounded-2xl border border-border/60 bg-card px-3 py-2 shadow-sm">
         <Textarea
           value={freeText}
           onChange={(e) => setFreeText(e.target.value)}
           placeholder={listening ? 'Listening…' : 'Say or do anything…'}
-          rows={2}
-          className="flex-1"
+          rows={1}
+          className="min-h-0 flex-1 resize-none border-0 bg-transparent px-0 py-1.5 shadow-none focus-visible:ring-0"
         />
         {sttAvailable && (
           <Button
             type="button"
-            variant={listening ? 'default' : 'outline'}
+            variant={listening ? 'default' : 'ghost'}
             size="icon"
+            className="rounded-full"
             onClick={toggleListening}
             title={listening ? 'Stop listening' : 'Speak your action'}
             aria-label={listening ? 'Stop listening' : 'Speak your action'}
@@ -417,8 +461,15 @@ export function Play() {
             {listening ? <MicOff className="size-4" /> : <Mic className="size-4" />}
           </Button>
         )}
-        <Button onClick={() => startTurn(freeText)} disabled={!freeText.trim() || generating}>
-          Act
+        <Button
+          size="icon"
+          className="rounded-full"
+          onClick={() => startTurn(freeText)}
+          disabled={!freeText.trim() || generating}
+          title="Act"
+          aria-label="Act"
+        >
+          <ArrowUp className="size-4" />
         </Button>
       </div>
 

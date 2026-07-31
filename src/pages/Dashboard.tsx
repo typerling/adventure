@@ -14,15 +14,15 @@ export function Dashboard() {
   }, [load])
 
   return (
-    <div className="mx-auto max-w-3xl px-6 py-10">
-      <div className="mb-8 flex items-center justify-between">
+    <div className="mx-auto max-w-3xl px-4 py-8 sm:px-6 sm:py-10">
+      <div className="mb-8 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold">Your adventures</h1>
+          <h1 className="font-heading text-3xl font-medium text-foreground">Your adventures</h1>
           <p className="text-sm text-muted-foreground">
             Stored in the "Adventure" folder in your Google Drive.
           </p>
         </div>
-        <Button asChild>
+        <Button asChild className="self-start sm:self-auto">
           <Link to="/new">New campaign</Link>
         </Button>
       </div>

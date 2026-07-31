@@ -1,16 +1,18 @@
 import { useState } from 'react'
 import { BrowserRouter, Link, Route, Routes } from 'react-router-dom'
-import { BookOpen, MapPin, Settings as SettingsIcon, Volume2, VolumeX } from 'lucide-react'
+import { BookOpen, MapPin, Mountain, Settings as SettingsIcon, Volume2, VolumeX } from 'lucide-react'
 import { Toaster } from '@/components/ui/sonner'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { AuthGate } from '@/components/AuthGate'
+import { BottomNav } from '@/components/BottomNav'
 import { Dashboard } from '@/pages/Dashboard'
 import { NewCampaign } from '@/pages/NewCampaign'
 import { Play } from '@/pages/Play'
 import { Codex } from '@/pages/Codex'
 import { Settings } from '@/pages/Settings'
 import { usePlayHeaderStore } from '@/store/playHeaderStore'
+import { cn } from '@/lib/utils'
 
 function Header() {
   const context = usePlayHeaderStore((s) => s.context)
@@ -19,19 +21,20 @@ function Header() {
   const [turnInfoOpen, setTurnInfoOpen] = useState(false)
 
   return (
-    <header className="border-b">
-      <div className="mx-auto flex max-w-3xl items-center justify-between px-6 py-3">
-        <div className="flex items-center gap-1.5 truncate">
-          <Link to="/" className="font-semibold">
+    <header className="border-b border-border/70 bg-card/60">
+      <div className="mx-auto flex max-w-3xl items-center justify-between gap-2 px-4 py-3 sm:px-6">
+        <div className="flex min-w-0 items-center gap-1.5 truncate">
+          <Link to="/" className="flex shrink-0 items-center gap-1.5 font-heading text-lg font-medium text-foreground">
+            <Mountain className="size-4 text-primary" />
             Adventure
           </Link>
           {context && (
             <>
-              <span className="text-muted-foreground">-</span>
+              <span className="text-muted-foreground">·</span>
               <Link
                 to={`/play/${context.campaignId}`}
                 title="Back to play"
-                className="truncate font-semibold hover:text-muted-foreground"
+                className="truncate font-heading text-lg text-foreground hover:text-primary"
               >
                 {context.campaignName}
               </Link>
@@ -62,14 +65,22 @@ function Header() {
               {readAloud ? <Volume2 className="size-4" /> : <VolumeX className="size-4" />}
             </Button>
           )}
+          {/* Codex/Settings links are redundant with BottomNav once a campaign context exists,
+              so they only need to reappear once the viewport is wide enough that BottomNav hides
+              itself (md:hidden there, so md:inline-flex here mirrors it back). */}
           {context && (
-            <Button size="icon-sm" variant="outline" asChild>
+            <Button size="icon-sm" variant="outline" className="hidden md:inline-flex" asChild>
               <Link to={`/codex/${context.campaignId}`} title="Codex" aria-label="Codex">
                 <BookOpen className="size-4" />
               </Link>
             </Button>
           )}
-          <Button size="icon-sm" variant="outline" asChild>
+          <Button
+            size="icon-sm"
+            variant="outline"
+            className={cn(context && 'hidden md:inline-flex')}
+            asChild
+          >
             <Link
               to={context ? `/settings/${context.campaignId}` : '/settings'}
               title="Settings"
@@ -96,17 +107,21 @@ function Header() {
 }
 
 function AppShell() {
+  const context = usePlayHeaderStore((s) => s.context)
   return (
     <div className="min-h-svh">
       <Header />
-      <Routes>
-        <Route path="/" element={<Dashboard />} />
-        <Route path="/new" element={<NewCampaign />} />
-        <Route path="/play/:campaignId" element={<Play />} />
-        <Route path="/codex/:campaignId" element={<Codex />} />
-        <Route path="/settings" element={<Settings />} />
-        <Route path="/settings/:campaignId" element={<Settings />} />
-      </Routes>
+      <div className={cn(context && 'pb-16 md:pb-0')}>
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/new" element={<NewCampaign />} />
+          <Route path="/play/:campaignId" element={<Play />} />
+          <Route path="/codex/:campaignId" element={<Codex />} />
+          <Route path="/settings" element={<Settings />} />
+          <Route path="/settings/:campaignId" element={<Settings />} />
+        </Routes>
+      </div>
+      <BottomNav />
     </div>
   )
 }
