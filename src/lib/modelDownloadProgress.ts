@@ -33,6 +33,12 @@ export function formatBytes(bytes: number): string {
  * layout shift on every update, reading as jittery even once the underlying percentage was steady. */
 export function describeModelDownloadProgress(p: ModelDownloadProgress, label: string): string {
   if (p.status === 'progress' && typeof p.progress === 'number') {
+    // Every byte is accounted for, but the caller isn't done yet: from_pretrained() still has to
+    // build an inference session from those bytes (WebGPU shader compilation, buffer allocation),
+    // which reports no progress of its own and can take anywhere from a few seconds to a couple of
+    // minutes depending on the device. Left as "Downloading - 100%" forever (the last real event
+    // received), this reads as frozen even though the model is still loading normally.
+    if (p.progress >= 100) return `Preparing ${label} — this can take a while the first time…`
     const size =
       typeof p.loaded === 'number' && typeof p.total === 'number' && p.total > 0
         ? ` (${formatBytes(p.loaded)}/${formatBytes(p.total)})`
