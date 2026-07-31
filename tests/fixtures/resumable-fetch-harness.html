@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>resumable fetch test harness</title>
+  </head>
+  <body>
+    <!--
+      Standalone page (no app shell) for exercising createResumableFetch in isolation, without
+      going through the real model-loading pipeline — that needs actual ONNX/WebGPU model data,
+      which is out of scope for automated tests (see ai-local-mode.spec.ts). Served by the same
+      Vite dev server the rest of the e2e suite uses, so this can import the real source module.
+    -->
+    <script type="module">
+      import { createResumableFetch } from '/src/lib/ai/localModelResumableFetch.ts'
+
+      const REAL_FETCH = window.fetch.bind(window)
+
+      /** Splits a Response's body into fixed-size pieces before handing it to
+       * createResumableFetch — Chromium delivers even large mocked route.fulfill() bodies as a
+       * single chunk (verified directly), so without this there's no way to deterministically
+       * stop a test "download" partway through a real network chunk boundary. */
+      function rechunk(response, chunkSize) {
+        const reader = response.body.getReader()
+        let buffered = new Uint8Array(0)
+        const stream = new ReadableStream({
+          async pull(controller) {
+            while (buffered.length < chunkSize) {
+              const { done, value } = await reader.read()
+              if (done) {
+                if (buffered.length > 0) controller.enqueue(buffered)
+                controller.close()
+                return
+              }
+              const merged = new Uint8Array(buffered.length + value.length)
+              merged.set(buffered)
+              merged.set(value, buffered.length)
+              buffered = merged
+            }
+            controller.enqueue(buffered.slice(0, chunkSize))
+            buffered = buffered.slice(chunkSize)
+          },
+        })
+        return new Response(stream, { status: response.status, statusText: response.statusText, headers: response.headers })
+      }
+
+      const rechunkedFetch = async (...args) => rechunk(await REAL_FETCH(...args), 50)
+      // Small block size so a test fixture of a few hundred bytes can still exercise the
+      // "flush a block, then get interrupted" logic — production uses a multi-MB block size.
+      const wrappedFetch = createResumableFetch(rechunkedFetch, 100)
+
+      /** Reads up to `byteCount` bytes then stops — simulating a page refresh abandoning an
+       * in-flight download partway through, after whatever was already flushed to IndexedDB. */
+      window.__downloadPartial = async (url, byteCount) => {
+        const res = await wrappedFetch(url)
+        const reader = res.body.getReader()
+        let total = 0
+        while (total < byteCount) {
+          const { done, value } = await reader.read()
+          if (done) break
+          total += value.length
+        }
+        return { totalRead: total }
+      }
+
+      window.__downloadFull = async (url) => {
+        const res = await wrappedFetch(url)
+        const buffer = await res.arrayBuffer()
+        return { status: res.status, bytes: Array.from(new Uint8Array(buffer)) }
+      }
+    </script>
+  </body>
+</html>

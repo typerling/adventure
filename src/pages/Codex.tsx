@@ -1,6 +1,8 @@
-import { useParams, Link } from 'react-router-dom'
+import { useEffect } from 'react'
+import { useParams } from 'react-router-dom'
+import { CircleAlert, Loader2 } from 'lucide-react'
 import { useCampaign } from '@/hooks/useCampaign'
-import { Button } from '@/components/ui/button'
+import { usePlayHeaderStore } from '@/store/playHeaderStore'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
@@ -9,25 +11,39 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 export function Codex() {
   const { campaignId } = useParams<{ campaignId: string }>()
   const { status, errorMessage, campaign, snapshot } = useCampaign(campaignId)
+  const setHeaderContext = usePlayHeaderStore((s) => s.setContext)
+  const campaignName = campaign?.meta.name
+
+  // See Play.tsx for why this goes through a shared store rather than props/context.
+  useEffect(() => {
+    if (!campaignId || !campaignName) return
+    setHeaderContext({ campaignId, campaignName, showReadAloudToggle: false, turnLabel: null })
+    return () => setHeaderContext(null)
+  }, [campaignId, campaignName, setHeaderContext])
 
   if (status === 'loading') {
-    return <div className="p-10 text-sm text-muted-foreground">Loading codex…</div>
+    return (
+      <div className="flex min-h-[70vh] flex-col items-center justify-center gap-3 px-6 text-center">
+        <Loader2 className="size-6 animate-spin text-muted-foreground" />
+        <p className="text-sm text-muted-foreground">Loading codex…</p>
+      </div>
+    )
   }
   if (status === 'error' || !campaign || !snapshot) {
-    return <div className="p-10 text-sm text-destructive">Couldn't load this campaign: {errorMessage}</div>
+    return (
+      <div className="flex min-h-[70vh] flex-col items-center justify-center gap-3 px-6 text-center">
+        <CircleAlert className="size-6 text-destructive" />
+        <p className="max-w-sm text-sm text-destructive">Couldn't load this campaign: {errorMessage}</p>
+      </div>
+    )
   }
 
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-4 px-6 py-8">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">{campaign.meta.name} — Codex</h1>
-        <Button asChild size="sm" variant="outline">
-          <Link to={`/play/${campaignId}`}>Back to play</Link>
-        </Button>
-      </div>
+      <h1 className="text-xl font-semibold">Codex</h1>
 
       <Tabs defaultValue="character">
-        <TabsList className="flex-wrap">
+        <TabsList className="w-full justify-start overflow-x-auto">
           <TabsTrigger value="character">Character</TabsTrigger>
           <TabsTrigger value="inventory">Inventory</TabsTrigger>
           <TabsTrigger value="skills">Skills</TabsTrigger>

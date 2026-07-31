@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { Link } from 'react-router-dom'
+import { Settings as SettingsIcon } from 'lucide-react'
 import { useLibrary } from '@/store/libraryStore'
 import { Button } from '@/components/ui/button'
 import { Card, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
@@ -18,7 +19,7 @@ export function Dashboard() {
         <div>
           <h1 className="text-2xl font-semibold">Your adventures</h1>
           <p className="text-sm text-muted-foreground">
-            Stored in the "AI Adventure" folder in your Google Drive.
+            Stored in the "Adventure" folder in your Google Drive.
           </p>
         </div>
         <Button asChild>
@@ -52,7 +53,7 @@ export function Dashboard() {
             <CardHeader>
               <CardTitle className="flex items-center justify-between gap-2">
                 <span>{c.name}</span>
-                <Badge variant="secondary">{c.difficulty}</Badge>
+                {c.difficulty !== 'Standard' && <Badge variant="secondary">{c.difficulty}</Badge>}
               </CardTitle>
               <CardDescription>Turn {c.currentTurn}</CardDescription>
             </CardHeader>
@@ -62,6 +63,11 @@ export function Dashboard() {
               </Button>
               <Button asChild size="sm" variant="outline">
                 <Link to={`/codex/${c.folderId}`}>Codex</Link>
+              </Button>
+              <Button asChild size="sm" variant="outline" title="Campaign settings" aria-label="Campaign settings">
+                <Link to={`/settings/${c.folderId}`}>
+                  <SettingsIcon className="size-4" />
+                </Link>
               </Button>
             </CardFooter>
           </Card>

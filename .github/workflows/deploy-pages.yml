@@ -1,0 +1,62 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  # Lets you re-deploy without a code change (e.g. after adding the client-ID variable).
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never run two deploys at once, but don't cancel one mid-flight either — an interrupted
+# deployment can leave the live site in a half-published state.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build
+        env:
+          # A project site lives at https://<owner>.github.io/<repo>/, so assets need that prefix.
+          # Derived from the repo name so a rename doesn't silently break every asset URL.
+          VITE_BASE: /${{ github.event.repository.name }}/
+          # A Google OAuth *client ID* is public by design — it ships in the browser bundle and is
+          # not a secret (the security boundary is the Authorized JavaScript origins list in Google
+          # Cloud Console). Kept as a repo variable purely so it isn't hardcoded in the repo.
+          VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
+        run: npm run build
+
+      - name: Add SPA fallback
+        # GitHub Pages serves static files only, so a deep link like /adventure/play/<id> would 404
+        # instead of reaching the client-side router. Pages serves 404.html for unmatched paths, so
+        # making it a copy of index.html hands those URLs to React Router.
+        run: cp dist/index.html dist/404.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

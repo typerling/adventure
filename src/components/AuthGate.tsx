@@ -27,6 +27,16 @@ export function AuthGate({ children }: { children: ReactNode }) {
 
   if (status === 'signed-in') return <>{children}</>
 
+  // Trying a silent reauth before showing the sign-in card — no button here, since firing an
+  // interactive sign-in while this is still in flight would race the same underlying GIS request.
+  if (status === 'restoring') {
+    return (
+      <div className="flex min-h-svh items-center justify-center p-6">
+        <p className="text-sm text-muted-foreground">Reconnecting to Google Drive…</p>
+      </div>
+    )
+  }
+
   return (
     <div className="flex min-h-svh items-center justify-center p-6">
       <Card className="max-w-md">
