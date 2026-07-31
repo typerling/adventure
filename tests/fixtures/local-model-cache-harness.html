@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>local model cache test harness</title>
+  </head>
+  <body>
+    <!--
+      Standalone page (no app shell) for exercising src/lib/ai/localModelCache.ts's block-chunked
+      put()/match() directly, without needing real ONNX model data — mirrors
+      tests/fixtures/resumable-fetch-harness.html's approach for the same reason.
+    -->
+    <script type="module">
+      import { localModelCache, hasCachedLocalModelFiles, clearLocalModelCache } from '/src/lib/ai/localModelCache.ts'
+
+      /** Feeds `bytes` through a Response backed by a stream that yields `chunkSize`-sized pieces
+       * (deliberately unrelated to localModelCache's own ~4MB block size) rather than handing the
+       * whole thing over in one piece the way `new Response(bytes)` would — this is what actually
+       * exercises put()'s carry-across-reads merging logic instead of just its single-big-chunk
+       * slicing path. */
+      function chunkedResponse(bytes, chunkSize, status, statusText, headers) {
+        let offset = 0
+        const stream = new ReadableStream({
+          pull(controller) {
+            if (offset >= bytes.length) {
+              controller.close()
+              return
+            }
+            const end = Math.min(offset + chunkSize, bytes.length)
+            controller.enqueue(bytes.subarray(offset, end))
+            offset = end
+          },
+        })
+        return new Response(stream, { status, statusText, headers })
+      }
+
+      // Compares byte-for-byte inside the page and returns only a boolean — for a multi-MB
+      // payload, returning the actual bytes through page.evaluate()'s IPC boundary (serializing
+      // millions of array elements to send back to the Node test process) is dramatically slower
+      // than the storage logic it would be testing, and was mistaken for a bug in that logic
+      // before this was changed.
+      window.__putAndMatch = async (url, byteLength, chunkSize) => {
+        const bytes = new Uint8Array(byteLength)
+        for (let i = 0; i < byteLength; i++) bytes[i] = i % 256
+        await localModelCache.put(url, chunkedResponse(bytes, chunkSize, 200, 'OK', { 'X-Test': 'yes' }))
+        const cached = await localModelCache.match(url)
+        if (!cached) return { found: false }
+        const buffer = await cached.arrayBuffer()
+        const resultBytes = new Uint8Array(buffer)
+        let matches = resultBytes.length === bytes.length
+        if (matches) {
+          for (let i = 0; i < bytes.length; i++) {
+            if (resultBytes[i] !== bytes[i]) {
+              matches = false
+              break
+            }
+          }
+        }
+        return {
+          found: true,
+          status: cached.status,
+          statusText: cached.statusText,
+          headerValue: cached.headers.get('x-test'),
+          length: resultBytes.length,
+          matches,
+        }
+      }
+
+      window.__hasCached = () => hasCachedLocalModelFiles()
+      window.__clearCache = () => clearLocalModelCache()
+      window.__matchMissing = async (url) => (await localModelCache.match(url)) === undefined
+    </script>
+  </body>
+</html>

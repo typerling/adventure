@@ -254,8 +254,9 @@ export function Settings() {
             {settings.aiMode === 'local' && (
               <p className="text-xs text-muted-foreground">
                 No key needed — everything runs on this device. Needs a browser with WebGPU
-                (Chrome/Edge on Android, Safari 26+ on iOS/macOS). Downloads roughly 1&nbsp;GB
-                once and caches it after that — see "Local AI model" below to download it ahead of
+                (Chrome/Edge on Android, Safari 26+ on iOS/macOS). Downloads roughly 3&nbsp;GB
+                once and caches it after that — a large download that can crash the tab on
+                memory-constrained devices — see "Local AI model" below to download it ahead of
                 time. Quality and reliability (especially following the reply format) are
                 noticeably weaker than the API mode.
               </p>
@@ -367,8 +368,9 @@ export function Settings() {
           <CardTitle>Local AI model</CardTitle>
           <CardDescription>
             Used by any campaign set to "Local model (Gemma, runs on this device)" — no key, no
-            server, runs fully on-device via WebGPU. Downloads roughly 1&nbsp;GB once and caches
-            it in this browser after that. Download it ahead of time here so the first turn of a
+            server, runs fully on-device via WebGPU. Downloads roughly 3&nbsp;GB once and caches
+            it in this browser after that — a large download that can crash the tab on
+            memory-constrained devices. Download it ahead of time here so the first turn of a
             local-mode campaign doesn't have to wait on it.
           </CardDescription>
         </CardHeader>

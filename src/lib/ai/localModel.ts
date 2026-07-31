@@ -45,6 +45,32 @@ function broadcastProgress(p: LocalModelLoadProgress): void {
   for (const listener of progressListeners) listener(p)
 }
 
+const UNUSED_TEXT_ONLY_FILE_PATTERN = /vision_encoder|audio_encoder/
+
+/** @huggingface/transformers' upfront `progress_total` estimate (see modeling_utils.js's
+ * from_pretrained, which calls get_model_files()/getSessionsConfig() to size every file before
+ * any of them download) is computed purely from the checkpoint's own config — it never receives
+ * the `textOnly` flag that the `Gemma4ForCausalLM` choice below triggers, so it still counts the
+ * vision/audio encoder files' sizes even though they're never fetched. Left alone, the aggregate
+ * percentage would stall around ~91% (2.9GB actually downloaded / (2.9GB + the ~270MB that's
+ * never fetched) ≈ 91%) and jump straight to "ready" without ever visibly reaching 100%. Since
+ * this file already knows those two components are unused, strip them out of `progress_total`'s
+ * own numbers before they reach the aggregator — which otherwise treats `progress_total` as
+ * authoritative for whichever files it lists (see createProgressAggregator's doc comment). */
+function stripUnusedComponents(p: LocalModelLoadProgress): LocalModelLoadProgress {
+  if (p.status !== 'progress_total' || !p.files) return p
+  let loaded = 0
+  let total = 0
+  const files: Record<string, { loaded: number; total: number }> = {}
+  for (const [file, f] of Object.entries(p.files)) {
+    if (UNUSED_TEXT_ONLY_FILE_PATTERN.test(file)) continue
+    files[file] = f
+    loaded += f.loaded
+    total += f.total
+  }
+  return { ...p, files, loaded, total, progress: total > 0 ? (loaded / total) * 100 : p.progress }
+}
+
 /** Lets Settings show whether the model still needs downloading, without triggering it. */
 export function getLocalModelLoadState(): 'unloaded' | 'loading' | 'ready' {
   if (isReady) return 'ready'
@@ -58,15 +84,15 @@ function loadModel(onProgress?: (p: LocalModelLoadProgress) => void): Promise<Lo
   }
   if (!loadPromise) {
     loadPromise = (async () => {
-      const { AutoProcessor, Gemma4ForConditionalGeneration, env } = await import('@huggingface/transformers')
+      const { AutoProcessor, Gemma4ForCausalLM, env } = await import('@huggingface/transformers')
       const { localModelCache } = await import('./localModelCache')
       const { createResumableFetch } = await import('./localModelResumableFetch')
       // See localModelCache.ts for why this replaces the library's default Cache Storage-backed
-      // caching — without it, this ~1GB download would repeat on every page load/generation.
+      // caching — without it, this ~2.9GB download would repeat on every page load/generation.
       env.useCustomCache = true
       env.customCache = localModelCache
       // See localModelResumableFetch.ts — resumes an interrupted download from where it left off
-      // (e.g. after a page refresh) instead of restarting the whole ~1GB from byte 0. Wraps the
+      // (e.g. after a page refresh) instead of restarting the whole ~2.9GB from byte 0. Wraps the
       // real global fetch directly rather than env.fetch (whose declared type in this library is
       // narrower than the standard fetch signature) — env.fetch defaults to it anyway.
       env.fetch = createResumableFetch(fetch)
@@ -75,11 +101,26 @@ function loadModel(onProgress?: (p: LocalModelLoadProgress) => void): Promise<Lo
       // both into a single monotonic byte-based percentage instead of each file's own progress
       // (see its doc comment for why raw per-file progress is actively misleading here).
       // broadcastProgress fans out to every attached listener rather than whichever one call to
-      // loadModel() happened to be first, so it always runs, listener or not.
-      const progressCallback = createProgressAggregator(broadcastProgress)
+      // loadModel() happened to be first, so it always runs, listener or not. stripUnusedComponents
+      // corrects progress_total's estimate for the textOnly load below before the aggregator sees it.
+      const aggregateProgress = createProgressAggregator(broadcastProgress)
+      const progressCallback = (p: LocalModelLoadProgress) => aggregateProgress(stripUnusedComponents(p))
       const [processor, model] = await Promise.all([
         AutoProcessor.from_pretrained(MODEL_ID, { progress_callback: progressCallback }),
-        Gemma4ForConditionalGeneration.from_pretrained(MODEL_ID, {
+        // Gemma4ForCausalLM (not the model card's native Gemma4ForConditionalGeneration) is a
+        // deliberate, empty subclass @huggingface/transformers provides specifically to trigger
+        // its "text-only" loading path (see resolveTypeConfig/MODEL_SESSION_CONFIG in the
+        // installed package's modeling_utils.js/session_config.js) — this repo's DM narrator only
+        // ever sends { type: 'text' } content (see generateLocalReply below), never images or
+        // audio, but the underlying checkpoint is fully multimodal: alongside the ~2.9GB of
+        // decoder + embedding weights this app actually uses, it also ships a ~99MB vision
+        // encoder and ~171MB audio encoder that ForConditionalGeneration would download and hold
+        // in memory unconditionally. ForCausalLM skips fetching (and allocating) both entirely —
+        // confirmed against the model repo's file listing and this library's session-selection
+        // logic, not a guess — which both shrinks the download and removes two files from the
+        // set fetched concurrently, right as concurrent-download memory pressure is what's been
+        // crashing the tab (Chrome's "Aw, Snap") on memory-constrained devices.
+        Gemma4ForCausalLM.from_pretrained(MODEL_ID, {
           dtype: 'q4f16',
           device: 'webgpu',
           progress_callback: progressCallback,
@@ -124,7 +165,7 @@ export async function hasDownloadedLocalModel(): Promise<boolean> {
 }
 
 /** Removes the downloaded model from this device (both the complete-file cache and any
- * in-progress partial download), freeing the ~1GB it takes up, and resets in-memory state so the
+ * in-progress partial download), freeing the ~2.9GB it takes up, and resets in-memory state so the
  * next generation/preload re-downloads from scratch rather than reusing a stale reference. */
 export async function removeLocalModel(): Promise<void> {
   const [{ clearLocalModelCache }, { clearAllPartialModelDownloads }] = await Promise.all([

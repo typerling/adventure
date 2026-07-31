@@ -1,6 +1,6 @@
 /**
  * A drop-in replacement for `env.fetch` (see localModel.ts) that resumes an interrupted model
- * download instead of restarting it from byte 0 — the ~1GB Gemma download otherwise has to start
+ * download instead of restarting it from byte 0 — the ~2.9GB Gemma download otherwise has to start
  * over every time the page is refreshed (or the network drops) mid-download, which on a slow or
  * flaky connection can mean it never finishes at all.
  *

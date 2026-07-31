@@ -50,12 +50,14 @@ Opus 5 or Haiku 4.5 also available). Every turn generated this way is billed dir
 by Anthropic — there's no proxy or server in between.
 
 For the local text model, no key or setup at all either: switch a campaign's AI mode to "Local
-model (Gemma, runs on this device)". It downloads roughly 1 GB (a small Gemma model converted for
-in-browser inference) and caches it; every turn after that runs on-device via WebGPU. Use
+model (Gemma, runs on this device)". It downloads roughly 3 GB (a Gemma model converted for
+in-browser inference, loaded text-only — its vision/audio components are skipped since this app
+never sends images or audio) and caches it; every turn after that runs on-device via WebGPU. Use
 "Download model now" under **Local AI model** in Settings to fetch it ahead of time (with a
 progress bar, resumable if interrupted) and to remove it again later. Needs a browser that
 supports WebGPU (Chrome/Edge on Android 12+, Safari 26+ on iOS/macOS/iPadOS) — on an unsupported
-browser, or if the download fails, it surfaces a clear error rather than hanging.
+browser, or if the download fails, it surfaces a clear error rather than hanging. Being a ~3 GB
+in-browser download, it can crash the tab on memory-constrained devices.
 
 ## Deploying (GitHub Pages)
 
