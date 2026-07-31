@@ -66,6 +66,21 @@
         }
       }
 
+      /** Stores a multi-block payload the way @huggingface/transformers really does — one single
+       * chunk covering the whole file — and reports how much origin storage that actually consumed.
+       * Bytes are random so Chrome's IndexedDB value compression can't skew the comparison; a
+       * mostly-zero payload compresses far enough to hide the very amplification this measures. */
+      window.__putAndMeasureStorage = async (url, byteLength) => {
+        const bytes = new Uint8Array(byteLength)
+        for (let offset = 0; offset < byteLength; offset += 65536) {
+          crypto.getRandomValues(bytes.subarray(offset, Math.min(offset + 65536, byteLength)))
+        }
+        const before = (await navigator.storage.estimate()).usage
+        await localModelCache.put(url, new Response(bytes))
+        const after = (await navigator.storage.estimate()).usage
+        return { payloadBytes: byteLength, storedBytes: after - before }
+      }
+
       window.__hasCached = (modelId) => hasCachedLocalModelFiles(modelId)
       window.__clearCache = (modelId) => clearLocalModelCache(modelId)
       window.__matchMissing = async (url) => (await localModelCache.match(url)) === undefined

@@ -14,6 +14,10 @@ declare global {
       length?: number
       matches?: boolean
     }>
+    __putAndMeasureStorage: (
+      url: string,
+      byteLength: number,
+    ) => Promise<{ payloadBytes: number; storedBytes: number }>
     __hasCached: (modelId: string) => Promise<boolean>
     __clearCache: (modelId: string) => Promise<void>
     __matchMissing: (url: string) => Promise<boolean>
@@ -102,6 +106,31 @@ test.describe('localModelCache block-chunked storage', () => {
     expect(result.found).toBe(true)
     expect(result.length).toBe(byteLength)
     expect(result.matches).toBe(true)
+  })
+
+  test('storing a multi-block payload writes roughly its own size, not a copy per block', async ({ page }) => {
+    // The round-trip tests above all pass whether or not each block is stored as a view into the
+    // whole download buffer, because the bytes come back identical either way. What differs is how
+    // much gets written: IndexedDB's structured clone serializes a view's entire backing
+    // ArrayBuffer, so storing views multiplied a file's on-disk footprint by its block count —
+    // 182x for the 728MB file behind Gemma 3 1B, which left put() (awaited inline by
+    // @huggingface/transformers' load path) effectively never returning, stranding the UI on
+    // "Preparing local model…" right after the download hit 100%. Only a storage-size assertion
+    // catches that, so this measures it directly.
+    const payloadBytes = BLOCK_SIZE * 4
+    const { storedBytes } = await page.evaluate(
+      ([url, length]) => window.__putAndMeasureStorage(url as string, length as number),
+      [fileUrl(MODEL_A, 'model_q4f16.onnx_data'), payloadBytes],
+    )
+    // Lower bound first, so this can't pass vacuously: navigator.storage.estimate() is updated
+    // asynchronously by the quota system, and a reading that hadn't caught up with the write yet
+    // would report a near-zero delta and satisfy any upper bound no matter how the blocks were
+    // stored. Seeing at least most of the payload proves the measurement actually observed it.
+    expect(storedBytes).toBeGreaterThan(payloadBytes * 0.5)
+    // Generous headroom for IndexedDB's own per-record overhead and the granularity of
+    // navigator.storage.estimate(): the bug this guards against costs ~4x here (one full-payload
+    // clone per block) and grows with file size, so anything near 1x is unambiguously correct.
+    expect(storedBytes).toBeLessThan(payloadBytes * 2)
   })
 
   test('hasCachedLocalModelFiles reflects what has actually been fully stored', async ({ page }) => {
