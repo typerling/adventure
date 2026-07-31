@@ -9,7 +9,11 @@
  * players who never touch this mode.
  */
 
-import { describeModelDownloadProgress, type ModelDownloadProgress } from '@/lib/modelDownloadProgress'
+import {
+  createProgressAggregator,
+  describeModelDownloadProgress,
+  type ModelDownloadProgress,
+} from '@/lib/modelDownloadProgress'
 
 // "E2B" = Gemma's edge-optimized elastic-parameter variant, purpose-built for on-device use
 // (phones/laptops) rather than a full-size model trimmed after the fact.
@@ -48,13 +52,31 @@ function loadModel(onProgress?: (p: LocalModelLoadProgress) => void): Promise<Lo
       // (e.g. after a page refresh) instead of restarting the whole ~1GB from byte 0. Wraps the
       // real global fetch directly rather than env.fetch (whose declared type in this library is
       // narrower than the standard fetch signature) — env.fetch defaults to it anyway.
-      env.fetch = createResumableFetch(fetch)
+      const resumedUrls = new Set<string>()
+      env.fetch = createResumableFetch(fetch, undefined, (url) => resumedUrls.add(url))
+      // The progress events' `file` field is just the filename within the repo (e.g.
+      // "onnx/model_q4f16.onnx"), while `onResume` reports the full request URL — matching by
+      // suffix is enough since a filename collision across different repo paths isn't possible
+      // here (this only ever loads one model id).
+      const wasResumed = (file?: string) => !!file && [...resumedUrls].some((url) => url.endsWith(file))
+      // The processor and model are two separate from_pretrained() calls, each downloading their
+      // own set of files but sharing one progress_callback — createProgressAggregator combines
+      // both into a single monotonic byte-based percentage instead of each file's own progress
+      // (see its doc comment for why raw per-file progress is actively misleading here). Tag each
+      // raw per-file event with whether *that file* is resuming before it reaches the aggregator,
+      // so the aggregator's own per-file bookkeeping (and the "any file resuming" flag it derives)
+      // sees accurate input rather than only ever the last file's status.
+      const progressCallback = onProgress ? createProgressAggregator(onProgress) : undefined
+      const taggedProgressCallback = progressCallback
+        ? (p: LocalModelLoadProgress) =>
+            progressCallback(p.status === 'progress' && wasResumed(p.file) ? { ...p, resuming: true } : p)
+        : undefined
       const [processor, model] = await Promise.all([
-        AutoProcessor.from_pretrained(MODEL_ID, { progress_callback: onProgress }),
+        AutoProcessor.from_pretrained(MODEL_ID, { progress_callback: taggedProgressCallback }),
         Gemma4ForConditionalGeneration.from_pretrained(MODEL_ID, {
           dtype: 'q4f16',
           device: 'webgpu',
-          progress_callback: onProgress,
+          progress_callback: taggedProgressCallback,
         }),
       ])
       return { processor, model }
