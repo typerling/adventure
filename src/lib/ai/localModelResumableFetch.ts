@@ -68,16 +68,31 @@ async function putMeta(meta: PartialMeta): Promise<void> {
   }
 }
 
-async function getBlock(url: string, blockIndex: number): Promise<Uint8Array | undefined> {
+/** Reads every stored block for `url` in one IndexedDB transaction/connection, rather than one
+ * open+transaction per block — opening a fresh connection per 4MB block turned replaying a large
+ * partial download (hundreds of blocks) into a slow, visibly-animated crawl even though the data
+ * was already on disk, which is exactly what made a resumed download look indistinguishable from
+ * one starting at byte 0. See buildResumingStream, which merges these into a single chunk. */
+async function getAllBlocks(url: string, blockCount: number): Promise<Uint8Array[]> {
+  if (blockCount === 0) return []
   const db = await openDb()
   try {
-    const record = await new Promise<{ bytes: Uint8Array } | undefined>((resolve, reject) => {
+    return await new Promise<Uint8Array[]>((resolve, reject) => {
       const tx = db.transaction(BLOCK_STORE, 'readonly')
-      const req = tx.objectStore(BLOCK_STORE).get([url, blockIndex])
-      req.onsuccess = () => resolve(req.result as { bytes: Uint8Array } | undefined)
-      req.onerror = () => reject(req.error ?? new Error('Failed to read partial-download block'))
+      const store = tx.objectStore(BLOCK_STORE)
+      const blocks = new Array<Uint8Array>(blockCount)
+      let remaining = blockCount
+      for (let i = 0; i < blockCount; i++) {
+        const req = store.get([url, i])
+        req.onsuccess = () => {
+          const record = req.result as { bytes: Uint8Array } | undefined
+          blocks[i] = record?.bytes ?? new Uint8Array(0)
+          remaining -= 1
+          if (remaining === 0) resolve(blocks)
+        }
+        req.onerror = () => reject(req.error ?? new Error('Failed to read partial-download block'))
+      }
     })
-    return record?.bytes
   } finally {
     db.close()
   }
@@ -134,18 +149,23 @@ function mergeChunks(chunks: Uint8Array[], totalLength: number): Uint8Array {
   return merged
 }
 
-/** Replays any already-downloaded blocks for `url`, then continues from the live network stream
- * — mirroring new bytes into IndexedDB in BLOCK_SIZE batches as they pass through — and clears
- * the partial-download record once the stream naturally ends (the file is now complete). */
-function buildResumingStream(
+/** Replays any already-downloaded blocks for `url` as a single merged chunk, then continues from
+ * the live network stream — mirroring new bytes into IndexedDB in BLOCK_SIZE batches as they pass
+ * through — and clears the partial-download record once the stream naturally ends (the file is
+ * now complete).
+ *
+ * Async (unlike a plain `new ReadableStream(...)`) because the replay blocks are read up front,
+ * before the stream is even constructed, so `start()` can hand them to the consumer as one chunk
+ * instead of enqueuing one small chunk per stored block. */
+async function buildResumingStream(
   url: string,
   startMeta: PartialMeta,
   networkBody: ReadableStream<Uint8Array>,
   blockSize: number,
-): ReadableStream<Uint8Array> {
+): Promise<ReadableStream<Uint8Array>> {
   const networkReader = networkBody.getReader()
-  let replayIndex = 0
-  let replaying = startMeta.blockCount > 0
+  const replayBlocks = await getAllBlocks(url, startMeta.blockCount)
+  const replayBytes = replayBlocks.length > 0 ? mergeChunks(replayBlocks, startMeta.receivedBytes) : null
   let blockIndex = startMeta.blockCount
   let receivedBytes = startMeta.receivedBytes
   let pendingChunks: Uint8Array[] = []
@@ -163,16 +183,10 @@ function buildResumingStream(
   }
 
   return new ReadableStream<Uint8Array>({
+    start(controller) {
+      if (replayBytes) controller.enqueue(replayBytes)
+    },
     async pull(controller) {
-      if (replaying) {
-        if (replayIndex < startMeta.blockCount) {
-          const bytes = await getBlock(url, replayIndex)
-          replayIndex += 1
-          if (bytes) controller.enqueue(bytes)
-          return
-        }
-        replaying = false
-      }
       const { done, value } = await networkReader.read()
       if (done) {
         await flushPending()
@@ -205,17 +219,8 @@ function isResumableUrl(input: RequestInfo | URL): boolean {
 /** Wraps `fetch` so requests to the model host resume from wherever a previous, interrupted
  * attempt left off. Everything else (other hosts, non-GET, requests that already specify their
  * own Range header — e.g. transformers.js' own file-size probes, or error responses) passes
- * straight through untouched.
- *
- * `onResume`, when given, fires once per URL that's actually being resumed (a matching partial
- * record exists and the server honored the Range request) with the byte count already saved —
- * lets a caller distinguish "downloading fresh" from "picking up a previous attempt" instead of
- * only being able to infer it from a progress percentage that starts above 0. */
-export function createResumableFetch(
-  baseFetch: typeof fetch,
-  blockSize: number = BLOCK_SIZE,
-  onResume?: (url: string, resumedBytes: number) => void,
-): typeof fetch {
+ * straight through untouched. */
+export function createResumableFetch(baseFetch: typeof fetch, blockSize: number = BLOCK_SIZE): typeof fetch {
   return async function resumableFetch(input, init) {
     if ((init?.method && init.method !== 'GET') || !isResumableUrl(input)) {
       return baseFetch(input, init)
@@ -241,10 +246,13 @@ export function createResumableFetch(
       if (meta) await clearPartial(url, meta.blockCount).catch(() => {})
       response = await baseFetch(input, { ...init, headers: new Headers(init?.headers) })
       if (response.status !== 200 || !response.body) return response
-      return new Response(
-        buildResumingStream(url, { url, receivedBytes: 0, blockCount: 0, etag: response.headers.get('ETag') }, response.body, blockSize),
-        { status: 200, statusText: 'OK', headers: response.headers },
+      const stream = await buildResumingStream(
+        url,
+        { url, receivedBytes: 0, blockCount: 0, etag: response.headers.get('ETag') },
+        response.body,
+        blockSize,
       )
+      return new Response(stream, { status: 200, statusText: 'OK', headers: response.headers })
     }
 
     // Not a success we know how to resume-wrap (404, 500, a redirect gone wrong, …) — hand it
@@ -267,7 +275,6 @@ export function createResumableFetch(
         startMeta = { url, receivedBytes: 0, blockCount: 0, etag: response.headers.get('ETag') }
       } else {
         startMeta = meta!
-        if (startMeta.receivedBytes > 0) onResume?.(url, startMeta.receivedBytes)
       }
     } else {
       // A fresh request, or the server ignored our Range header and sent everything from byte 0
@@ -287,10 +294,7 @@ export function createResumableFetch(
     const headers = new Headers(response.headers)
     if (totalLength) headers.set('Content-Length', totalLength)
 
-    return new Response(buildResumingStream(url, startMeta, response.body, blockSize), {
-      status: 200,
-      statusText: 'OK',
-      headers,
-    })
+    const stream = await buildResumingStream(url, startMeta, response.body, blockSize)
+    return new Response(stream, { status: 200, statusText: 'OK', headers })
   }
 }

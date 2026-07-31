@@ -104,6 +104,17 @@ export function Settings() {
     }
   }, [])
 
+  // A download can already be in flight before this component mounts — e.g. the user started it
+  // from here, navigated away (the load itself is a module-level singleton, not tied to this
+  // component's lifetime, so it keeps running), and came back. Reattach to it so progress keeps
+  // showing instead of reading as abandoned just because nothing was listening while unmounted.
+  // Guarded to only reattach, never start a fresh, unrequested download.
+  useEffect(() => {
+    if (getLocalModelLoadState() === 'loading') void downloadModel()
+    if (getKokoroLoadState() === 'loading') void downloadVoiceModel()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   async function save() {
     if (!campaignId || !settings) return
     setSaving(true)

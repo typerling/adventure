@@ -31,6 +31,19 @@ type LoadedModel = { processor: any; model: any }
 
 let loadPromise: Promise<LoadedModel> | null = null
 let isReady = false
+// The most recent progress update for the in-flight load, if any, and every currently-attached
+// listener for it. A load is a module-level singleton that can outlive the component that started
+// it (e.g. the user leaves Settings mid-download) — without replaying `lastProgress` to a newly
+// attached listener, a component that mounts (or re-mounts) while a load is already in flight has
+// no way to show anything until the next real update arrives, which reads as "the download
+// stopped" even though it's still running in the background.
+let lastProgress: LocalModelLoadProgress | null = null
+const progressListeners = new Set<(p: LocalModelLoadProgress) => void>()
+
+function broadcastProgress(p: LocalModelLoadProgress): void {
+  lastProgress = p
+  for (const listener of progressListeners) listener(p)
+}
 
 /** Lets Settings show whether the model still needs downloading, without triggering it. */
 export function getLocalModelLoadState(): 'unloaded' | 'loading' | 'ready' {
@@ -39,6 +52,10 @@ export function getLocalModelLoadState(): 'unloaded' | 'loading' | 'ready' {
 }
 
 function loadModel(onProgress?: (p: LocalModelLoadProgress) => void): Promise<LoadedModel> {
+  if (onProgress) {
+    progressListeners.add(onProgress)
+    if (lastProgress) onProgress(lastProgress)
+  }
   if (!loadPromise) {
     loadPromise = (async () => {
       const { AutoProcessor, Gemma4ForConditionalGeneration, env } = await import('@huggingface/transformers')
@@ -52,31 +69,20 @@ function loadModel(onProgress?: (p: LocalModelLoadProgress) => void): Promise<Lo
       // (e.g. after a page refresh) instead of restarting the whole ~1GB from byte 0. Wraps the
       // real global fetch directly rather than env.fetch (whose declared type in this library is
       // narrower than the standard fetch signature) — env.fetch defaults to it anyway.
-      const resumedUrls = new Set<string>()
-      env.fetch = createResumableFetch(fetch, undefined, (url) => resumedUrls.add(url))
-      // The progress events' `file` field is just the filename within the repo (e.g.
-      // "onnx/model_q4f16.onnx"), while `onResume` reports the full request URL — matching by
-      // suffix is enough since a filename collision across different repo paths isn't possible
-      // here (this only ever loads one model id).
-      const wasResumed = (file?: string) => !!file && [...resumedUrls].some((url) => url.endsWith(file))
+      env.fetch = createResumableFetch(fetch)
       // The processor and model are two separate from_pretrained() calls, each downloading their
       // own set of files but sharing one progress_callback — createProgressAggregator combines
       // both into a single monotonic byte-based percentage instead of each file's own progress
-      // (see its doc comment for why raw per-file progress is actively misleading here). Tag each
-      // raw per-file event with whether *that file* is resuming before it reaches the aggregator,
-      // so the aggregator's own per-file bookkeeping (and the "any file resuming" flag it derives)
-      // sees accurate input rather than only ever the last file's status.
-      const progressCallback = onProgress ? createProgressAggregator(onProgress) : undefined
-      const taggedProgressCallback = progressCallback
-        ? (p: LocalModelLoadProgress) =>
-            progressCallback(p.status === 'progress' && wasResumed(p.file) ? { ...p, resuming: true } : p)
-        : undefined
+      // (see its doc comment for why raw per-file progress is actively misleading here).
+      // broadcastProgress fans out to every attached listener rather than whichever one call to
+      // loadModel() happened to be first, so it always runs, listener or not.
+      const progressCallback = createProgressAggregator(broadcastProgress)
       const [processor, model] = await Promise.all([
-        AutoProcessor.from_pretrained(MODEL_ID, { progress_callback: taggedProgressCallback }),
+        AutoProcessor.from_pretrained(MODEL_ID, { progress_callback: progressCallback }),
         Gemma4ForConditionalGeneration.from_pretrained(MODEL_ID, {
           dtype: 'q4f16',
           device: 'webgpu',
-          progress_callback: taggedProgressCallback,
+          progress_callback: progressCallback,
         }),
       ])
       return { processor, model }
@@ -84,11 +90,14 @@ function loadModel(onProgress?: (p: LocalModelLoadProgress) => void): Promise<Lo
     loadPromise.then(
       () => {
         isReady = true
+        progressListeners.clear()
       },
       // Don't cache a failed load — let the next attempt (e.g. after enabling WebGPU) retry cleanly.
       () => {
         loadPromise = null
         isReady = false
+        lastProgress = null
+        progressListeners.clear()
       },
     )
   }
