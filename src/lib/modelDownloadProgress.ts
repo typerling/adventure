@@ -18,12 +18,6 @@ export interface ModelDownloadProgress {
    * for the from_pretrained() call that emitted it, with sizes known upfront (via a HEAD-request
    * pass) rather than only once each file's own download starts. See createProgressAggregator. */
   files?: Record<string, { loaded: number; total: number }>
-  /** True when the file currently reporting progress is resuming a previously-interrupted
-   * download rather than starting from byte 0 — see localModelResumableFetch.ts's `onResume`.
-   * Distinguishes "this jumped ahead because it's picking up where it left off" from "this is
-   * just a fast network." Reflects only the current update, not the whole load's history — once
-   * a resumed file finishes, later updates for a different, non-resumed file report `false`. */
-  resuming?: boolean
 }
 
 function formatBytes(bytes: number): string {
@@ -32,14 +26,16 @@ function formatBytes(bytes: number): string {
   return `${(mb / 1024).toFixed(2)} GB`
 }
 
+/** Fixed, single-shape template — deliberately not varying its wording or word order by status
+ * details (e.g. a "resuming" vs "downloading" verb), since that was making the label's length and
+ * layout shift on every update, reading as jittery even once the underlying percentage was steady. */
 export function describeModelDownloadProgress(p: ModelDownloadProgress, label: string): string {
   if (p.status === 'progress' && typeof p.progress === 'number') {
     const size =
       typeof p.loaded === 'number' && typeof p.total === 'number' && p.total > 0
-        ? ` (${formatBytes(p.loaded)} / ${formatBytes(p.total)})`
+        ? ` (${formatBytes(p.loaded)}/${formatBytes(p.total)})`
         : ''
-    const verb = p.resuming ? 'Resuming download of' : 'Downloading'
-    return `${verb} ${label}${size}… ${Math.round(p.progress)}%`
+    return `Downloading ${label} - ${Math.round(p.progress)}%${size}`
   }
   if (p.status === 'done') return `Preparing ${label}…`
   return `Fetching ${label}…`
@@ -70,12 +66,11 @@ export function describeModelDownloadProgress(p: ModelDownloadProgress, label: s
  *
  * This also happens to answer "is this downloading from scratch or resuming/cached?" honestly
  * without any extra bookkeeping: a file served from this app's IndexedDB cache (localModelCache.ts)
- * or resumed partway through (localModelResumableFetch.ts) still reports real 'progress' events
- * with real byte counts — just arriving far faster than a live network fetch — so the aggregate
- * percentage jumps ahead for whatever's already on disk and only crawls for what's genuinely being
- * downloaded, rather than replaying a full 0→100 for bytes that didn't need fetching. `resuming` on
- * the emitted event reflects only the file currently reporting progress, not the whole load's
- * history, so it stops applying once a resumed file finishes and a fresh one takes over.
+ * or resumed partway through (localModelResumableFetch.ts's replay of already-saved blocks) still
+ * reports real 'progress' events with real byte counts — just arriving far faster than a live
+ * network fetch — so the aggregate percentage jumps ahead for whatever's already on disk and only
+ * crawls for what's genuinely being downloaded, rather than replaying a full 0→100 for bytes that
+ * didn't need fetching.
  */
 export function createProgressAggregator(
   onProgress: (p: ModelDownloadProgress) => void,
@@ -112,8 +107,7 @@ export function createProgressAggregator(
         file: p.file,
         loaded,
         total,
-        resuming: !!p.resuming,
-        progress: total > 0 ? (loaded / total) * 100 : 0,
+        progress: total > 0 ? Math.min(100, (loaded / total) * 100) : 0,
       })
       return
     }

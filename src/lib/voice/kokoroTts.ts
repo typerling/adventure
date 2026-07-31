@@ -49,6 +49,16 @@ export type KokoroLoadProgress = ModelDownloadProgress
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let loadPromise: Promise<any> | null = null
 let isReady = false
+// See localModel.ts's identical pattern for why this exists: a load is a module-level singleton
+// that can outlive the component that started it, so a newly (re-)attached listener needs the
+// latest known state replayed immediately rather than sitting blank until the next real update.
+let lastProgress: KokoroLoadProgress | null = null
+const progressListeners = new Set<(p: KokoroLoadProgress) => void>()
+
+function broadcastProgress(p: KokoroLoadProgress): void {
+  lastProgress = p
+  for (const listener of progressListeners) listener(p)
+}
 
 /** Lets Settings show whether the voice model still needs downloading, without triggering it. */
 export function getKokoroLoadState(): 'unloaded' | 'loading' | 'ready' {
@@ -57,6 +67,10 @@ export function getKokoroLoadState(): 'unloaded' | 'loading' | 'ready' {
 }
 
 function loadKokoro(onProgress?: (p: KokoroLoadProgress) => void) {
+  if (onProgress) {
+    progressListeners.add(onProgress)
+    if (lastProgress) onProgress(lastProgress)
+  }
   if (!loadPromise) {
     loadPromise = (async () => {
       const { KokoroTTS } = await import('kokoro-js')
@@ -66,17 +80,20 @@ function loadKokoro(onProgress?: (p: KokoroLoadProgress) => void) {
       return KokoroTTS.from_pretrained(MODEL_ID, {
         dtype: 'q8',
         device: 'wasm',
-        progress_callback: onProgress ? createProgressAggregator(onProgress) : undefined,
+        progress_callback: createProgressAggregator(broadcastProgress),
       })
     })()
     loadPromise.then(
       () => {
         isReady = true
+        progressListeners.clear()
       },
       // Don't cache a failed load — let the next attempt retry cleanly.
       () => {
         loadPromise = null
         isReady = false
+        lastProgress = null
+        progressListeners.clear()
       },
     )
   }
