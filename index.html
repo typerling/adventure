@@ -2,12 +2,18 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- %BASE_URL% is substituted by Vite, so these keep working under the /<repo>/ prefix
+         GitHub Pages serves a project site from (see `base` in vite.config.ts). Absolute rather
+         than relative paths, because the SPA 404 fallback serves this file from nested routes
+         too, where relative URLs would resolve against the wrong directory. -->
+    <link rel="icon" type="image/png" sizes="32x32" href="%BASE_URL%favicon-32.png" />
+    <link rel="icon" type="image/png" sizes="16x16" href="%BASE_URL%favicon-16.png" />
+    <link rel="apple-touch-icon" sizes="180x180" href="%BASE_URL%apple-touch-icon.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="description" content="A solo, AI-narrated adventure game backed by your own Google Drive." />
-    <link rel="manifest" href="/manifest.webmanifest" />
-    <meta name="theme-color" content="#0a0a0a" />
-    <title>AI Adventure</title>
+    <link rel="manifest" href="%BASE_URL%manifest.webmanifest" />
+    <meta name="theme-color" content="#F2DFBE" />
+    <title>Adventure</title>
   </head>
   <body>
     <div id="root"></div>

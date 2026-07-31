@@ -13,8 +13,45 @@ async function getLogFolder(campaignFolderId: string) {
   return ensureFolder('log', story.id)
 }
 
+/** Separates suggested-options text from narrative in the log — a middle dot, since option
+ * phrases can themselves contain commas/semicolons but essentially never this character. */
+const OPTIONS_PREFIX = '**Suggested next:** '
+const OPTIONS_SEPARATOR = ' · '
+
 function formatTurn(turn: TurnRecord): string {
-  return `## Turn ${turn.turn}\n**You:** ${turn.playerAction}\n\n${turn.narrative.trim()}\n`
+  const optionsLine = turn.optionsOffered.length
+    ? `\n\n${OPTIONS_PREFIX}${turn.optionsOffered.join(OPTIONS_SEPARATOR)}`
+    : ''
+  return `## Turn ${turn.turn}\n**You:** ${turn.playerAction}\n\n${turn.narrative.trim()}${optionsLine}\n`
+}
+
+/** Splits a captured turn body back into narrative + suggested options — the inverse of the
+ * optionsLine appended by formatTurn. Logs written before this existed simply have no options
+ * line, which falls back to an empty options list exactly like before. */
+function splitNarrativeAndOptions(raw: string): { narrative: string; options: string[] } {
+  const trimmed = raw.trim()
+  const markerIndex = trimmed.lastIndexOf(`\n${OPTIONS_PREFIX}`)
+  if (markerIndex === -1) {
+    if (trimmed.startsWith(OPTIONS_PREFIX)) {
+      return {
+        narrative: '',
+        options: trimmed
+          .slice(OPTIONS_PREFIX.length)
+          .split(OPTIONS_SEPARATOR)
+          .map((s) => s.trim())
+          .filter(Boolean),
+      }
+    }
+    return { narrative: trimmed, options: [] }
+  }
+  return {
+    narrative: trimmed.slice(0, markerIndex).trim(),
+    options: trimmed
+      .slice(markerIndex + 1 + OPTIONS_PREFIX.length)
+      .split(OPTIONS_SEPARATOR)
+      .map((s) => s.trim())
+      .filter(Boolean),
+  }
 }
 
 export async function appendTurnToLog(campaignFolderId: string, turn: TurnRecord): Promise<void> {
@@ -26,17 +63,22 @@ export async function appendTurnToLog(campaignFolderId: string, turn: TurnRecord
   await updateTextFile(file.id, next)
 }
 
-const TURN_HEADER_RE = /^## Turn (\d+)\n\*\*You:\*\* (.*)\n\n([\s\S]*?)(?=\n## Turn \d+\n|\s*$)/gm
+// The lookahead's end-of-input branch must be `(?![\s\S])` (true end of string), not `\s*$`:
+// under the /m flag, `$` matches at *every* line ending, so a lazy `[\s\S]*?` would stop right
+// after the narrative's first line instead of capturing the full turn body (including the
+// options line appended below).
+const TURN_HEADER_RE = /^## Turn (\d+)\n\*\*You:\*\* (.*)\n\n([\s\S]*?)(?=\n## Turn \d+\n|(?![\s\S]))/gm
 
 function parseTurns(content: string): TurnRecord[] {
   const out: TurnRecord[] = []
   for (const match of content.matchAll(TURN_HEADER_RE)) {
+    const { narrative, options } = splitNarrativeAndOptions(match[3])
     out.push({
       turn: Number(match[1]),
       timestamp: '',
       playerAction: match[2].trim(),
-      narrative: match[3].trim(),
-      optionsOffered: [],
+      narrative,
+      optionsOffered: options,
     })
   }
   return out

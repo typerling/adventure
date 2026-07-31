@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>kokoro chunking test harness</title>
+  </head>
+  <body>
+    <!--
+      Standalone page (no app shell) for exercising splitIntoSpeakableChunks against the real
+      kokoro-js library. Only its TextSplitterStream is involved, which is pure string processing —
+      no model download and no WASM inference — so unlike actually speaking (see
+      voice-kokoro.spec.ts), the sentence splitting is genuinely testable here.
+    -->
+    <script type="module">
+      import { splitIntoSpeakableChunks } from '/src/lib/voice/kokoroTts.ts'
+
+      window.__splitChunks = (text) => splitIntoSpeakableChunks(text)
+    </script>
+  </body>
+</html>

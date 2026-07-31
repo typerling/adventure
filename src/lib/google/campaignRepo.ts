@@ -23,7 +23,7 @@ import type {
   TimelineEvent,
 } from '@/types/sheets'
 
-export const ROOT_FOLDER_NAME = 'AI Adventure'
+export const ROOT_FOLDER_NAME = 'Adventure'
 
 export interface Library {
   rootId: string

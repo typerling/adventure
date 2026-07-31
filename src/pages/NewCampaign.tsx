@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 import { useLibrary } from '@/store/libraryStore'
 import { DIFFICULTIES, type Difficulty } from '@/types/campaign'
@@ -10,7 +10,18 @@ import { Textarea } from '@/components/ui/textarea'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Progress } from '@/components/ui/progress'
-import { Trash2 } from 'lucide-react'
+import { Trash2, Sparkles, Dice5, X } from 'lucide-react'
+import {
+  SUGGESTED_THEMES,
+  generateFullCampaign,
+  generateName,
+  generateWorldPrompt,
+  generateStartingLocation,
+  generateHouseRules,
+  generateStats,
+  generateInventory,
+  randomTheme,
+} from '@/lib/random/campaignGenerator'
 
 interface CharacterStatDraft {
   key: string
@@ -21,6 +32,17 @@ interface InventoryDraft {
   qty: number
   description: string
   tags: string
+}
+
+const THEME_DATALIST_ID = 'theme-suggestions'
+
+/** Small icon-only button used throughout the wizard to auto-fill one field. */
+function GenerateButton({ onClick, label }: { onClick: () => void; label: string }) {
+  return (
+    <Button type="button" variant="outline" size="icon" title={label} aria-label={label} onClick={onClick}>
+      <Sparkles className="size-4" />
+    </Button>
+  )
 }
 
 const STEPS = ['Basics', 'Character', 'Inventory', 'World & expectations', 'Review'] as const
@@ -55,6 +77,18 @@ export function NewCampaign() {
     return true
   })()
 
+  function handleRandomizeAll() {
+    const generated = generateFullCampaign()
+    setName(generated.name)
+    setGenre(generated.genre)
+    setWorldPrompt(generated.worldPrompt)
+    setStartingLocation(generated.startingLocation)
+    setHouseRules(generated.houseRules)
+    setStats(generated.stats)
+    setInventory(generated.inventory)
+    toast.success('Randomized a starting point — tweak anything before creating.')
+  }
+
   async function handleCreate() {
     setSubmitting(true)
     try {
@@ -79,7 +113,20 @@ export function NewCampaign() {
 
   return (
     <div className="mx-auto max-w-2xl px-6 py-10">
-      <h1 className="mb-1 text-2xl font-semibold">New campaign</h1>
+      <div className="mb-1 flex items-center justify-between gap-3">
+        <h1 className="text-2xl font-semibold">New campaign</h1>
+        <div className="flex items-center gap-2">
+          <Button type="button" variant="outline" size="sm" onClick={handleRandomizeAll}>
+            <Dice5 className="size-4" />
+            Random campaign
+          </Button>
+          <Button asChild variant="ghost" size="icon" title="Cancel and return to dashboard" aria-label="Cancel and return to dashboard">
+            <Link to="/">
+              <X className="size-4" />
+            </Link>
+          </Button>
+        </div>
+      </div>
       <p className="mb-4 text-sm text-muted-foreground">{STEPS[step]}</p>
       <Progress value={((step + 1) / STEPS.length) * 100} className="mb-6" />
 
@@ -92,16 +139,36 @@ export function NewCampaign() {
           <CardContent className="flex flex-col gap-4">
             <div className="flex flex-col gap-2">
               <Label htmlFor="name">Campaign name</Label>
-              <Input id="name" value={name} onChange={(e) => setName(e.target.value)} placeholder="The Sunken Chapel" />
+              <div className="flex gap-2">
+                <Input
+                  id="name"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="The Sunken Chapel"
+                />
+                <GenerateButton label="Generate a name" onClick={() => setName(generateName(genre))} />
+              </div>
             </div>
             <div className="flex flex-col gap-2">
               <Label htmlFor="genre">Genre / theme</Label>
-              <Input
-                id="genre"
-                value={genre}
-                onChange={(e) => setGenre(e.target.value)}
-                placeholder="Cozy fantasy, cyberpunk heist, horror survival…"
-              />
+              <div className="flex gap-2">
+                <Input
+                  id="genre"
+                  value={genre}
+                  onChange={(e) => setGenre(e.target.value)}
+                  placeholder="Cozy fantasy, cyberpunk heist, horror survival…"
+                  list={THEME_DATALIST_ID}
+                />
+                <datalist id={THEME_DATALIST_ID}>
+                  {SUGGESTED_THEMES.map((t) => (
+                    <option key={t} value={t} />
+                  ))}
+                </datalist>
+                <GenerateButton label="Pick a random theme" onClick={() => setGenre(randomTheme())} />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Start typing to see suggested themes, or write your own — genre is free text.
+              </p>
             </div>
             <div className="flex flex-col gap-2">
               <Label>Difficulty</Label>
@@ -128,6 +195,7 @@ export function NewCampaign() {
             <CardTitle>Your character</CardTitle>
             <CardDescription>
               Free-form stats — add whatever fits your world (HP, Charm, Reputation, Sanity…).
+              Optional — skip this and add stats later from the Codex.
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
@@ -151,15 +219,23 @@ export function NewCampaign() {
                 <Button
                   variant="ghost"
                   size="icon"
+                  title="Remove stat"
+                  aria-label="Remove stat"
                   onClick={() => setStats((arr) => arr.filter((_, ri) => ri !== i))}
                 >
                   <Trash2 className="size-4" />
                 </Button>
               </div>
             ))}
-            <Button variant="outline" size="sm" onClick={() => setStats((arr) => [...arr, { key: '', value: '' }])}>
-              Add stat
-            </Button>
+            <div className="flex gap-2">
+              <Button variant="outline" size="sm" onClick={() => setStats((arr) => [...arr, { key: '', value: '' }])}>
+                Add stat
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setStats(generateStats(genre))}>
+                <Sparkles className="size-4" />
+                Generate stats
+              </Button>
+            </div>
           </CardContent>
         </Card>
       )}
@@ -168,7 +244,10 @@ export function NewCampaign() {
         <Card>
           <CardHeader>
             <CardTitle>Starting inventory</CardTitle>
-            <CardDescription>What are you carrying when the story begins?</CardDescription>
+            <CardDescription>
+              What are you carrying when the story begins? Optional — skip this if you'd rather
+              start with nothing.
+            </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
             {inventory.map((item, i) => (
@@ -188,13 +267,17 @@ export function NewCampaign() {
                     value={item.qty}
                     onChange={(e) =>
                       setInventory((arr) =>
-                        arr.map((r, ri) => (ri === i ? { ...r, qty: Number(e.target.value) || 1 } : r)),
+                        arr.map((r, ri) =>
+                          ri === i ? { ...r, qty: Math.max(1, Number(e.target.value) || 1) } : r,
+                        ),
                       )
                     }
                   />
                   <Button
                     variant="ghost"
                     size="icon"
+                    title="Remove item"
+                    aria-label="Remove item"
                     onClick={() => setInventory((arr) => arr.filter((_, ri) => ri !== i))}
                   >
                     <Trash2 className="size-4" />
@@ -211,13 +294,19 @@ export function NewCampaign() {
                 />
               </div>
             ))}
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setInventory((arr) => [...arr, { name: '', qty: 1, description: '', tags: '' }])}
-            >
-              Add item
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setInventory((arr) => [...arr, { name: '', qty: 1, description: '', tags: '' }])}
+              >
+                Add item
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setInventory(generateInventory(genre))}>
+                <Sparkles className="size-4" />
+                Generate items
+              </Button>
+            </div>
           </CardContent>
         </Card>
       )}
@@ -232,7 +321,13 @@ export function NewCampaign() {
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
             <div className="flex flex-col gap-2">
-              <Label htmlFor="world">World & scenario</Label>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="world">World & scenario</Label>
+                <GenerateButton
+                  label="Generate world & scenario"
+                  onClick={() => setWorldPrompt(generateWorldPrompt(genre))}
+                />
+              </div>
               <Textarea
                 id="world"
                 rows={8}
@@ -243,15 +338,27 @@ export function NewCampaign() {
             </div>
             <div className="flex flex-col gap-2">
               <Label htmlFor="location">Starting location</Label>
-              <Input
-                id="location"
-                value={startingLocation}
-                onChange={(e) => setStartingLocation(e.target.value)}
-                placeholder="The docks of Kelmouth"
-              />
+              <div className="flex gap-2">
+                <Input
+                  id="location"
+                  value={startingLocation}
+                  onChange={(e) => setStartingLocation(e.target.value)}
+                  placeholder="The docks of Kelmouth"
+                />
+                <GenerateButton
+                  label="Generate starting location"
+                  onClick={() => setStartingLocation(generateStartingLocation(genre))}
+                />
+              </div>
             </div>
             <div className="flex flex-col gap-2">
-              <Label htmlFor="rules">House rules (optional)</Label>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="rules">House rules (optional)</Label>
+                <GenerateButton
+                  label="Generate house rules"
+                  onClick={() => setHouseRules(generateHouseRules(genre))}
+                />
+              </div>
               <Textarea
                 id="rules"
                 rows={3}
