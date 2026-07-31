@@ -2,6 +2,7 @@ import type { TtsProvider } from './types'
 import {
   createProgressAggregator,
   describeModelDownloadProgress,
+  requestPersistentStorage,
   type ModelDownloadProgress,
 } from '@/lib/modelDownloadProgress'
 
@@ -72,6 +73,7 @@ function loadKokoro(onProgress?: (p: KokoroLoadProgress) => void) {
     if (lastProgress) onProgress(lastProgress)
   }
   if (!loadPromise) {
+    requestPersistentStorage()
     loadPromise = (async () => {
       const { KokoroTTS } = await import('kokoro-js')
       // KokoroTTS.from_pretrained() internally makes two concurrent from_pretrained() calls (model

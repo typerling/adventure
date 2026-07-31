@@ -20,6 +20,22 @@ export interface ModelDownloadProgress {
   files?: Record<string, { loaded: number; total: number }>
 }
 
+/**
+ * Best-effort request that the browser not evict this origin's storage under pressure. Without
+ * this, IndexedDB/Cache Storage data (which is where every on-device model's downloaded files
+ * live — see localModelCache.ts/localModelResumableFetch.ts and kokoro-js's own Cache Storage
+ * usage) is "best-effort" by default: a browser can silently clear it to reclaim space, and a
+ * several-hundred-MB-to-multi-GB model is exactly the kind of per-origin storage use that makes
+ * an origin a prime target for that — surfacing to a player as "the model downloads again every
+ * time I reopen the app" with no error or warning at all. `persist()` doesn't guarantee a grant
+ * (Chrome's heuristics factor in site engagement, bookmarks, whether it's installed as a PWA,
+ * etc.), and some browsers/contexts don't expose the Storage API at all — both are fine to ignore
+ * here, since the alternative (never asking) can only do worse. Called once per model load rather
+ * than at app startup so it doesn't run for players who never touch an on-device model. */
+export function requestPersistentStorage(): void {
+  void navigator.storage?.persist?.().catch(() => {})
+}
+
 /** Exported for the model picker/download cards (Settings.tsx), which show each catalog entry's
  * approximate size the same way progress here does, rather than reformatting bytes twice. */
 export function formatBytes(bytes: number): string {
