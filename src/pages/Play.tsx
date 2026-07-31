@@ -364,7 +364,7 @@ export function Play() {
           at its own edge, and text sitting exactly flush against that clip boundary triggers a
           software-rasterization glyph artifact in some renderers. A wrapper div inside the
           clipped viewport keeps glyphs safely away from the clip edge. */}
-      <ScrollArea className="h-[50vh] rounded-2xl border border-border/60 bg-card/70 shadow-sm">
+      <ScrollArea className="h-[50vh]">
         {recentTurns.length === 0 ? (
           <p className="p-4 font-serif text-sm text-muted-foreground italic sm:p-5">
             No story yet — describe your first action below to begin.

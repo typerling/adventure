@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { BrowserRouter, Link, Route, Routes } from 'react-router-dom'
-import { BookOpen, MapPin, Mountain, Settings as SettingsIcon, Volume2, VolumeX } from 'lucide-react'
+import { BookOpen, MapPin, Settings as SettingsIcon, Volume2, VolumeX } from 'lucide-react'
 import { Toaster } from '@/components/ui/sonner'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -24,13 +24,13 @@ function Header() {
     <header className="border-b border-border/70 bg-card/60">
       <div className="mx-auto flex max-w-3xl items-center justify-between gap-2 px-4 py-3 sm:px-6">
         <div className="flex min-w-0 items-center gap-1.5 truncate">
-          <Link to="/" className="flex shrink-0 items-center gap-1.5 font-heading text-lg font-medium text-foreground">
-            <Mountain className="size-4 text-primary" />
-            Adventure
-          </Link>
-          {context && (
+          {context ? (
             <>
-              <span className="text-muted-foreground">·</span>
+              {/* Logo-only once a campaign name is showing — "Adventure - <name>" rarely both fit
+                  next to each other, and the campaign name is the more useful thing to keep. */}
+              <Link to="/" className="shrink-0" title="Adventure" aria-label="Adventure">
+                <img src={`${import.meta.env.BASE_URL}favicon-32.png`} alt="" className="size-7 rounded-md" />
+              </Link>
               <Link
                 to={`/play/${context.campaignId}`}
                 title="Back to play"
@@ -39,6 +39,11 @@ function Header() {
                 {context.campaignName}
               </Link>
             </>
+          ) : (
+            <Link to="/" className="flex shrink-0 items-center gap-1.5 font-heading text-lg font-medium text-foreground">
+              <img src={`${import.meta.env.BASE_URL}favicon-32.png`} alt="" className="size-7 rounded-md" />
+              Adventure
+            </Link>
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
