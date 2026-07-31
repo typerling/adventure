@@ -13,12 +13,12 @@ import { createRandomCampaign, setCampaignAiMode } from './helpers'
  * captive network) which the app needs to survive with a clear error, not a hang or a crash.
  */
 
-// The default model a fresh campaign's localModelId points at (see DEFAULT_SETTINGS in
-// src/types/campaign.ts) — the one actually exercised when a turn is generated.
 // Must match localModelCache.ts's own DB_VERSION. Opening at an older version would trigger that
 // file's upgrade handler, which deliberately drops everything rather than migrating — so a stale
 // value here silently wipes the very cache entry these tests seed.
 const CACHE_DB_VERSION = 3
+// The default model a fresh campaign's localModelId points at (see DEFAULT_SETTINGS in
+// src/types/campaign.ts) — the one actually exercised when a turn is generated.
 const DEFAULT_MODEL_ID = 'onnx-community/gemma-3-1b-it-ONNX'
 const DEFAULT_MODEL_ROW = `[data-testid="local-model-row-${DEFAULT_MODEL_ID}"]`
 
@@ -119,7 +119,7 @@ test.describe('local (on-device) AI mode', () => {
     await page.evaluate(([modelId, dbVersion]) => {
       const url = `https://huggingface.co/${modelId}/resolve/main/onnx/model_q4f16.onnx`
       return new Promise<void>((resolve, reject) => {
-        const openReq = indexedDB.open('adventure-local-model-cache', dbVersion as number)
+        const openReq = indexedDB.open('adventure-local-model-cache', dbVersion)
         openReq.onupgradeneeded = () => {
           const db = openReq.result
           db.createObjectStore('blocks', { keyPath: ['url', 'blockIndex'] })

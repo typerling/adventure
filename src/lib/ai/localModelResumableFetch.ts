@@ -202,9 +202,12 @@ function buildResumingStream(
   async function flushPending(): Promise<void> {
     if (pendingBytes === 0) return
     // Always merges into a fresh, exactly-sized buffer, including for a single pending chunk —
-    // don't "optimize" that into passing a chunk straight through. Network chunks are views into
-    // larger internal buffers, and IndexedDB clones a view's *whole* backing ArrayBuffer (see
-    // toOwnedBlock in localModelCache.ts), so a view here would balloon what's written to disk.
+    // don't "optimize" that into passing a chunk straight through. IndexedDB clones a view's
+    // *whole* backing ArrayBuffer (see toOwnedBlock in localModelCache.ts), so storing anything
+    // that doesn't exactly cover its own buffer balloons what's written to disk. Chrome's fetch
+    // chunks happen to own their buffers exactly today, but nothing guarantees that, and the
+    // failure mode is silent — so route any such shortcut through toOwnedBlock rather than
+    // relying on it.
     const merged = mergeChunks(pendingChunks, pendingBytes)
     await putBlock(url, blockIndex, merged)
     blockIndex += 1

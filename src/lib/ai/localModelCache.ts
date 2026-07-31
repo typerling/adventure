@@ -59,14 +59,31 @@ function openDb(): Promise<IDBDatabase> {
       db.createObjectStore(BLOCK_STORE, { keyPath: ['url', 'blockIndex'] })
       db.createObjectStore(META_STORE, { keyPath: 'url' })
     }
-    // Fires instead of onsuccess/onerror when another tab still holds this database open at an
-    // older version, so the upgrade above can't run. Without an explicit reject, that request just
-    // sits there and every caller awaiting openDb() hangs indefinitely with no error — the exact
-    // failure mode this file's DB_VERSION bump would otherwise be able to cause.
-    req.onblocked = () =>
+    // `blocked` fires instead of success/error when another tab still holds this database open at
+    // an older version, so the upgrade above can't run. Without an explicit reject, that request
+    // just sits there and every caller awaiting openDb() hangs indefinitely with no error — the
+    // exact failure mode this file's DB_VERSION bump would otherwise be able to cause.
+    //
+    // It isn't terminal, though: the request stays live and still succeeds if that other tab
+    // closes. Since this promise has already settled by then, the connection it hands back would
+    // be one nobody ever closes — which would itself block the next upgrade. So track settlement
+    // and close it on arrival.
+    let settled = false
+    req.onblocked = () => {
+      settled = true
       reject(new Error('Another open tab is using the local model cache — close it and try again.'))
-    req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error ?? new Error('Failed to open local model cache database'))
+    }
+    req.onsuccess = () => {
+      if (settled) req.result.close()
+      else {
+        settled = true
+        resolve(req.result)
+      }
+    }
+    req.onerror = () => {
+      settled = true
+      reject(req.error ?? new Error('Failed to open local model cache database'))
+    }
   })
 }
 

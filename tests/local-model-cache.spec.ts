@@ -122,6 +122,11 @@ test.describe('localModelCache block-chunked storage', () => {
       ([url, length]) => window.__putAndMeasureStorage(url as string, length as number),
       [fileUrl(MODEL_A, 'model_q4f16.onnx_data'), payloadBytes],
     )
+    // Lower bound first, so this can't pass vacuously: navigator.storage.estimate() is updated
+    // asynchronously by the quota system, and a reading that hadn't caught up with the write yet
+    // would report a near-zero delta and satisfy any upper bound no matter how the blocks were
+    // stored. Seeing at least most of the payload proves the measurement actually observed it.
+    expect(storedBytes).toBeGreaterThan(payloadBytes * 0.5)
     // Generous headroom for IndexedDB's own per-record overhead and the granularity of
     // navigator.storage.estimate(): the bug this guards against costs ~4x here (one full-payload
     // clone per block) and grows with file size, so anything near 1x is unambiguously correct.
