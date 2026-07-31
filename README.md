@@ -57,6 +57,24 @@ progress bar, resumable if interrupted) and to remove it again later. Needs a br
 supports WebGPU (Chrome/Edge on Android 12+, Safari 26+ on iOS/macOS/iPadOS) — on an unsupported
 browser, or if the download fails, it surfaces a clear error rather than hanging.
 
+## Deploying (GitHub Pages)
+
+Pushing to `main` builds and publishes via `.github/workflows/deploy-pages.yml`. The site is served
+from `https://<owner>.github.io/<repo>/`, and the build derives that base path from the repo name,
+so a rename needs no code change. Deep links work through a `404.html` copy of `index.html`.
+
+Three one-time setup steps live outside the repo:
+
+1. **Settings → Pages → Source: GitHub Actions.**
+2. **Settings → Secrets and variables → Actions → Variables:** add `VITE_GOOGLE_CLIENT_ID`. Without
+   it the deploy still succeeds but the live app is stuck on "Google Drive isn't configured yet".
+3. **Google Cloud Console → your OAuth client → Authorized JavaScript origins:** add the deployed
+   origin, e.g. `https://<owner>.github.io` (scheme + host only — no path, no trailing slash).
+   Missing this makes sign-in fail with `origin_mismatch`.
+
+The OAuth client ID is public by design — it ships in the browser bundle either way, and what
+actually protects the project is the Authorized JavaScript origins list, not keeping the ID secret.
+
 ## Scripts
 
 - `npm run dev` — start the dev server

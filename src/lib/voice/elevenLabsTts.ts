@@ -10,6 +10,10 @@ const MODEL_ID = 'eleven_multilingual_v2'
  * campaign-level voice ID (CampaignSettings.elevenLabsVoiceId, passed as opts.voice). */
 export function createElevenLabsTtsProvider(): TtsProvider {
   let currentAudio: HTMLAudioElement | null = null
+  /** Settles the in-flight speak() when stop() interrupts it. `pause()` fires neither 'ended' nor
+   * 'error', so without this the promise never settles, its `finally` never runs, and the blob URL
+   * is never revoked — leaking the audio for the page's lifetime on every stop. */
+  let settleCurrent: (() => void) | null = null
 
   return {
     async speak(text, opts) {
@@ -18,8 +22,7 @@ export function createElevenLabsTtsProvider(): TtsProvider {
         throw new Error('Add your ElevenLabs API key in Settings first.')
       }
 
-      currentAudio?.pause()
-      currentAudio = null
+      this.stop()
 
       const voiceId = opts?.voice?.trim() || DEFAULT_VOICE_ID
       const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
@@ -37,11 +40,13 @@ export function createElevenLabsTtsProvider(): TtsProvider {
       currentAudio = audio
       try {
         await new Promise<void>((resolve, reject) => {
+          settleCurrent = resolve
           audio.onended = () => resolve()
           audio.onerror = () => reject(new Error('Audio playback failed.'))
           audio.play().catch(reject)
         })
       } finally {
+        settleCurrent = null
         URL.revokeObjectURL(url)
         if (currentAudio === audio) currentAudio = null
       }
@@ -49,6 +54,10 @@ export function createElevenLabsTtsProvider(): TtsProvider {
     stop() {
       currentAudio?.pause()
       currentAudio = null
+      // Resolve (not reject) any in-flight speak(): a deliberate stop isn't a failure, and callers
+      // treat a rejection as an error worth toasting.
+      settleCurrent?.()
+      settleCurrent = null
     },
   }
 }

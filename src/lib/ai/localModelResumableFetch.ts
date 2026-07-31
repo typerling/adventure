@@ -223,6 +223,21 @@ export function createResumableFetch(baseFetch: typeof fetch, blockSize: number 
 
     let response = await baseFetch(input, { ...init, headers: requestHeaders })
 
+    // 416 Range Not Satisfiable means the stored offset is past the end of the file — e.g. an
+    // interruption right after a block flush landed exactly on the file length, or a clearPartial
+    // that never completed. Left alone this is unrecoverable: every retry replays the same bad
+    // Range and fails identically forever. Drop the partial and start over.
+    if (response.status === 416 && resumeFrom > 0) {
+      await response.body?.cancel().catch(() => {})
+      if (meta) await clearPartial(url, meta.blockCount).catch(() => {})
+      response = await baseFetch(input, { ...init, headers: new Headers(init?.headers) })
+      if (response.status !== 200 || !response.body) return response
+      return new Response(
+        buildResumingStream(url, { url, receivedBytes: 0, blockCount: 0, etag: response.headers.get('ETag') }, response.body, blockSize),
+        { status: 200, statusText: 'OK', headers: response.headers },
+      )
+    }
+
     // Not a success we know how to resume-wrap (404, 500, a redirect gone wrong, …) — hand it
     // back exactly as received so the caller's normal error handling still sees the real status.
     if ((response.status !== 200 && response.status !== 206) || !response.body) {

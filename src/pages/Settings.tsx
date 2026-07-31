@@ -32,7 +32,7 @@ import {
 } from '@/lib/voice/kokoroTts'
 
 const CLAUDE_MODEL_LABELS: Record<(typeof CLAUDE_MODELS)[number], string> = {
-  'claude-opus-5': 'Opus 5 — most capable, highest cost',
+  'claude-opus-5': 'Opus 5 — strongest reasoning, highest cost',
   'claude-sonnet-5': 'Sonnet 5 — balanced (recommended)',
   'claude-haiku-4-5': 'Haiku 4.5 — fastest, cheapest',
 }
@@ -65,7 +65,10 @@ export function Settings() {
       setCampaignName(cached.campaign.meta.name)
       return
     }
-    void loadSettings(campaignId).then(setSettings)
+    void loadSettings(campaignId)
+      .then(setSettings)
+      // Without this a Drive failure was an unhandled rejection *and* a silently empty form.
+      .catch((err) => toast.error(err instanceof Error ? err.message : String(err)))
     void loadCampaignFile(campaignId)
       .then((f) => setCampaignName(f.meta.name))
       .catch(() => {})
@@ -83,12 +86,19 @@ export function Settings() {
   // still show as ready here, not prompt for a redundant re-download.
   useEffect(() => {
     let cancelled = false
-    void hasDownloadedLocalModel().then((has) => {
-      if (!cancelled && has) setModelLoadState('ready')
-    })
-    void hasDownloadedKokoroModel().then((has) => {
-      if (!cancelled && has) setVoiceLoadState('ready')
-    })
+    // Both can reject where IndexedDB/Cache Storage is unavailable (private browsing, storage
+    // disabled). That just means nothing is cached, so fall through to the un-downloaded state
+    // rather than throwing into an unhandled rejection.
+    void hasDownloadedLocalModel()
+      .then((has) => {
+        if (!cancelled && has) setModelLoadState('ready')
+      })
+      .catch(() => {})
+    void hasDownloadedKokoroModel()
+      .then((has) => {
+        if (!cancelled && has) setVoiceLoadState('ready')
+      })
+      .catch(() => {})
     return () => {
       cancelled = true
     }

@@ -41,6 +41,73 @@ async function installFakeGis(page: Page, silentReauth: 'succeed' | 'fail'): Pro
   }, silentReauth)
 }
 
+/**
+ * Same fake, but the callback fires **asynchronously** — as real GIS does — and it counts how many
+ * token requests were issued. The synchronous fake above cannot expose ordering bugs: it resolves
+ * before a second caller can overwrite the shared handler, which is exactly why a bug where
+ * concurrent token requests never settled was invisible to these tests.
+ */
+async function installAsyncFakeGis(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const w = window as unknown as Record<string, unknown>
+    w.__gisRequests = 0
+    ;(w as { google: unknown }).google = {
+      accounts: {
+        oauth2: {
+          initTokenClient: (config: { callback: (res: Record<string, unknown>) => void }) => ({
+            requestAccessToken: () => {
+              const n = (w.__gisRequests as number) + 1
+              w.__gisRequests = n
+              setTimeout(
+                () =>
+                  config.callback({
+                    access_token: `async-token-${n}`,
+                    // The first token comes back already inside authStore's 60s staleness margin,
+                    // so the parallel reads that follow all need a refresh at the same moment.
+                    // Later ones are fresh, so the refresh converges instead of looping.
+                    expires_in: n === 1 ? 0 : 3600,
+                    scope: '',
+                    token_type: 'Bearer',
+                  }),
+                40,
+              )
+            },
+          }),
+          revoke: () => {},
+        },
+      },
+    }
+  })
+}
+
+test('parallel calls hitting a stale token share one refresh instead of hanging', async ({ page }) => {
+  // Regression test. requestToken kept a single module-level handler, so with overlapping requests
+  // every handler but the last was overwritten before GIS's async callback fired — those promises
+  // never resolved *or* rejected, leaving a permanent "Loading campaign…" spinner. useCampaign
+  // loads four things via Promise.all, so one stale token fans out into four simultaneous
+  // refreshes. Note this needs the *async* GIS fake: the synchronous one settles each request
+  // before the next can clobber it, which is why the existing tests never caught this.
+  await installGoogleApiMock(page)
+  await installAsyncFakeGis(page)
+  await createRandomCampaign(page)
+  const campaignId = page.url().match(/\/play\/([^/?#]+)/)![1]
+
+  // Drop the pre-seeded session so the next load goes through the real startup-reauth path and
+  // picks up the deliberately-stale first token above.
+  await page.addInitScript((key) => window.localStorage.removeItem(key), SESSION_STORAGE_KEY)
+  await page.goto(`/play/${campaignId}`)
+
+  // The real assertion: the page finishes loading at all. With the bug the refresh promises never
+  // settled, so this sat on the spinner until the test timed out.
+  await expect(page.getByPlaceholder('Say or do anything…')).toBeVisible({ timeout: 15_000 })
+  await expect(page.getByText('Loading campaign…')).toHaveCount(0)
+
+  // And the concurrent callers coalesced rather than each firing its own GIS request.
+  const gisRequests = await page.evaluate(() => (window as unknown as Record<string, number>).__gisRequests)
+  expect(gisRequests).toBeGreaterThan(1) // startup restore + at least one refresh
+  expect(gisRequests).toBeLessThanOrEqual(3) // but not one per parallel reader
+})
+
 test.describe('Google session restore across reloads', () => {
   test('a cleared/expired local session is silently restored on load, with no sign-in click', async ({ page }) => {
     await installGoogleApiMock(page)

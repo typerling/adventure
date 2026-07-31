@@ -80,3 +80,36 @@ export async function setCampaignAiMode(page: Page, mode: keyof typeof AI_MODE_O
   await expect(page.getByText('Settings saved.')).toBeVisible()
   await page.goto(`/play/${campaignId}`)
 }
+
+/**
+ * Records every Sonner toast that renders, so a test can assert one never appeared.
+ *
+ * Needed because the obvious spelling — `expect(page.locator('[data-sonner-toast]')).toHaveCount(0)`
+ * — silently can't fail: `toHaveCount` auto-retries, and toasts auto-dismiss after a few seconds,
+ * so it passes by *waiting for the toast to disappear*. (Verified: a run whose toast was provably
+ * present at assertion time still passed.) A MutationObserver keeps the whole history instead of
+ * sampling one instant, which also catches toasts that come and go between assertions.
+ *
+ * Call before navigating.
+ */
+export async function recordToasts(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const seen: string[] = []
+    ;(window as unknown as Record<string, unknown>).__toasts = seen
+    // Polling rather than a MutationObserver: a freshly-inserted toast has no layout yet, and
+    // Sonner may not produce a further childList mutation to trigger a rescan, so an
+    // observer-only version silently missed toasts. `textContent` (not `innerText`) for the same
+    // no-layout-required reason. Toasts live for seconds, so 40ms cannot miss one.
+    setInterval(() => {
+      for (const el of document.querySelectorAll('[data-sonner-toast]')) {
+        const text = (el.textContent ?? '').trim()
+        if (text && !seen.includes(text)) seen.push(text)
+      }
+    }, 40)
+  })
+}
+
+/** Every toast text seen so far, in first-appearance order. Requires recordToasts() first. */
+export async function getRecordedToasts(page: Page): Promise<string[]> {
+  return page.evaluate(() => ((window as unknown as Record<string, unknown>).__toasts as string[]) ?? [])
+}

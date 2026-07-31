@@ -85,6 +85,33 @@ test.describe('Claude direct API mode', () => {
     expect(claude.requests[0].prompt).toContain('look around')
   })
 
+  test('the applied turn records the action that was actually submitted', async ({ page }) => {
+    // Regression test: startTurn recorded the action via setState and kicked off generation in the
+    // same tick, so the generation closure still saw the *previous* render's value. Turn 1 logged
+    // an empty action, turn 2 logged turn 1's, and so on — permanently, since playerAction goes
+    // into the append-only Drive story log and is fed back to the AI as history. The existing
+    // coverage only asserted the outgoing prompt, which is built from the argument directly and so
+    // looked correct either way.
+    await installGoogleApiMock(page)
+    await installClaudeApiMock(page, {
+      reply: (_prompt, callIndex) => defaultValidReply(`Narrative for turn ${callIndex + 1}.`),
+    })
+
+    await createRandomCampaign(page)
+    await setCampaignAiMode(page, 'api')
+    const campaignId = campaignIdFromUrl(page)
+    await saveClaudeKey(page, campaignId, 'sk-ant-test-12345')
+    await page.goto(`/play/${campaignId}`)
+
+    for (const [i, action] of ['look around', 'open the door'].entries()) {
+      await page.getByPlaceholder('Say or do anything…').fill(action)
+      await page.getByRole('button', { name: 'Act', exact: true }).click()
+      await expect(page.getByText(`Narrative for turn ${i + 1}.`)).toBeVisible()
+      // Each turn's header echoes the persisted playerAction.
+      await expect(page.getByText(`Turn ${i + 1} — you: ${action}`)).toBeVisible()
+    }
+  })
+
   test('missing API key surfaces a clear error with a Retry option', async ({ page }) => {
     await installGoogleApiMock(page)
     await installClaudeApiMock(page)

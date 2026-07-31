@@ -32,7 +32,7 @@ below. OpenAI was not requested and isn't implemented.
 - `npm run test:e2e` — Playwright end-to-end tests (`playwright.config.ts`, specs in `tests/`).
   Starts its own dev server on port 5183 with a dummy `VITE_GOOGLE_CLIENT_ID`; every Drive/Sheets
   API call is intercepted by `tests/mocks/googleApi.ts` (an in-memory fake backend) and a fake
-  session is seeded into `sessionStorage` before each test, so no real Google account or network
+  session is seeded into `localStorage` before each test, so no real Google account or network
   access is needed. Run a single file with `npx playwright test tests/new-campaign.spec.ts`, or
   `--headed`/`--debug` while writing new specs.
 
@@ -40,6 +40,37 @@ Google Drive integration requires `VITE_GOOGLE_CLIENT_ID` in `.env` (copy from `
 Without it the app boots to an "unconfigured" screen instead of crashing — see
 `src/lib/google/config.ts` / `authStore.ts`'s `unconfigured` status. You can develop most UI
 without real credentials, but anything touching Drive/Sheets needs a working OAuth Client ID.
+
+## Deployment (GitHub Pages)
+
+`.github/workflows/deploy-pages.yml` builds and publishes `dist/` on every push to `main`.
+
+- **Base path.** A project site is served from `https://<owner>.github.io/<repo>/`, so the build
+  sets `VITE_BASE=/<repo>/` (derived from `github.event.repository.name`). Nothing hardcodes the
+  repo name: `vite.config.ts` reads `VITE_BASE`, `index.html` uses Vite's `%BASE_URL%` placeholder,
+  and `src/App.tsx` passes `import.meta.env.BASE_URL` to `BrowserRouter`'s `basename`. Local dev
+  and `npm run build` leave it at `/`, which is why the Playwright suite is unaffected.
+- **SPA fallback.** The workflow copies `dist/index.html` to `dist/404.html`. Pages serves static
+  files only, so without this a deep link like `/<repo>/play/<id>` would 404 instead of reaching
+  the client-side router. This is also why `index.html` uses absolute `%BASE_URL%`-prefixed asset
+  paths rather than relative ones — relative paths would resolve against `/<repo>/play/`.
+- **PWA icons.** The manifest must list **PNG** icons (192 + 512) or Chrome on Android won't offer
+  "Install app" at all — an SVG-only manifest is not installable. It also needs `purpose:
+  "maskable"` variants, padded so the artwork stays inside Android's centred 80%-diameter safe
+  circle, or the icon gets clipped. Manifest paths are relative so they resolve against whatever
+  base the site is served from.
+
+Three things live outside the repo and are easy to miss:
+
+1. Pages **source must be set to "GitHub Actions"** (the workflow has no `configure-pages` step).
+2. A repo **variable** `VITE_GOOGLE_CLIENT_ID`. If it's missing the build still succeeds and
+   silently deploys an app stuck on "Google Drive isn't configured yet".
+3. The deployed origin (e.g. `https://<owner>.github.io`) must be added to **Authorized JavaScript
+   origins** on the Google OAuth client, or sign-in fails with `origin_mismatch`. Origins are
+   scheme+host only — no path, no trailing slash.
+
+An OAuth **client ID is public by design** (it ships in the browser bundle); the security boundary
+is that origins list, not secrecy of the ID.
 
 ## Architecture
 
@@ -177,7 +208,7 @@ philosophy as the AI backend. Three implementations exist (Kokoro is TTS-only):
 - **`elevenlabs`** (`elevenLabsStt.ts`, `elevenLabsTts.ts`) — needs an API key, stored via
   `elevenLabsKey.ts` in `localStorage` only (never written to Drive/settings.md — see the comment
   there for why this is `localStorage` and Google's OAuth token in `authStore.ts` is
-  `sessionStorage` instead). TTS is one `fetch` + `Audio` playback. STT is fundamentally different
+  localStorage too, for a different reason — see that file). TTS is one `fetch` + `Audio` playback. STT is fundamentally different
   from browser STT: no live transcript, it records the whole utterance via `getUserMedia` +
   `MediaRecorder` and only transcribes (one HTTP upload) once `stop()` is called — so unlike
   browser STT, the user must click the mic button again to end recording. A campaign's voice

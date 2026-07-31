@@ -184,16 +184,22 @@ export function createKokoroTtsProvider(opts: KokoroTtsOptions = {}): TtsProvide
   /** Bumped by stop() and by each new speak(), so an in-flight chunk sequence can tell it's been
    * superseded and bail out instead of continuing to play over whatever replaced it. */
   let playToken = 0
+  /** Settles the in-flight clip when stop() interrupts it. `pause()` fires neither 'ended' nor
+   * 'error', so without this the promise never settles: the blob URL is never revoked, the chunk
+   * loop never reaches its isStale() check, and its lookahead-rejection guards never run. */
+  let settleCurrent: (() => void) | null = null
 
   function playBlob(blob: Blob): Promise<void> {
     const url = URL.createObjectURL(blob)
     const audio = new Audio(url)
     currentAudio = audio
     return new Promise<void>((resolve, reject) => {
+      settleCurrent = resolve
       audio.onended = () => resolve()
       audio.onerror = () => reject(new Error('Audio playback failed.'))
       audio.play().catch(reject)
     }).finally(() => {
+      settleCurrent = null
       URL.revokeObjectURL(url)
       if (currentAudio === audio) currentAudio = null
     })
@@ -251,6 +257,10 @@ export function createKokoroTtsProvider(opts: KokoroTtsOptions = {}): TtsProvide
       playToken++
       currentAudio?.pause()
       currentAudio = null
+      // Resolve (not reject) the in-flight clip: the chunk loop then sees isStale() and returns
+      // cleanly, running its cleanup. Rejecting would surface a deliberate stop as an error.
+      settleCurrent?.()
+      settleCurrent = null
     },
   }
 }

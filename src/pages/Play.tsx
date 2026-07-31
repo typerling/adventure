@@ -34,7 +34,10 @@ export function Play() {
   const { status, errorMessage, campaign, snapshot, recentTurns, settings, buildPromptForAction, submitReply } = data
 
   const [freeText, setFreeText] = useState('')
-  const [pendingAction, setPendingAction] = useState('')
+  /** The action awaiting a reply. A ref, not state, because auto modes kick off generation in the
+   * same tick they record it — a state setter wouldn't have re-rendered yet, so the generation
+   * closure would still see the *previous* turn's action and persist that to the story log. */
+  const pendingActionRef = useRef('')
   const [prompt, setPrompt] = useState('')
   const [reply, setReply] = useState('')
   const [stage, setStage] = useState<DialogStage>('closed')
@@ -207,7 +210,7 @@ export function Play() {
     if (generating) return
     const built = buildPromptForAction(action)
     if (!built) return
-    setPendingAction(action)
+    pendingActionRef.current = action
     setPrompt(built)
     setReply('')
     setDialogError(null)
@@ -233,7 +236,7 @@ export function Play() {
     setDialogError(null)
     setIssues([])
     try {
-      const outcome = await submitReply(pendingAction, rawReply)
+      const outcome = await submitReply(pendingActionRef.current, rawReply)
       if (outcome.ok) {
         setStage('closed')
         setFreeText('')

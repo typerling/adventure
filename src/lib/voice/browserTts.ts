@@ -21,7 +21,17 @@ export function createBrowserTtsProvider(): TtsProvider {
           if (match) utterance.voice = match
         }
         utterance.onend = () => resolve()
-        utterance.onerror = (event) => reject(new Error(`Speech synthesis error: ${event.error}`))
+        utterance.onerror = (event) => {
+          // cancel() — from stop(), or from the pre-emptive cancel above when a new utterance
+          // starts — surfaces as an 'interrupted'/'canceled' error rather than 'end'. That's a
+          // deliberate stop, not a failure, so resolve instead of rejecting; rejecting made every
+          // stop/replay pop a spurious "Speech synthesis error" toast in Play.tsx.
+          if (event.error === 'interrupted' || event.error === 'canceled') {
+            resolve()
+            return
+          }
+          reject(new Error(`Speech synthesis error: ${event.error}`))
+        }
         window.speechSynthesis.speak(utterance)
       })
     },

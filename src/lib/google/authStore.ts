@@ -87,15 +87,34 @@ async function ensureTokenClient(): Promise<TokenClient> {
   return tokenClient
 }
 
-/** Issues a single token request and routes its one response to `onToken` — see the
- * fixed-callback note on `currentTokenHandler` above for why this indirection exists. */
-async function requestToken(
-  onToken: (res: TokenResponse) => void,
-  overrideConfig?: { prompt?: string },
-): Promise<void> {
-  const client = await ensureTokenClient()
-  currentTokenHandler = onToken
-  client.requestAccessToken(overrideConfig)
+/** Serialized queue tail. GIS allows only one outstanding request per client, and its callback is
+ * fixed at creation (above), so overlapping callers would each overwrite `currentTokenHandler` —
+ * every handler but the last would then never be invoked and its promise would never settle. */
+let tokenQueue: Promise<unknown> = Promise.resolve()
+
+/** Shared silent-refresh promise, so parallel API calls hitting an expired token coalesce into a
+ * single GIS request instead of queueing one each. See getValidAccessToken. */
+let inFlightRefresh: Promise<string> | null = null
+
+/** Issues one token request and resolves with its single response. Requests are chained so a
+ * second caller waits for the first to settle rather than clobbering its handler. */
+function requestToken(overrideConfig?: { prompt?: string }): Promise<TokenResponse> {
+  const result = tokenQueue.then(async () => {
+    const client = await ensureTokenClient()
+    return new Promise<TokenResponse>((resolve) => {
+      currentTokenHandler = (res) => {
+        // GIS should only fire once per request, but guard anyway: a duplicate callback must not
+        // leak into whichever request happens to be queued next.
+        currentTokenHandler = null
+        resolve(res)
+      }
+      client.requestAccessToken(overrideConfig)
+    })
+  })
+  // Keep the chain alive even when a link rejects (e.g. the GIS script fails to load), otherwise
+  // one failure would permanently wedge every later token request.
+  tokenQueue = result.catch(() => {})
+  return result
 }
 
 export const useGoogleAuth = create<AuthState>((set, get) => ({
@@ -111,19 +130,15 @@ export const useGoogleAuth = create<AuthState>((set, get) => ({
     }
     set({ status: 'signing-in', errorMessage: null })
     try {
-      await new Promise<void>((resolve, reject) => {
-        requestToken((res) => {
-          if (res.error) {
-            reject(new Error(res.error_description ?? res.error))
-            return
-          }
-          set({
-            status: 'signed-in',
-            accessToken: res.access_token,
-            expiresAt: Date.now() + res.expires_in * 1000,
-          })
-          resolve()
-        }, { prompt: 'consent' }).catch(reject)
+      // No `prompt` override: GIS then defaults to 'select_account', which is interactive (right
+      // for an explicit "Sign in" click) but doesn't re-ask for consent the user already granted.
+      // Forcing 'consent' here meant every returning sign-in replayed the full consent screen.
+      const res = await requestToken()
+      if (res.error) throw new Error(res.error_description ?? res.error)
+      set({
+        status: 'signed-in',
+        accessToken: res.access_token,
+        expiresAt: Date.now() + res.expires_in * 1000,
       })
     } catch (err) {
       set({ status: 'error', errorMessage: err instanceof Error ? err.message : String(err) })
@@ -148,22 +163,32 @@ export const useGoogleAuth = create<AuthState>((set, get) => ({
     if (!isGoogleConfigured) {
       throw new Error('Google Drive is not configured yet — add VITE_GOOGLE_CLIENT_ID.')
     }
-    // Try a silent refresh first (no consent prompt) before falling back to interactive sign-in.
-    return new Promise<string>((resolve, reject) => {
-      requestToken((res) => {
-        if (res.error) {
-          set({ status: 'signed-out', accessToken: null, expiresAt: null })
-          reject(new Error('Session expired — please sign in again.'))
-          return
-        }
-        set({
-          status: 'signed-in',
-          accessToken: res.access_token,
-          expiresAt: Date.now() + res.expires_in * 1000,
-        })
-        resolve(res.access_token)
-      }, { prompt: '' }).catch(reject)
-    })
+    // Concurrent callers share one refresh. Parallel Drive/Sheets reads are the norm here
+    // (useCampaign loads four at once; http.ts retries every 401), so without this a single
+    // expiry would fan out into N simultaneous GIS requests.
+    if (inFlightRefresh) return inFlightRefresh
+
+    const refresh = (async () => {
+      // Silent refresh (no consent prompt) — piggybacks on Google's own cookie session.
+      const res = await requestToken({ prompt: '' })
+      if (res.error) {
+        set({ status: 'signed-out', accessToken: null, expiresAt: null })
+        throw new Error('Session expired — please sign in again.')
+      }
+      set({
+        status: 'signed-in',
+        accessToken: res.access_token,
+        expiresAt: Date.now() + res.expires_in * 1000,
+      })
+      return res.access_token
+    })()
+
+    inFlightRefresh = refresh
+    try {
+      return await refresh
+    } finally {
+      if (inFlightRefresh === refresh) inFlightRefresh = null
+    }
   },
 }))
 
@@ -182,8 +207,8 @@ useGoogleAuth.subscribe((state, prevState) => {
 // AuthGate holds children back during 'restoring' so nothing calls getValidAccessToken() and
 // races this request (GIS only supports one in-flight requestAccessToken per client anyway).
 if (isGoogleConfigured && !restoredSession) {
-  requestToken(
-    (res) => {
+  requestToken({ prompt: '' })
+    .then((res) => {
       if (res.error) {
         useGoogleAuth.setState({ status: 'signed-out' })
         return
@@ -193,9 +218,8 @@ if (isGoogleConfigured && !restoredSession) {
         accessToken: res.access_token,
         expiresAt: Date.now() + res.expires_in * 1000,
       })
-    },
-    { prompt: '' },
-  ).catch(() => {
-    useGoogleAuth.setState({ status: 'signed-out' })
-  })
+    })
+    .catch(() => {
+      useGoogleAuth.setState({ status: 'signed-out' })
+    })
 }

@@ -4,8 +4,9 @@ import { getClaudeApiKey } from './claudeKey'
 const MESSAGES_URL = 'https://api.anthropic.com/v1/messages'
 const ANTHROPIC_VERSION = '2023-06-01'
 // Enough for a narrative paragraph or two plus the trailing ```state JSON block without
-// truncating mid-reply — a truncated block would fail parseTurnReply downstream anyway.
-const MAX_TOKENS = 4096
+// truncating mid-reply — a truncated block would fail parseTurnReply downstream anyway, and the
+// code turns `stop_reason: 'max_tokens'` into a hard error rather than retrying.
+const MAX_TOKENS = 8192
 
 interface ContentBlock {
   type: string
@@ -43,6 +44,11 @@ export async function generateClaudeReply(prompt: string, model: ClaudeModel): P
     body: JSON.stringify({
       model,
       max_tokens: MAX_TOKENS,
+      // Explicitly off. Omitting `thinking` leaves the 4.6+ models (including the default
+      // claude-sonnet-5) on adaptive thinking, where thinking and visible output share the
+      // max_tokens budget — so reasoning could eat the budget and truncate the reply. Following a
+      // fixed output format doesn't benefit from thinking anyway, and skipping it is faster.
+      thinking: { type: 'disabled' },
       messages: [{ role: 'user', content: prompt }],
     }),
   })

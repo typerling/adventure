@@ -2,8 +2,9 @@
  * ElevenLabs API key storage — deliberately localStorage, not sessionStorage or Drive: per
  * DESIGN.md §8 it's a paid credential the user shouldn't have to re-enter every browser session,
  * but it must never be written to Drive (settings.md is shared/synced storage, localStorage is
- * this-browser-only). Google's OAuth token uses sessionStorage instead precisely because that one
- * *should* expire with the browser session — see src/lib/google/authStore.ts.
+ * this-browser-only). Google's OAuth token also lives in localStorage, but for a different
+ * reason — it's short-lived and silently refreshed, so persisting it only avoids a needless
+ * re-login; see the note at the top of src/lib/google/authStore.ts.
  */
 
 const STORAGE_KEY = 'adventure:elevenlabs-api-key'

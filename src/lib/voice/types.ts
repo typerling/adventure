@@ -1,7 +1,7 @@
 /**
- * Voice provider interfaces (DESIGN.md §8) — swappable per-function in Settings. Only the
- * `browser` implementation exists so far (Web Speech API, zero config); `elevenlabs` and
- * `huggingface-local` are Phase 2 follow-ups and stay disabled in Settings until implemented.
+ * Voice provider interfaces (DESIGN.md §8) — swappable per-function in Settings. All are
+ * implemented: STT via `browser` (Web Speech API) or `elevenlabs`; TTS via `browser`,
+ * `elevenlabs`, or `huggingface-local` (Kokoro, on-device — see kokoroTts.ts).
  */
 
 export interface SttProvider {

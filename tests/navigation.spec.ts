@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { installGoogleApiMock } from './mocks/googleApi'
-import { createRandomCampaign } from './helpers'
+import { createRandomCampaign, getRecordedToasts, recordToasts } from './helpers'
 
 /**
  * Regression coverage for a real gap: the app's only "Settings" link anywhere (the top-bar
@@ -82,6 +82,7 @@ test.describe('the top-bar header merges campaign navigation', () => {
 
   test('the turn/location icon button opens a dialog, not a toast', async ({ page }) => {
     await installGoogleApiMock(page)
+    await recordToasts(page)
     await createRandomCampaign(page)
 
     const turnButton = page.getByTitle(/^Turn 0/)
@@ -93,8 +94,10 @@ test.describe('the top-bar header merges campaign navigation', () => {
     await expect(dialog).toBeVisible()
     await expect(dialog.getByText('Where you are', { exact: true })).toBeVisible()
     await expect(dialog.getByText(label ?? '', { exact: true })).toBeVisible()
-    // No toast — this used to just fire a Sonner toast instead of a dismissable dialog.
-    await expect(page.locator('[data-sonner-toast]')).toHaveCount(0)
+    // No toast — this used to just fire a Sonner toast instead of a dismissable dialog. Asserted
+    // against the recorded history rather than a live locator: `toHaveCount(0)` auto-retries and
+    // toasts auto-dismiss, so that spelling passes even when a toast did appear (see recordToasts).
+    expect(await getRecordedToasts(page)).not.toContainEqual(expect.stringMatching(/^Turn 0/))
 
     await page.keyboard.press('Escape')
     await expect(dialog).toHaveCount(0)
