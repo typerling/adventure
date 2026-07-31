@@ -128,7 +128,16 @@ export const localModelCache = {
           controller.close()
           return
         }
-        const bytes = await readBlock(db, url, index)
+        // A rejection here only reaches `cancel()` if the *consumer* cancels the stream — the
+        // Streams spec doesn't call it when the underlying source's own pull() throws, so without
+        // this the connection would leak on any read failure instead of just erroring the stream.
+        let bytes: Uint8Array | undefined
+        try {
+          bytes = await readBlock(db, url, index)
+        } catch (err) {
+          db.close()
+          throw err
+        }
         index += 1
         if (bytes) controller.enqueue(bytes)
       },

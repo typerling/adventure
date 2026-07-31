@@ -77,6 +77,21 @@ test.describe('localModelCache block-chunked storage', () => {
     expect(result.matches).toBe(true)
   })
 
+  test('a payload delivered as a single chunk (the real-world case) round-trips exactly', async ({ page }) => {
+    // @huggingface/transformers always hands put() a Response already fully read into one
+    // buffer — chunkSize >= byteLength makes the harness's stream deliver everything in a single
+    // read(), exercising put()'s subarray-slicing fast path rather than the accumulate-then-merge
+    // path the other tests above cover.
+    const byteLength = BLOCK_SIZE + 12345
+    const result = await page.evaluate(
+      ([url, length, chunkSize]) => window.__putAndMatch(url, length, chunkSize),
+      ['https://huggingface.co/single-chunk.onnx', byteLength, byteLength],
+    )
+    expect(result.found).toBe(true)
+    expect(result.length).toBe(byteLength)
+    expect(result.matches).toBe(true)
+  })
+
   test('hasCachedLocalModelFiles reflects what has actually been fully stored', async ({ page }) => {
     expect(await page.evaluate(() => window.__hasCached())).toBe(false)
     await page.evaluate(() => window.__putAndMatch('https://huggingface.co/x.onnx', 500, 100))

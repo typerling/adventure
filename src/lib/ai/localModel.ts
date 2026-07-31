@@ -45,6 +45,32 @@ function broadcastProgress(p: LocalModelLoadProgress): void {
   for (const listener of progressListeners) listener(p)
 }
 
+const UNUSED_TEXT_ONLY_FILE_PATTERN = /vision_encoder|audio_encoder/
+
+/** @huggingface/transformers' upfront `progress_total` estimate (see modeling_utils.js's
+ * from_pretrained, which calls get_model_files()/getSessionsConfig() to size every file before
+ * any of them download) is computed purely from the checkpoint's own config — it never receives
+ * the `textOnly` flag that the `Gemma4ForCausalLM` choice below triggers, so it still counts the
+ * vision/audio encoder files' sizes even though they're never fetched. Left alone, the aggregate
+ * percentage would stall around ~91% (2.9GB actually downloaded / (2.9GB + the ~270MB that's
+ * never fetched) ≈ 91%) and jump straight to "ready" without ever visibly reaching 100%. Since
+ * this file already knows those two components are unused, strip them out of `progress_total`'s
+ * own numbers before they reach the aggregator — which otherwise treats `progress_total` as
+ * authoritative for whichever files it lists (see createProgressAggregator's doc comment). */
+function stripUnusedComponents(p: LocalModelLoadProgress): LocalModelLoadProgress {
+  if (p.status !== 'progress_total' || !p.files) return p
+  let loaded = 0
+  let total = 0
+  const files: Record<string, { loaded: number; total: number }> = {}
+  for (const [file, f] of Object.entries(p.files)) {
+    if (UNUSED_TEXT_ONLY_FILE_PATTERN.test(file)) continue
+    files[file] = f
+    loaded += f.loaded
+    total += f.total
+  }
+  return { ...p, files, loaded, total, progress: total > 0 ? (loaded / total) * 100 : p.progress }
+}
+
 /** Lets Settings show whether the model still needs downloading, without triggering it. */
 export function getLocalModelLoadState(): 'unloaded' | 'loading' | 'ready' {
   if (isReady) return 'ready'
@@ -75,8 +101,10 @@ function loadModel(onProgress?: (p: LocalModelLoadProgress) => void): Promise<Lo
       // both into a single monotonic byte-based percentage instead of each file's own progress
       // (see its doc comment for why raw per-file progress is actively misleading here).
       // broadcastProgress fans out to every attached listener rather than whichever one call to
-      // loadModel() happened to be first, so it always runs, listener or not.
-      const progressCallback = createProgressAggregator(broadcastProgress)
+      // loadModel() happened to be first, so it always runs, listener or not. stripUnusedComponents
+      // corrects progress_total's estimate for the textOnly load below before the aggregator sees it.
+      const aggregateProgress = createProgressAggregator(broadcastProgress)
+      const progressCallback = (p: LocalModelLoadProgress) => aggregateProgress(stripUnusedComponents(p))
       const [processor, model] = await Promise.all([
         AutoProcessor.from_pretrained(MODEL_ID, { progress_callback: progressCallback }),
         // Gemma4ForCausalLM (not the model card's native Gemma4ForConditionalGeneration) is a
