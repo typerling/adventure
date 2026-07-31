@@ -6,7 +6,7 @@ import { createRandomCampaign, setCampaignAiMode } from './helpers'
  * Real, on-device Gemma generation via WebGPU can't practically run as an automated test here:
  * Playwright's Chromium actually feature-detects `navigator.gpu` as present (Chrome ships WebGPU
  * by default now — verified directly, not assumed), so `isLocalModelSupported()` says yes and the
- * code proceeds to actually try downloading the ~1GB model from Hugging Face over the real
+ * code proceeds to actually try downloading the ~2.9GB model from Hugging Face over the real
  * network. That's not something to build CI coverage on regardless of GPU availability. So the
  * network path to huggingface.co is blocked below to force a fast, deterministic load failure —
  * this is also a realistic failure mode (an offline device, a captive network) which the app
@@ -43,14 +43,14 @@ test.describe('local (on-device) AI mode', () => {
     await expect(page.locator('[data-slot="select-trigger"]').first()).toContainText(
       'Local model (Gemma, runs on this device)',
     )
-    // "Downloads roughly 1 GB" appears both in this campaign's own note and in the always-visible
+    // "Downloads roughly 3 GB" appears both in this campaign's own note and in the always-visible
     // "Local AI model" card further down the page — just confirm the campaign-specific one shows.
-    await expect(page.getByText(/Downloads roughly 1.*GB/).first()).toBeVisible()
+    await expect(page.getByText(/Downloads roughly 3.*GB/).first()).toBeVisible()
   })
 
   test('a model load failure (e.g. no network) surfaces a clear error, not a hang or crash', async ({ page }) => {
     await installGoogleApiMock(page)
-    // Force the model download itself to fail fast instead of actually fetching ~1GB.
+    // Force the model download itself to fail fast instead of actually fetching ~2.9GB.
     await page.route(/huggingface\.co|hf\.co/, (route) => route.abort('failed'))
 
     await createRandomCampaign(page)
@@ -98,7 +98,7 @@ test.describe('local (on-device) AI mode', () => {
     await page.goto('/settings')
 
     // Seed the on-device cache directly (src/lib/ai/localModelCache.ts's schema) rather than
-    // performing a real ~1GB download of actual ONNX model data, which isn't something a test can
+    // performing a real ~2.9GB download of actual ONNX model data, which isn't something a test can
     // fake — this exercises the same hasDownloadedLocalModel()/removeLocalModel() functions a
     // real download would leave behind.
     await page.evaluate(() => {

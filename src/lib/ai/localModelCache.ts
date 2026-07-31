@@ -5,7 +5,7 @@
  * secure context (HTTPS, or the `localhost` exception) — this app's local AI mode is meant to be
  * tested on a phone's real GPU over a plain-HTTP LAN connection to the dev server (per
  * DESIGN.md/README), which is exactly the case Cache Storage can't cover. Without a working cache,
- * the ~1GB Gemma download repeats on every reload and even on every generation. IndexedDB has no
+ * the ~2.9GB Gemma download repeats on every reload and even on every generation. IndexedDB has no
  * such restriction, so this is used unconditionally rather than only as a fallback.
  */
 
@@ -92,7 +92,7 @@ export async function hasCachedLocalModelFiles(): Promise<boolean> {
   }
 }
 
-/** Deletes every cached model file, freeing the ~1GB it takes up on-device. */
+/** Deletes every cached model file, freeing the ~2.9GB it takes up on-device. */
 export function clearLocalModelCache(): Promise<void> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.deleteDatabase(DB_NAME)
