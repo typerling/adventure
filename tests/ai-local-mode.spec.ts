@@ -97,25 +97,29 @@ test.describe('local (on-device) AI mode', () => {
     await installGoogleApiMock(page)
     await page.goto('/settings')
 
-    // Seed the on-device cache directly (src/lib/ai/localModelCache.ts's schema) rather than
-    // performing a real ~2.9GB download of actual ONNX model data, which isn't something a test can
-    // fake — this exercises the same hasDownloadedLocalModel()/removeLocalModel() functions a
-    // real download would leave behind.
+    // Seed the on-device cache directly (src/lib/ai/localModelCache.ts's blocks/meta schema)
+    // rather than performing a real ~2.9GB download of actual ONNX model data, which isn't
+    // something a test can fake — this exercises the same hasDownloadedLocalModel()/
+    // removeLocalModel() functions a real download would leave behind.
     await page.evaluate(() => {
       return new Promise<void>((resolve, reject) => {
-        const openReq = indexedDB.open('adventure-local-model-cache', 1)
+        const openReq = indexedDB.open('adventure-local-model-cache', 2)
         openReq.onupgradeneeded = () => {
-          openReq.result.createObjectStore('responses', { keyPath: 'url' })
+          const db = openReq.result
+          db.createObjectStore('blocks', { keyPath: ['url', 'blockIndex'] })
+          db.createObjectStore('meta', { keyPath: 'url' })
         }
         openReq.onsuccess = () => {
           const db = openReq.result
-          const tx = db.transaction('responses', 'readwrite')
-          tx.objectStore('responses').put({
-            url: 'https://huggingface.co/fake-model-file.onnx',
+          const tx = db.transaction(['blocks', 'meta'], 'readwrite')
+          const url = 'https://huggingface.co/fake-model-file.onnx'
+          tx.objectStore('blocks').put({ url, blockIndex: 0, bytes: new Uint8Array(8) })
+          tx.objectStore('meta').put({
+            url,
             status: 200,
             statusText: 'OK',
             headers: [['content-type', 'application/octet-stream']],
-            body: new ArrayBuffer(8),
+            blockCount: 1,
           })
           tx.oncomplete = () => {
             db.close()
@@ -140,14 +144,16 @@ test.describe('local (on-device) AI mode', () => {
     // The underlying cache is actually gone, not just the UI state.
     const remainingCount = await page.evaluate(() => {
       return new Promise<number>((resolve, reject) => {
-        const openReq = indexedDB.open('adventure-local-model-cache', 1)
+        const openReq = indexedDB.open('adventure-local-model-cache', 2)
         openReq.onupgradeneeded = () => {
-          openReq.result.createObjectStore('responses', { keyPath: 'url' })
+          const db = openReq.result
+          db.createObjectStore('blocks', { keyPath: ['url', 'blockIndex'] })
+          db.createObjectStore('meta', { keyPath: 'url' })
         }
         openReq.onsuccess = () => {
           const db = openReq.result
-          const tx = db.transaction('responses', 'readonly')
-          const countReq = tx.objectStore('responses').count()
+          const tx = db.transaction('meta', 'readonly')
+          const countReq = tx.objectStore('meta').count()
           countReq.onsuccess = () => resolve(countReq.result)
           countReq.onerror = () => reject(countReq.error)
         }
