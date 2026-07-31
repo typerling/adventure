@@ -68,34 +68,20 @@ async function putMeta(meta: PartialMeta): Promise<void> {
   }
 }
 
-/** Reads every stored block for `url` in one IndexedDB transaction/connection, rather than one
- * open+transaction per block — opening a fresh connection per 4MB block turned replaying a large
- * partial download (hundreds of blocks) into a slow, visibly-animated crawl even though the data
- * was already on disk, which is exactly what made a resumed download look indistinguishable from
- * one starting at byte 0. See buildResumingStream, which merges these into a single chunk. */
-async function getAllBlocks(url: string, blockCount: number): Promise<Uint8Array[]> {
-  if (blockCount === 0) return []
-  const db = await openDb()
-  try {
-    return await new Promise<Uint8Array[]>((resolve, reject) => {
-      const tx = db.transaction(BLOCK_STORE, 'readonly')
-      const store = tx.objectStore(BLOCK_STORE)
-      const blocks = new Array<Uint8Array>(blockCount)
-      let remaining = blockCount
-      for (let i = 0; i < blockCount; i++) {
-        const req = store.get([url, i])
-        req.onsuccess = () => {
-          const record = req.result as { bytes: Uint8Array } | undefined
-          blocks[i] = record?.bytes ?? new Uint8Array(0)
-          remaining -= 1
-          if (remaining === 0) resolve(blocks)
-        }
-        req.onerror = () => reject(req.error ?? new Error('Failed to read partial-download block'))
-      }
-    })
-  } finally {
-    db.close()
-  }
+/** Reads one stored block using an already-open connection — see buildResumingStream, which keeps
+ * one connection open across the whole replay phase instead of opening (and closing) a fresh one
+ * per 4MB block. Deliberately still one block at a time rather than reading the whole replay
+ * payload into memory up front: for a large partial download (hundreds of MB already saved) that
+ * would mean holding it twice over — once in our own buffer, once again in the buffer
+ * @huggingface/transformers' `readResponse` builds as it reads from this stream — right as memory
+ * pressure from the model download is already the thing most likely to crash the tab. */
+async function readStoredBlock(db: IDBDatabase, url: string, blockIndex: number): Promise<Uint8Array | undefined> {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(BLOCK_STORE, 'readonly')
+    const req = tx.objectStore(BLOCK_STORE).get([url, blockIndex])
+    req.onsuccess = () => resolve((req.result as { bytes: Uint8Array } | undefined)?.bytes)
+    req.onerror = () => reject(req.error ?? new Error('Failed to read partial-download block'))
+  })
 }
 
 async function putBlock(url: string, blockIndex: number, bytes: Uint8Array): Promise<void> {
@@ -149,23 +135,23 @@ function mergeChunks(chunks: Uint8Array[], totalLength: number): Uint8Array {
   return merged
 }
 
-/** Replays any already-downloaded blocks for `url` as a single merged chunk, then continues from
- * the live network stream — mirroring new bytes into IndexedDB in BLOCK_SIZE batches as they pass
- * through — and clears the partial-download record once the stream naturally ends (the file is
- * now complete).
- *
- * Async (unlike a plain `new ReadableStream(...)`) because the replay blocks are read up front,
- * before the stream is even constructed, so `start()` can hand them to the consumer as one chunk
- * instead of enqueuing one small chunk per stored block. */
-async function buildResumingStream(
+/** Replays any already-downloaded blocks for `url`, one at a time, then continues from the live
+ * network stream — mirroring new bytes into IndexedDB in BLOCK_SIZE batches as they pass through —
+ * and clears the partial-download record once the stream naturally ends (the file is now
+ * complete). Replay reuses a single open connection for every block instead of one per block
+ * (opening a fresh connection per 4MB block made replaying a large partial download take long
+ * enough to look like it was re-downloading from scratch), while still handing off one block at a
+ * time rather than the whole replay payload at once, to keep its own memory footprint small. */
+function buildResumingStream(
   url: string,
   startMeta: PartialMeta,
   networkBody: ReadableStream<Uint8Array>,
   blockSize: number,
-): Promise<ReadableStream<Uint8Array>> {
+): ReadableStream<Uint8Array> {
   const networkReader = networkBody.getReader()
-  const replayBlocks = await getAllBlocks(url, startMeta.blockCount)
-  const replayBytes = replayBlocks.length > 0 ? mergeChunks(replayBlocks, startMeta.receivedBytes) : null
+  let replayDb: IDBDatabase | null = null
+  let replayIndex = 0
+  let replaying = startMeta.blockCount > 0
   let blockIndex = startMeta.blockCount
   let receivedBytes = startMeta.receivedBytes
   let pendingChunks: Uint8Array[] = []
@@ -183,10 +169,19 @@ async function buildResumingStream(
   }
 
   return new ReadableStream<Uint8Array>({
-    start(controller) {
-      if (replayBytes) controller.enqueue(replayBytes)
-    },
     async pull(controller) {
+      if (replaying) {
+        if (!replayDb) replayDb = await openDb()
+        if (replayIndex < startMeta.blockCount) {
+          const bytes = await readStoredBlock(replayDb, url, replayIndex)
+          replayIndex += 1
+          if (bytes) controller.enqueue(bytes)
+          return
+        }
+        replaying = false
+        replayDb.close()
+        replayDb = null
+      }
       const { done, value } = await networkReader.read()
       if (done) {
         await flushPending()
@@ -201,6 +196,7 @@ async function buildResumingStream(
     },
     cancel() {
       networkReader.cancel().catch(() => {})
+      replayDb?.close()
     },
   })
 }
@@ -246,7 +242,7 @@ export function createResumableFetch(baseFetch: typeof fetch, blockSize: number 
       if (meta) await clearPartial(url, meta.blockCount).catch(() => {})
       response = await baseFetch(input, { ...init, headers: new Headers(init?.headers) })
       if (response.status !== 200 || !response.body) return response
-      const stream = await buildResumingStream(
+      const stream = buildResumingStream(
         url,
         { url, receivedBytes: 0, blockCount: 0, etag: response.headers.get('ETag') },
         response.body,
@@ -294,7 +290,7 @@ export function createResumableFetch(baseFetch: typeof fetch, blockSize: number 
     const headers = new Headers(response.headers)
     if (totalLength) headers.set('Content-Length', totalLength)
 
-    const stream = await buildResumingStream(url, startMeta, response.body, blockSize)
+    const stream = buildResumingStream(url, startMeta, response.body, blockSize)
     return new Response(stream, { status: 200, statusText: 'OK', headers })
   }
 }
