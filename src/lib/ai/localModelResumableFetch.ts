@@ -201,6 +201,10 @@ function buildResumingStream(
 
   async function flushPending(): Promise<void> {
     if (pendingBytes === 0) return
+    // Always merges into a fresh, exactly-sized buffer, including for a single pending chunk —
+    // don't "optimize" that into passing a chunk straight through. Network chunks are views into
+    // larger internal buffers, and IndexedDB clones a view's *whole* backing ArrayBuffer (see
+    // toOwnedBlock in localModelCache.ts), so a view here would balloon what's written to disk.
     const merged = mergeChunks(pendingChunks, pendingBytes)
     await putBlock(url, blockIndex, merged)
     blockIndex += 1

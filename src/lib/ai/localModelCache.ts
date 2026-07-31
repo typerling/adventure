@@ -17,17 +17,17 @@
  * that call made a second full-size copy of a file that can be ~1.5GB, at exactly the moment
  * memory pressure from the download is already highest — and `match()` had to load an entire
  * stored blob back into memory before it could return anything. `match()` reads blocks back one
- * at a time via a stream. `put()`'s common case — @huggingface/transformers always hands it a
- * Response already fully read into one buffer — slices that single chunk directly via `subarray`
- * (a view, not a copy) rather than duplicating it; only genuinely smaller chunks (not expected in
- * practice, but not assumed against either) go through a copy, and only once a block's worth has
- * accumulated, not per chunk.
+ * at a time via a stream.
+ *
+ * **Every block handed to IndexedDB must own an exactly-sized buffer** — see `toOwnedBlock`. This
+ * is the one non-obvious constraint in this file, and getting it wrong doesn't corrupt anything,
+ * it just silently multiplies what's written to disk by the number of blocks in the file.
  */
 
 const DB_NAME = 'adventure-local-model-cache'
 const BLOCK_STORE = 'blocks'
 const META_STORE = 'meta'
-const DB_VERSION = 2
+const DB_VERSION = 3
 const BLOCK_SIZE = 4 * 1024 * 1024
 
 interface StoredMeta {
@@ -43,16 +43,28 @@ function openDb(): Promise<IDBDatabase> {
     const req = indexedDB.open(DB_NAME, DB_VERSION)
     req.onupgradeneeded = () => {
       const db = req.result
-      // v1 stored one blob per file under a 'responses' store, replaced by blocks/meta below —
-      // not worth migrating, since this is a disposable cache that just re-downloads on a miss.
-      if (db.objectStoreNames.contains('responses')) db.deleteObjectStore('responses')
-      if (!db.objectStoreNames.contains(BLOCK_STORE)) {
-        db.createObjectStore(BLOCK_STORE, { keyPath: ['url', 'blockIndex'] })
+      // Every version bump drops whatever was there and starts clean, rather than migrating: this
+      // is a disposable cache that just re-downloads on a miss, and each bump so far has existed
+      // precisely because the old contents were unusable or unwanted.
+      //   v1 → v2: one blob per file, replaced by the blocks/meta pair below.
+      //   v2 → v3: blocks written before toOwnedBlock existed each embedded a clone of the whole
+      //     file (see toOwnedBlock), so a cached 728MB model could be occupying >100GB. Those
+      //     entries read back fine, which is exactly why they'd otherwise linger forever. This
+      //     also reclaims orphaned blocks from a put() that died partway: meta is written last, so
+      //     an interrupted put() leaves blocks that no meta record points at, which makes them
+      //     invisible to both hasCachedLocalModelFiles and clearLocalModelCache.
+      for (const name of ['responses', BLOCK_STORE, META_STORE]) {
+        if (db.objectStoreNames.contains(name)) db.deleteObjectStore(name)
       }
-      if (!db.objectStoreNames.contains(META_STORE)) {
-        db.createObjectStore(META_STORE, { keyPath: 'url' })
-      }
+      db.createObjectStore(BLOCK_STORE, { keyPath: ['url', 'blockIndex'] })
+      db.createObjectStore(META_STORE, { keyPath: 'url' })
     }
+    // Fires instead of onsuccess/onerror when another tab still holds this database open at an
+    // older version, so the upgrade above can't run. Without an explicit reject, that request just
+    // sits there and every caller awaiting openDb() hangs indefinitely with no error — the exact
+    // failure mode this file's DB_VERSION bump would otherwise be able to cause.
+    req.onblocked = () =>
+      reject(new Error('Another open tab is using the local model cache — close it and try again.'))
     req.onsuccess = () => resolve(req.result)
     req.onerror = () => reject(req.error ?? new Error('Failed to open local model cache database'))
   })
@@ -108,6 +120,32 @@ function mergeChunks(chunks: Uint8Array[], totalLength: number): Uint8Array {
   return merged
 }
 
+/**
+ * Guarantees `bytes` is backed by an ArrayBuffer it covers *exactly*, copying if it isn't.
+ *
+ * IndexedDB stores values via the structured clone algorithm, and cloning an ArrayBufferView
+ * serializes its **entire** `[[ViewedArrayBuffer]]`, not just the region the view spans (per the
+ * HTML spec's StructuredSerializeInternal) — the view's offset/length are simply replayed over a
+ * full copy of the buffer on the way back out. So handing this store a `subarray` of the big
+ * download buffer writes the whole file to disk *per block*: for the 728MB file behind Gemma 3 1B
+ * that's 182 blocks × 728MB ≈ 132GB, and for the 461MB Qwen2.5 0.5B file ≈ 53GB.
+ *
+ * This is invisible to a correctness test — the bytes round-trip exactly either way, which is why
+ * the round-trip specs in tests/local-model-cache.spec.ts passed throughout — and surfaces only as
+ * `put()` never appearing to return, i.e. a model that downloads to 100% and then sits on
+ * "Preparing local model…" forever (see describeModelDownloadProgress, which shows exactly that
+ * once every byte has arrived but from_pretrained() hasn't resolved). @huggingface/transformers
+ * awaits this cache write inline in its load path (storeCachedResource in its hub.js), so however
+ * long it takes is time the model load is blocked.
+ *
+ * The copy costs one BLOCK_SIZE allocation, not a full-file one — the thing the block-chunked
+ * design exists to avoid in the first place.
+ */
+function toOwnedBlock(bytes: Uint8Array): Uint8Array {
+  if (bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength) return bytes
+  return bytes.slice()
+}
+
 // Cache keys are the exact request URL (buildResourcePaths() in the installed package's
 // hub.js — https://huggingface.co/<modelId>/resolve/<revision>/<file> — falls back to that as the
 // cache key for any non-filesystem cache, which this is), so a model's own files can always be
@@ -160,23 +198,32 @@ function getAllCachedUrls(db: IDBDatabase): Promise<string[]> {
 export const localModelCache = {
   async match(request: string | Request): Promise<Response | undefined> {
     const url = keyFor(request)
-    const db = await openDb()
-    const meta = await getMeta(db, url).catch((err) => {
-      db.close()
-      throw err
-    })
-    if (!meta) {
-      db.close()
-      return undefined
+    const metaDb = await openDb()
+    let meta: StoredMeta | undefined
+    try {
+      meta = await getMeta(metaDb, url)
+    } finally {
+      metaDb.close()
     }
+    if (!meta) return undefined
+    const found = meta
+
+    // The returned Response deliberately holds no open connection of its own until something
+    // actually reads from it: @huggingface/transformers calls match() as a pure existence check
+    // and discards the Response unread (see storeCachedResource in its hub.js, which bails early
+    // if a key is already cached), so a connection opened eagerly here would be left open with no
+    // stream event — pull or cancel — ever arriving to close it.
+    //
     // Reads one block at a time as the consumer (@huggingface/transformers' readResponse) pulls
     // from this stream, rather than loading every block into memory up front — same reasoning as
     // localModelResumableFetch.ts's buildResumingStream.
     let index = 0
+    let db: IDBDatabase | null = null
     const stream = new ReadableStream<Uint8Array>({
       async pull(controller) {
-        if (index >= meta.blockCount) {
-          db.close()
+        if (index >= found.blockCount) {
+          db?.close()
+          db = null
           controller.close()
           return
         }
@@ -185,25 +232,34 @@ export const localModelCache = {
         // this the connection would leak on any read failure instead of just erroring the stream.
         let bytes: Uint8Array | undefined
         try {
+          db ??= await openDb()
           bytes = await readBlock(db, url, index)
         } catch (err) {
-          db.close()
+          db?.close()
+          db = null
           throw err
         }
         index += 1
         if (bytes) controller.enqueue(bytes)
       },
       cancel() {
-        db.close()
+        db?.close()
+        db = null
       },
     })
-    return new Response(stream, { status: meta.status, statusText: meta.statusText, headers: meta.headers })
+    return new Response(stream, { status: found.status, statusText: found.statusText, headers: found.headers })
   },
 
   async put(request: string | Request, response: Response): Promise<void> {
     const url = keyFor(request)
     const db = await openDb()
     try {
+      // Drop anything already stored for this URL before rewriting it. The meta record is written
+      // last (so a half-finished put() never reads back as a complete file), which means an
+      // interrupted put() leaves blocks no meta record points at — unreachable to both
+      // hasCachedLocalModelFiles and clearLocalModelCache, and therefore never reclaimable. This
+      // also stops a re-put that produces fewer blocks than last time from stranding the tail.
+      await deleteModelEntry(db, url)
       const reader = response.body?.getReader()
       let blockIndex = 0
       let pendingChunks: Uint8Array[] = []
@@ -211,9 +267,11 @@ export const localModelCache = {
 
       async function flushPending(): Promise<void> {
         if (pendingBytes === 0) return
-        // Skip the merge copy entirely when there's only one piece to write — the common case
-        // below, where this is a lone leftover slice from an already-block-sized chunk.
-        const merged = pendingChunks.length === 1 ? pendingChunks[0] : mergeChunks(pendingChunks, pendingBytes)
+        // mergeChunks already produces an exactly-sized buffer; a lone chunk is passed through
+        // toOwnedBlock instead of copied blindly, since it's usually the trailing slice of the
+        // single big chunk below and must not be stored as a view into it.
+        const merged =
+          pendingChunks.length === 1 ? toOwnedBlock(pendingChunks[0]) : mergeChunks(pendingChunks, pendingBytes)
         await writeBlock(db, url, blockIndex, merged)
         blockIndex += 1
         pendingChunks = []
@@ -225,15 +283,16 @@ export const localModelCache = {
           const { done, value } = await reader.read()
           if (done) break
           // @huggingface/transformers always hands put() a Response already fully read into one
-          // buffer (see this file's top comment), so in practice this is a single chunk already
-          // at least block-sized. Slice it directly via `subarray` (a view, not a copy — IndexedDB's
-          // own write already clones whatever it's given to persist it) rather than funneling it
-          // through the same accumulate-then-copy path smaller chunks use below, which would
-          // otherwise duplicate a buffer that can be ~1.5GB just to get it into IndexedDB.
+          // buffer (see this file's top comment), so in practice this is a single chunk covering
+          // the whole file — cut it straight into blocks here rather than funneling it through the
+          // accumulate-then-merge path smaller chunks use below. `slice` (a copy of just this
+          // block) rather than `subarray` (a view) is load-bearing, not defensive: see
+          // toOwnedBlock. Only the trailing remainder is carried over, and it's owned by the time
+          // it reaches IndexedDB via flushPending.
           if (pendingBytes === 0 && value.length >= BLOCK_SIZE) {
             let offset = 0
             while (value.length - offset >= BLOCK_SIZE) {
-              await writeBlock(db, url, blockIndex, value.subarray(offset, offset + BLOCK_SIZE))
+              await writeBlock(db, url, blockIndex, value.slice(offset, offset + BLOCK_SIZE))
               blockIndex += 1
               offset += BLOCK_SIZE
             }
