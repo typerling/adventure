@@ -299,11 +299,34 @@ export async function generateLocalReply(
   // uses a plain AutoTokenizer, whose chat template expects `content` as a plain string.
   const usesProcessor = LOCAL_MODELS[modelId].usesProcessor
   const history = [{ role: 'user', content: usesProcessor ? [{ type: 'text', text: prompt }] : prompt }]
-  const chatText = processor.apply_chat_template(history, {
+  const templated = processor.apply_chat_template(history, {
     enable_thinking: false,
     add_generation_prompt: true,
   })
-  const inputs = await processor(chatText)
+  // The two loaders' apply_chat_template defaults are opposites, and nothing about the call site
+  // shows it: Processor.apply_chat_template forces `tokenize: false` (processing_utils.js) and
+  // returns a *string*, which the processor call below turns into tensors; PreTrainedTokenizer.
+  // apply_chat_template defaults to `tokenize: true` and has already returned the finished
+  // `{ input_ids, attention_mask }`. Feeding that dict back through the tokenizer doesn't throw —
+  // it silently yields input_ids with dims [1, 0], and generation then fails deep inside the ONNX
+  // graph ("The input tensor cannot be reshaped to the requested shape", with a 0 where the
+  // sequence length should be) rather than anywhere near the actual mistake.
+  //
+  // Using the tokenizer's dict directly is also the more faithful of the two options: internally
+  // it tokenizes with `add_special_tokens: false`, because the chat template has already placed
+  // every special token it wants. Re-tokenizing the rendered string instead would default to
+  // `add_special_tokens: true` and prepend a second BOS for the models whose template already
+  // starts with one (Gemma 3 and Llama 3.2, among those in LOCAL_MODELS).
+  const inputs = usesProcessor ? await processor(templated) : templated
+
+  // Cheap guard for an otherwise near-undebuggable class of failure: anything that leaves the
+  // prompt empty (a chat template that renders to nothing, a future loader whose
+  // apply_chat_template contract differs again) doesn't fail here — it fails several layers down
+  // as an ONNX Runtime reshape error naming tensor dimensions with no obvious connection to the
+  // prompt. Fail at the point the mistake actually happened instead.
+  if (!(inputs?.input_ids?.dims?.at(-1) > 0)) {
+    throw new Error(`Building the prompt for ${modelId} produced no tokens — this is a bug, not a model failure.`)
+  }
 
   let fullReply = ''
   const streamer = new TextStreamer(processor.tokenizer ?? processor, {
