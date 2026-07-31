@@ -436,7 +436,7 @@ export function Play() {
           >
             {statusMessage || 'Generating your turn…'}
           </button>
-          {downloadProgress !== null && <Progress value={downloadProgress} className="h-1 w-48" />}
+          {downloadProgress !== null && <Progress value={downloadProgress} className="h-1 w-full" />}
         </div>
       )}
 
