@@ -36,7 +36,7 @@ test('Kokoro is selectable as a text-to-speech provider in Settings', async ({ p
 test('the Kokoro voice model can be downloaded ahead of time from Settings', async ({ page }) => {
   await installGoogleApiMock(page)
   // Force the model download to fail fast instead of really fetching it — same approach (and same
-  // reasoning) as the local Gemma model's download test in ai-local-mode.spec.ts.
+  // reasoning) as the local model download tests in ai-local-mode.spec.ts.
   await page.route(/huggingface\.co|hf\.co/, (route) => route.abort('failed'))
 
   await page.goto('/settings')

@@ -14,8 +14,8 @@ declare global {
       length?: number
       matches?: boolean
     }>
-    __hasCached: () => Promise<boolean>
-    __clearCache: () => Promise<void>
+    __hasCached: (modelId: string) => Promise<boolean>
+    __clearCache: (modelId: string) => Promise<void>
     __matchMissing: (url: string) => Promise<boolean>
   }
 }
@@ -29,20 +29,32 @@ declare global {
  * single-buffer Response wouldn't exercise since it delivers everything in one piece. The
  * harness compares bytes inside the page itself and only returns a boolean — returning a multi-MB
  * array through page.evaluate()'s IPC boundary is dramatically slower than what it'd be testing.
+ *
+ * URLs are shaped like real cache keys (https://huggingface.co/<modelId>/resolve/main/<file> —
+ * see buildResourcePaths() in the installed @huggingface/transformers package) since
+ * hasCachedLocalModelFiles()/clearLocalModelCache() now match by that prefix to scope to one
+ * model among several sharing the same IndexedDB database.
  */
 
 const BLOCK_SIZE = 4 * 1024 * 1024 // must match localModelCache.ts's own BLOCK_SIZE
+const MODEL_A = 'test-org/model-a'
+const MODEL_B = 'test-org/model-b'
+
+function fileUrl(modelId: string, file: string): string {
+  return `https://huggingface.co/${modelId}/resolve/main/${file}`
+}
 
 test.describe('localModelCache block-chunked storage', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/tests/fixtures/local-model-cache-harness.html')
-    await page.evaluate(() => window.__clearCache())
+    await page.evaluate((modelId) => window.__clearCache(modelId), MODEL_A)
+    await page.evaluate((modelId) => window.__clearCache(modelId), MODEL_B)
   })
 
   test('a payload smaller than one block round-trips exactly, with status/headers intact', async ({ page }) => {
     const result = await page.evaluate(
-      ([url, length, chunkSize]) => window.__putAndMatch(url, length, chunkSize),
-      ['https://huggingface.co/small.onnx', 1000, 300],
+      ([url, length, chunkSize]) => window.__putAndMatch(url as string, length as number, chunkSize as number),
+      [fileUrl(MODEL_A, 'model.onnx'), 1000, 300],
     )
     expect(result.found).toBe(true)
     expect(result.status).toBe(200)
@@ -58,8 +70,8 @@ test.describe('localModelCache block-chunked storage', () => {
     // several reads, but not so small that this needs thousands of stream round-trips just to
     // cover one block — that's testing browser stream overhead, not this code.
     const result = await page.evaluate(
-      ([url, length, chunkSize]) => window.__putAndMatch(url, length, chunkSize),
-      ['https://huggingface.co/multi-block.onnx', byteLength, 65536],
+      ([url, length, chunkSize]) => window.__putAndMatch(url as string, length as number, chunkSize as number),
+      [fileUrl(MODEL_A, 'model_q4f16.onnx_data'), byteLength, 65536],
     )
     expect(result.found).toBe(true)
     expect(result.length).toBe(byteLength)
@@ -69,8 +81,8 @@ test.describe('localModelCache block-chunked storage', () => {
   test('a payload that is an exact multiple of the block size round-trips exactly', async ({ page }) => {
     const byteLength = BLOCK_SIZE * 2
     const result = await page.evaluate(
-      ([url, length, chunkSize]) => window.__putAndMatch(url, length, chunkSize),
-      ['https://huggingface.co/exact-blocks.onnx', byteLength, 262144],
+      ([url, length, chunkSize]) => window.__putAndMatch(url as string, length as number, chunkSize as number),
+      [fileUrl(MODEL_A, 'model_q4f16.onnx_data'), byteLength, 262144],
     )
     expect(result.found).toBe(true)
     expect(result.length).toBe(byteLength)
@@ -84,8 +96,8 @@ test.describe('localModelCache block-chunked storage', () => {
     // path the other tests above cover.
     const byteLength = BLOCK_SIZE + 12345
     const result = await page.evaluate(
-      ([url, length, chunkSize]) => window.__putAndMatch(url, length, chunkSize),
-      ['https://huggingface.co/single-chunk.onnx', byteLength, byteLength],
+      ([url, length, chunkSize]) => window.__putAndMatch(url as string, length as number, chunkSize as number),
+      [fileUrl(MODEL_A, 'model_q4f16.onnx_data'), byteLength, byteLength],
     )
     expect(result.found).toBe(true)
     expect(result.length).toBe(byteLength)
@@ -93,12 +105,28 @@ test.describe('localModelCache block-chunked storage', () => {
   })
 
   test('hasCachedLocalModelFiles reflects what has actually been fully stored', async ({ page }) => {
-    expect(await page.evaluate(() => window.__hasCached())).toBe(false)
-    await page.evaluate(() => window.__putAndMatch('https://huggingface.co/x.onnx', 500, 100))
-    expect(await page.evaluate(() => window.__hasCached())).toBe(true)
+    expect(await page.evaluate((modelId) => window.__hasCached(modelId), MODEL_A)).toBe(false)
+    await page.evaluate(([url]) => window.__putAndMatch(url as string, 500, 100), [fileUrl(MODEL_A, 'x.onnx')])
+    expect(await page.evaluate((modelId) => window.__hasCached(modelId), MODEL_A)).toBe(true)
   })
 
   test('matching a URL that was never cached returns undefined, not a crash', async ({ page }) => {
-    expect(await page.evaluate(() => window.__matchMissing('https://huggingface.co/never-cached.onnx'))).toBe(true)
+    expect(
+      await page.evaluate((url) => window.__matchMissing(url), fileUrl(MODEL_A, 'never-cached.onnx')),
+    ).toBe(true)
+  })
+
+  test('caching/clearing one model does not affect a different model sharing the same database', async ({
+    page,
+  }) => {
+    await page.evaluate(([url]) => window.__putAndMatch(url as string, 500, 100), [fileUrl(MODEL_A, 'x.onnx')])
+    await page.evaluate(([url]) => window.__putAndMatch(url as string, 500, 100), [fileUrl(MODEL_B, 'x.onnx')])
+    expect(await page.evaluate((modelId) => window.__hasCached(modelId), MODEL_A)).toBe(true)
+    expect(await page.evaluate((modelId) => window.__hasCached(modelId), MODEL_B)).toBe(true)
+
+    await page.evaluate((modelId) => window.__clearCache(modelId), MODEL_A)
+
+    expect(await page.evaluate((modelId) => window.__hasCached(modelId), MODEL_A)).toBe(false)
+    expect(await page.evaluate((modelId) => window.__hasCached(modelId), MODEL_B)).toBe(true)
   })
 })

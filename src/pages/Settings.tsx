@@ -5,7 +5,15 @@ import { ArrowLeft } from 'lucide-react'
 import { loadCampaignFile, loadSettings, saveSettings } from '@/lib/google/campaignRepo'
 import { getCachedCampaign, patchCachedCampaignSettings } from '@/hooks/campaignCache'
 import { usePlayHeaderStore } from '@/store/playHeaderStore'
-import { AI_MODES, CLAUDE_MODELS, STT_PROVIDERS, TTS_PROVIDERS, type CampaignSettings } from '@/types/campaign'
+import {
+  AI_MODES,
+  CLAUDE_MODELS,
+  LOCAL_MODEL_IDS,
+  STT_PROVIDERS,
+  TTS_PROVIDERS,
+  type CampaignSettings,
+  type LocalModelId,
+} from '@/types/campaign'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Label } from '@/components/ui/label'
@@ -15,11 +23,14 @@ import { Progress } from '@/components/ui/progress'
 import { useGoogleAuth } from '@/lib/google/authStore'
 import { getElevenLabsApiKey, setElevenLabsApiKey } from '@/lib/voice/elevenLabsKey'
 import { getClaudeApiKey, setClaudeApiKey } from '@/lib/ai/claudeKey'
+import { formatBytes } from '@/lib/modelDownloadProgress'
 import {
   describeLocalModelProgress,
   getLocalModelLoadState,
   hasDownloadedLocalModel,
+  hasPartiallyDownloadedLocalModel,
   isLocalModelSupported,
+  LOCAL_MODELS,
   preloadLocalModel,
   removeLocalModel,
 } from '@/lib/ai/localModel'
@@ -30,6 +41,24 @@ import {
   preloadKokoroModel,
   removeKokoroModel,
 } from '@/lib/voice/kokoroTts'
+
+interface LocalModelRowState {
+  loadState: 'unloaded' | 'loading' | 'ready'
+  statusMessage: string
+  downloadProgress: number | null
+  removing: boolean
+  /** An interrupted/incomplete download sitting on disk, distinct from fully downloaded — lets a
+   * "not downloaded" row still offer to clear the space a failed attempt already used. */
+  hasPartial: boolean
+}
+
+const INITIAL_ROW_STATE: LocalModelRowState = {
+  loadState: 'unloaded',
+  statusMessage: '',
+  downloadProgress: null,
+  removing: false,
+  hasPartial: false,
+}
 
 const CLAUDE_MODEL_LABELS: Record<(typeof CLAUDE_MODELS)[number], string> = {
   'claude-opus-5': 'Opus 5 — strongest reasoning, highest cost',
@@ -45,15 +74,20 @@ export function Settings() {
   const [saving, setSaving] = useState(false)
   const [elevenLabsKey, setElevenLabsKeyInput] = useState(() => getElevenLabsApiKey() ?? '')
   const [claudeKey, setClaudeKeyInput] = useState(() => getClaudeApiKey() ?? '')
-  const [modelLoadState, setModelLoadState] = useState(() => getLocalModelLoadState())
-  const [modelStatusMessage, setModelStatusMessage] = useState('')
-  const [modelDownloadProgress, setModelDownloadProgress] = useState<number | null>(null)
-  const [removingModel, setRemovingModel] = useState(false)
+  const [modelRows, setModelRows] = useState<Record<LocalModelId, LocalModelRowState>>(() =>
+    Object.fromEntries(
+      LOCAL_MODEL_IDS.map((id) => [id, { ...INITIAL_ROW_STATE, loadState: getLocalModelLoadState(id) }]),
+    ) as Record<LocalModelId, LocalModelRowState>,
+  )
   const [voiceLoadState, setVoiceLoadState] = useState(() => getKokoroLoadState())
   const [voiceStatusMessage, setVoiceStatusMessage] = useState('')
   const [voiceDownloadProgress, setVoiceDownloadProgress] = useState<number | null>(null)
   const [removingVoiceModel, setRemovingVoiceModel] = useState(false)
   const setHeaderContext = usePlayHeaderStore((s) => s.setContext)
+
+  function patchModelRow(modelId: LocalModelId, patch: Partial<LocalModelRowState>) {
+    setModelRows((prev) => ({ ...prev, [modelId]: { ...prev[modelId], ...patch } }))
+  }
 
   useEffect(() => {
     if (!campaignId) return
@@ -83,17 +117,26 @@ export function Settings() {
 
   // Refines the in-memory-only guess from getLocalModelLoadState() (which only knows about this
   // page session) with what's actually on disk — a model downloaded in an earlier session should
-  // still show as ready here, not prompt for a redundant re-download.
+  // still show as ready here, not prompt for a redundant re-download. Also checks for an
+  // interrupted/partial download for each model, so a failed attempt's leftover data can be
+  // offered for cleanup even for a model that was never fully downloaded.
   useEffect(() => {
     let cancelled = false
     // Both can reject where IndexedDB/Cache Storage is unavailable (private browsing, storage
     // disabled). That just means nothing is cached, so fall through to the un-downloaded state
     // rather than throwing into an unhandled rejection.
-    void hasDownloadedLocalModel()
-      .then((has) => {
-        if (!cancelled && has) setModelLoadState('ready')
-      })
-      .catch(() => {})
+    for (const id of LOCAL_MODEL_IDS) {
+      void hasDownloadedLocalModel(id)
+        .then((has) => {
+          if (!cancelled && has) patchModelRow(id, { loadState: 'ready' })
+        })
+        .catch(() => {})
+      void hasPartiallyDownloadedLocalModel(id)
+        .then((has) => {
+          if (!cancelled && has) patchModelRow(id, { hasPartial: true })
+        })
+        .catch(() => {})
+    }
     void hasDownloadedKokoroModel()
       .then((has) => {
         if (!cancelled && has) setVoiceLoadState('ready')
@@ -110,7 +153,9 @@ export function Settings() {
   // showing instead of reading as abandoned just because nothing was listening while unmounted.
   // Guarded to only reattach, never start a fresh, unrequested download.
   useEffect(() => {
-    if (getLocalModelLoadState() === 'loading') void downloadModel()
+    for (const id of LOCAL_MODEL_IDS) {
+      if (getLocalModelLoadState(id) === 'loading') void downloadModel(id)
+    }
     if (getKokoroLoadState() === 'loading') void downloadVoiceModel()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -139,37 +184,32 @@ export function Settings() {
     toast.success(claudeKey.trim() ? 'Claude API key saved.' : 'Claude API key cleared.')
   }
 
-  async function downloadModel() {
-    setModelLoadState('loading')
-    setModelStatusMessage('Fetching local model…')
-    setModelDownloadProgress(null)
+  async function downloadModel(modelId: LocalModelId) {
+    patchModelRow(modelId, { loadState: 'loading', statusMessage: 'Fetching local model…', downloadProgress: null })
     try {
-      await preloadLocalModel((p) => {
-        setModelStatusMessage(describeLocalModelProgress(p))
-        setModelDownloadProgress(typeof p.progress === 'number' ? p.progress : null)
+      await preloadLocalModel(modelId, (p) => {
+        patchModelRow(modelId, {
+          statusMessage: describeLocalModelProgress(p),
+          downloadProgress: typeof p.progress === 'number' ? p.progress : null,
+        })
       })
-      setModelLoadState('ready')
-      setModelStatusMessage('')
-      setModelDownloadProgress(null)
-      toast.success('Local model downloaded and ready.')
+      patchModelRow(modelId, { loadState: 'ready', statusMessage: '', downloadProgress: null, hasPartial: false })
+      toast.success(`${LOCAL_MODELS[modelId].label} downloaded and ready.`)
     } catch (err) {
-      setModelLoadState('unloaded')
-      setModelStatusMessage('')
-      setModelDownloadProgress(null)
+      patchModelRow(modelId, { loadState: 'unloaded', statusMessage: '', downloadProgress: null })
       toast.error(err instanceof Error ? err.message : String(err))
     }
   }
 
-  async function removeModel() {
-    setRemovingModel(true)
+  async function removeModel(modelId: LocalModelId) {
+    patchModelRow(modelId, { removing: true })
     try {
-      await removeLocalModel()
-      setModelLoadState('unloaded')
-      toast.success('Local model removed from this device.')
+      await removeLocalModel(modelId)
+      patchModelRow(modelId, { loadState: 'unloaded', removing: false, hasPartial: false })
+      toast.success(`${LOCAL_MODELS[modelId].label} removed from this device.`)
     } catch (err) {
+      patchModelRow(modelId, { removing: false })
       toast.error(err instanceof Error ? err.message : String(err))
-    } finally {
-      setRemovingModel(false)
     }
   }
 
@@ -244,7 +284,7 @@ export function Settings() {
                         ? 'Manual (copy/paste into claude.ai or chatgpt.com)'
                         : m === 'api'
                           ? 'Direct API key (Claude)'
-                          : 'Local model (Gemma, runs on this device)'}
+                          : 'Local model (runs on this device)'}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -252,14 +292,32 @@ export function Settings() {
             </div>
 
             {settings.aiMode === 'local' && (
-              <p className="text-xs text-muted-foreground">
-                No key needed — everything runs on this device. Needs a browser with WebGPU
-                (Chrome/Edge on Android, Safari 26+ on iOS/macOS). Downloads roughly 3&nbsp;GB
-                once and caches it after that — a large download that can crash the tab on
-                memory-constrained devices — see "Local AI model" below to download it ahead of
-                time. Quality and reliability (especially following the reply format) are
-                noticeably weaker than the API mode.
-              </p>
+              <div className="flex flex-col gap-2">
+                <Label>Local model</Label>
+                <Select
+                  value={settings.localModelId}
+                  onValueChange={(v) => setSettings({ ...settings, localModelId: v as LocalModelId })}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {LOCAL_MODEL_IDS.map((id) => (
+                      <SelectItem key={id} value={id}>
+                        {LOCAL_MODELS[id].label} — {formatBytes(LOCAL_MODELS[id].sizeBytes)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  No key needed — everything runs on this device. Needs a browser with WebGPU
+                  (Chrome/Edge on Android, Safari 26+ on iOS/macOS). Bigger models are higher
+                  quality but slower to download and more likely to crash the tab on
+                  memory-constrained devices — see "Local AI models" below to download or remove
+                  any of them ahead of time. Quality and reliability (especially following the
+                  reply format) are noticeably weaker than the API mode, more so for smaller models.
+                </p>
+              </div>
             )}
 
             {settings.aiMode === 'api' && (
@@ -365,44 +423,74 @@ export function Settings() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Local AI model</CardTitle>
+          <CardTitle>Local AI models</CardTitle>
           <CardDescription>
-            Used by any campaign set to "Local model (Gemma, runs on this device)" — no key, no
-            server, runs fully on-device via WebGPU. Downloads roughly 3&nbsp;GB once and caches
-            it in this browser after that — a large download that can crash the tab on
-            memory-constrained devices. Download it ahead of time here so the first turn of a
-            local-mode campaign doesn't have to wait on it.
+            Used by any campaign set to "Local model (runs on this device)" — no key, no server,
+            each runs fully on-device via WebGPU. Bigger models are higher quality but slower to
+            download and more likely to crash the tab on memory-constrained devices. Download
+            whichever ones you want ahead of time here so a local-mode campaign's first turn
+            doesn't have to wait on it.
           </CardDescription>
         </CardHeader>
-        <CardContent className="flex flex-col gap-3">
+        <CardContent className="flex flex-col gap-4">
           {!isLocalModelSupported() ? (
             <p className="text-sm text-destructive">
               This browser doesn't support WebGPU, so local mode won't work here.
             </p>
-          ) : modelLoadState === 'ready' ? (
-            <>
-              <p className="text-sm text-muted-foreground">Model downloaded and ready — turns start instantly.</p>
-              <Button
-                variant="outline"
-                className="self-start"
-                onClick={() => void removeModel()}
-                disabled={removingModel}
-              >
-                {removingModel ? 'Removing…' : 'Remove downloaded model'}
-              </Button>
-            </>
           ) : (
-            <>
-              <Button
-                variant="outline"
-                className="self-start"
-                onClick={() => void downloadModel()}
-                disabled={modelLoadState === 'loading'}
-              >
-                {modelLoadState === 'loading' ? (modelStatusMessage || 'Downloading…') : 'Download model now'}
-              </Button>
-              {modelDownloadProgress !== null && <Progress value={modelDownloadProgress} className="w-full" />}
-            </>
+            LOCAL_MODEL_IDS.map((modelId) => {
+              const info = LOCAL_MODELS[modelId]
+              const row = modelRows[modelId]
+              return (
+                <div
+                  key={modelId}
+                  data-testid={`local-model-row-${modelId}`}
+                  className="flex flex-col gap-2 border-b border-border/50 pb-4 last:border-0 last:pb-0"
+                >
+                  <div>
+                    <p className="text-sm font-medium">{info.label}</p>
+                    <p className="text-xs text-muted-foreground">{formatBytes(info.sizeBytes)}</p>
+                  </div>
+                  {row.loadState === 'ready' ? (
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-sm text-muted-foreground">Downloaded and ready.</p>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void removeModel(modelId)}
+                        disabled={row.removing}
+                      >
+                        {row.removing ? 'Removing…' : 'Remove'}
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col gap-2">
+                      <div className="flex items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => void downloadModel(modelId)}
+                          disabled={row.loadState === 'loading'}
+                        >
+                          {row.loadState === 'loading' ? row.statusMessage || 'Downloading…' : 'Download'}
+                        </Button>
+                        {row.hasPartial && row.loadState !== 'loading' && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => void removeModel(modelId)}
+                            disabled={row.removing}
+                          >
+                            {row.removing ? 'Clearing…' : 'Clear partial download'}
+                          </Button>
+                        )}
+                      </div>
+                      {row.downloadProgress !== null && <Progress value={row.downloadProgress} className="w-full" />}
+                    </div>
+                  )}
+                </div>
+              )
+            })
           )}
         </CardContent>
       </Card>

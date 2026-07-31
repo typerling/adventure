@@ -1,24 +1,80 @@
 /**
- * Fully on-device DM turn generation via a small edge-optimized Gemma model, running in-browser
- * over WebGPU (no server, no API key, no data leaving the device) — see DESIGN.md's "no AI vendor
- * SDK dependency" note in §11: `@huggingface/transformers` is a model *runtime*, not a vendor API
+ * Fully on-device DM turn generation via a small instruction-tuned model, running in-browser over
+ * WebGPU (no server, no API key, no data leaving the device) — see DESIGN.md's "no AI vendor SDK
+ * dependency" note in §11: `@huggingface/transformers` is a model *runtime*, not a vendor API
  * client, so it doesn't fall under that rule the way `@anthropic-ai/sdk` would.
  *
  * `@huggingface/transformers` is dynamically imported (only when local mode is actually used) —
  * it bundles a full ONNX runtime and is far too heavy to include in the main app bundle for
  * players who never touch this mode.
+ *
+ * Several models are offered (LOCAL_MODELS below) rather than one fixed choice, since "how much
+ * can this device's browser tab hold in memory before crashing" varies enormously by device, and
+ * there's no way to know that ahead of time — a picker with real sizes lets a player who hits a
+ * crash retry with something smaller instead of being stuck.
  */
 
+import type { LocalModelId } from '@/types/campaign'
 import {
   createProgressAggregator,
   describeModelDownloadProgress,
   type ModelDownloadProgress,
 } from '@/lib/modelDownloadProgress'
 
-// "E2B" = Gemma's edge-optimized elastic-parameter variant, purpose-built for on-device use
-// (phones/laptops) rather than a full-size model trimmed after the fact.
-const MODEL_ID = 'onnx-community/gemma-4-E2B-it-ONNX'
 const MAX_NEW_TOKENS = 1024
+
+export interface LocalModelInfo {
+  label: string
+  /** Approximate total download size (decoder + tokenizer + small config files) at the q4f16
+   * quantization this app always requests — for the picker/download cards, not exact byte
+   * accounting. Measured against each repo's actual `onnx/` file listing on Hugging Face. */
+  sizeBytes: number
+  /** Only the Gemma 4 E2B checkpoint ships a real `preprocessor_config.json` — it's a genuinely
+   * multimodal-capable checkpoint, loaded here in text-only mode (see the `AutoModelForCausalLM`
+   * comment in loadModel below). `AutoProcessor.from_pretrained()` throws for any repo without
+   * one, so every other (natively text-only) model here uses a plain `AutoTokenizer` instead —
+   * and its chat template expects `content` as a plain string, not a list of parts, unlike the
+   * processor's. */
+  usesProcessor: boolean
+}
+
+/** Ordered smallest to largest — see the PR that added this for how each size/architecture claim
+ * was verified (repo file listings, resolveTypeConfig/session_config.js in the installed
+ * package). Gemma 4 E2B is kept as the largest/highest-quality option since it's what this app
+ * shipped with first; the rest were added specifically because that one crashed low-memory
+ * devices around ~2GB downloaded. */
+export const LOCAL_MODELS: Record<LocalModelId, LocalModelInfo> = {
+  'onnx-community/Qwen2.5-0.5B-Instruct': {
+    label: 'Qwen2.5 0.5B — smallest, weakest at following the reply format',
+    sizeBytes: 490_000_000,
+    usesProcessor: false,
+  },
+  'onnx-community/gemma-3-1b-it-ONNX': {
+    label: 'Gemma 3 1B — recommended balance of size and quality',
+    sizeBytes: 785_000_000,
+    usesProcessor: false,
+  },
+  'HuggingFaceTB/SmolLM2-1.7B-Instruct': {
+    label: 'SmolLM2 1.7B — edge-optimized, competitive for its size',
+    sizeBytes: 1_110_000_000,
+    usesProcessor: false,
+  },
+  'onnx-community/Llama-3.2-1B-Instruct': {
+    label: 'Llama 3.2 1B',
+    sizeBytes: 1_100_000_000,
+    usesProcessor: false,
+  },
+  'onnx-community/Qwen2.5-1.5B-Instruct': {
+    label: 'Qwen2.5 1.5B',
+    sizeBytes: 1_230_000_000,
+    usesProcessor: false,
+  },
+  'onnx-community/gemma-4-E2B-it-ONNX': {
+    label: 'Gemma 4 E2B — largest, highest quality',
+    sizeBytes: 3_170_000_000,
+    usesProcessor: true,
+  },
+}
 
 export function isLocalModelSupported(): boolean {
   return typeof navigator !== 'undefined' && !!navigator.gpu
@@ -29,34 +85,51 @@ export type LocalModelLoadProgress = ModelDownloadProgress
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type LoadedModel = { processor: any; model: any }
 
-let loadPromise: Promise<LoadedModel> | null = null
-let isReady = false
-// The most recent progress update for the in-flight load, if any, and every currently-attached
-// listener for it. A load is a module-level singleton that can outlive the component that started
-// it (e.g. the user leaves Settings mid-download) — without replaying `lastProgress` to a newly
-// attached listener, a component that mounts (or re-mounts) while a load is already in flight has
-// no way to show anything until the next real update arrives, which reads as "the download
-// stopped" even though it's still running in the background.
-let lastProgress: LocalModelLoadProgress | null = null
-const progressListeners = new Set<(p: LocalModelLoadProgress) => void>()
+interface ModelRuntimeState {
+  loadPromise: Promise<LoadedModel> | null
+  isReady: boolean
+  // The most recent progress update for the in-flight load, if any, and every currently-attached
+  // listener for it. A load is a module-level singleton that can outlive the component that
+  // started it (e.g. the user leaves Settings mid-download) — without replaying `lastProgress` to
+  // a newly attached listener, a component that mounts (or re-mounts) while a load is already in
+  // flight has no way to show anything until the next real update arrives, which reads as "the
+  // download stopped" even though it's still running in the background.
+  lastProgress: LocalModelLoadProgress | null
+  progressListeners: Set<(p: LocalModelLoadProgress) => void>
+}
 
-function broadcastProgress(p: LocalModelLoadProgress): void {
-  lastProgress = p
-  for (const listener of progressListeners) listener(p)
+// Keyed by model ID rather than one shared set of module-level variables — several models can
+// each have their own in-flight load, cached download, or listener at once (e.g. a player
+// downloads one model ahead of time in Settings while a different campaign is mid-generation
+// with another).
+const modelStates = new Map<string, ModelRuntimeState>()
+
+function getModelState(modelId: string): ModelRuntimeState {
+  let state = modelStates.get(modelId)
+  if (!state) {
+    state = { loadPromise: null, isReady: false, lastProgress: null, progressListeners: new Set() }
+    modelStates.set(modelId, state)
+  }
+  return state
+}
+
+function broadcastProgress(state: ModelRuntimeState, p: LocalModelLoadProgress): void {
+  state.lastProgress = p
+  for (const listener of state.progressListeners) listener(p)
 }
 
 const UNUSED_TEXT_ONLY_FILE_PATTERN = /vision_encoder|audio_encoder/
 
 /** @huggingface/transformers' upfront `progress_total` estimate (see modeling_utils.js's
  * from_pretrained, which calls get_model_files()/getSessionsConfig() to size every file before
- * any of them download) is computed purely from the checkpoint's own config — it never receives
- * the `textOnly` flag that the `Gemma4ForCausalLM` choice below triggers, so it still counts the
- * vision/audio encoder files' sizes even though they're never fetched. Left alone, the aggregate
- * percentage would stall around ~91% (2.9GB actually downloaded / (2.9GB + the ~270MB that's
- * never fetched) ≈ 91%) and jump straight to "ready" without ever visibly reaching 100%. Since
- * this file already knows those two components are unused, strip them out of `progress_total`'s
- * own numbers before they reach the aggregator — which otherwise treats `progress_total` as
- * authoritative for whichever files it lists (see createProgressAggregator's doc comment). */
+ * any of them download) is computed purely from the checkpoint's own config — for Gemma 4 E2B it
+ * never receives the `textOnly` flag that loading it as a CausalLM below triggers, so it still
+ * counts the vision/audio encoder files' sizes even though they're never fetched. Left alone, the
+ * aggregate percentage would stall around ~91% (2.9GB actually downloaded / (2.9GB + the ~270MB
+ * that's never fetched) ≈ 91%) and jump straight to "ready" without ever visibly reaching 100%.
+ * Every other model here is natively text-only (no vision/audio components exist to strip in the
+ * first place), so this is a harmless no-op for them — applied unconditionally rather than only
+ * for Gemma 4 E2B to avoid a model-specific branch here. */
 function stripUnusedComponents(p: LocalModelLoadProgress): LocalModelLoadProgress {
   if (p.status !== 'progress_total' || !p.files) return p
   let loaded = 0
@@ -71,56 +144,63 @@ function stripUnusedComponents(p: LocalModelLoadProgress): LocalModelLoadProgres
   return { ...p, files, loaded, total, progress: total > 0 ? (loaded / total) * 100 : p.progress }
 }
 
-/** Lets Settings show whether the model still needs downloading, without triggering it. */
-export function getLocalModelLoadState(): 'unloaded' | 'loading' | 'ready' {
-  if (isReady) return 'ready'
-  return loadPromise ? 'loading' : 'unloaded'
+/** Lets Settings show whether a given model still needs downloading, without triggering it. */
+export function getLocalModelLoadState(modelId: LocalModelId): 'unloaded' | 'loading' | 'ready' {
+  const state = modelStates.get(modelId)
+  if (!state) return 'unloaded'
+  if (state.isReady) return 'ready'
+  return state.loadPromise ? 'loading' : 'unloaded'
 }
 
-function loadModel(onProgress?: (p: LocalModelLoadProgress) => void): Promise<LoadedModel> {
+function loadModel(modelId: LocalModelId, onProgress?: (p: LocalModelLoadProgress) => void): Promise<LoadedModel> {
+  const state = getModelState(modelId)
   if (onProgress) {
-    progressListeners.add(onProgress)
-    if (lastProgress) onProgress(lastProgress)
+    state.progressListeners.add(onProgress)
+    if (state.lastProgress) onProgress(state.lastProgress)
   }
-  if (!loadPromise) {
-    loadPromise = (async () => {
-      const { AutoProcessor, Gemma4ForCausalLM, env } = await import('@huggingface/transformers')
+  if (!state.loadPromise) {
+    state.loadPromise = (async () => {
+      const { AutoModelForCausalLM, AutoProcessor, AutoTokenizer, env } = await import('@huggingface/transformers')
       const { localModelCache } = await import('./localModelCache')
       const { createResumableFetch } = await import('./localModelResumableFetch')
+      const info = LOCAL_MODELS[modelId]
       // See localModelCache.ts for why this replaces the library's default Cache Storage-backed
-      // caching — without it, this ~2.9GB download would repeat on every page load/generation.
+      // caching — without it, this download would repeat on every page load/generation.
       env.useCustomCache = true
       env.customCache = localModelCache
       // See localModelResumableFetch.ts — resumes an interrupted download from where it left off
-      // (e.g. after a page refresh) instead of restarting the whole ~2.9GB from byte 0. Wraps the
-      // real global fetch directly rather than env.fetch (whose declared type in this library is
-      // narrower than the standard fetch signature) — env.fetch defaults to it anyway.
+      // (e.g. after a page refresh) instead of restarting from byte 0. Wraps the real global
+      // fetch directly rather than env.fetch (whose declared type in this library is narrower
+      // than the standard fetch signature) — env.fetch defaults to it anyway.
       env.fetch = createResumableFetch(fetch)
-      // The processor and model are two separate from_pretrained() calls, each downloading their
-      // own set of files but sharing one progress_callback — createProgressAggregator combines
-      // both into a single monotonic byte-based percentage instead of each file's own progress
-      // (see its doc comment for why raw per-file progress is actively misleading here).
-      // broadcastProgress fans out to every attached listener rather than whichever one call to
-      // loadModel() happened to be first, so it always runs, listener or not. stripUnusedComponents
-      // corrects progress_total's estimate for the textOnly load below before the aggregator sees it.
-      const aggregateProgress = createProgressAggregator(broadcastProgress)
+      // The tokenizer/processor and model are two separate from_pretrained() calls, each
+      // downloading their own set of files but sharing one progress_callback —
+      // createProgressAggregator combines both into a single monotonic byte-based percentage
+      // instead of each file's own progress (see its doc comment for why raw per-file progress is
+      // actively misleading here). broadcastProgress fans out to every attached listener rather
+      // than whichever one call to loadModel() happened to be first, so it always runs, listener
+      // or not. stripUnusedComponents corrects progress_total's estimate for Gemma 4 E2B's
+      // text-only load before the aggregator sees it (a no-op for every other model).
+      const aggregateProgress = createProgressAggregator((p) => broadcastProgress(state, p))
       const progressCallback = (p: LocalModelLoadProgress) => aggregateProgress(stripUnusedComponents(p))
       const [processor, model] = await Promise.all([
-        AutoProcessor.from_pretrained(MODEL_ID, { progress_callback: progressCallback }),
-        // Gemma4ForCausalLM (not the model card's native Gemma4ForConditionalGeneration) is a
-        // deliberate, empty subclass @huggingface/transformers provides specifically to trigger
-        // its "text-only" loading path (see resolveTypeConfig/MODEL_SESSION_CONFIG in the
-        // installed package's modeling_utils.js/session_config.js) — this repo's DM narrator only
-        // ever sends { type: 'text' } content (see generateLocalReply below), never images or
-        // audio, but the underlying checkpoint is fully multimodal: alongside the ~2.9GB of
-        // decoder + embedding weights this app actually uses, it also ships a ~99MB vision
-        // encoder and ~171MB audio encoder that ForConditionalGeneration would download and hold
-        // in memory unconditionally. ForCausalLM skips fetching (and allocating) both entirely —
+        info.usesProcessor
+          ? AutoProcessor.from_pretrained(modelId, { progress_callback: progressCallback })
+          : AutoTokenizer.from_pretrained(modelId, { progress_callback: progressCallback }),
+        // AutoModelForCausalLM resolves each model's *ForCausalLM class from its config's
+        // model_type — for a model whose native architecture is already a plain causal LM (every
+        // model here except Gemma 4 E2B), that's a no-op. For Gemma 4 E2B specifically, whose
+        // native architecture is Gemma4ForConditionalGeneration (a genuinely multimodal
+        // checkpoint — text decoder + token embeddings + a vision encoder + an audio encoder),
+        // resolving to the sibling Gemma4ForCausalLM class instead triggers this library's
+        // documented cross-architecture "text-only" loading path (see resolveTypeConfig/
+        // MODEL_SESSION_CONFIG in the installed package's modeling_utils.js/session_config.js),
+        // which skips fetching (and allocating) the vision/audio encoder sessions entirely —
         // confirmed against the model repo's file listing and this library's session-selection
-        // logic, not a guess — which both shrinks the download and removes two files from the
-        // set fetched concurrently, right as concurrent-download memory pressure is what's been
-        // crashing the tab (Chrome's "Aw, Snap") on memory-constrained devices.
-        Gemma4ForCausalLM.from_pretrained(MODEL_ID, {
+        // logic, not a guess. This app's DM narrator only ever sends { type: 'text' } content
+        // (see generateLocalReply below), never images or audio, so that's safe for every model
+        // here regardless of whether it's technically capable of more.
+        AutoModelForCausalLM.from_pretrained(modelId, {
           dtype: 'q4f16',
           device: 'webgpu',
           progress_callback: progressCallback,
@@ -128,53 +208,63 @@ function loadModel(onProgress?: (p: LocalModelLoadProgress) => void): Promise<Lo
       ])
       return { processor, model }
     })()
-    loadPromise.then(
+    state.loadPromise.then(
       () => {
-        isReady = true
-        progressListeners.clear()
+        state.isReady = true
+        state.progressListeners.clear()
       },
       // Don't cache a failed load — let the next attempt (e.g. after enabling WebGPU) retry cleanly.
       () => {
-        loadPromise = null
-        isReady = false
-        lastProgress = null
-        progressListeners.clear()
+        state.loadPromise = null
+        state.isReady = false
+        state.lastProgress = null
+        state.progressListeners.clear()
       },
     )
   }
-  return loadPromise
+  return state.loadPromise
 }
 
-/** Downloads and initializes the model ahead of time (e.g. from Settings), so the first real
- * turn doesn't have to wait on it. Safe to call repeatedly — a load already in flight or done is
+/** Downloads and initializes a model ahead of time (e.g. from Settings), so the first real turn
+ * doesn't have to wait on it. Safe to call repeatedly — a load already in flight or done is
  * reused, same as generateLocalReply's own use of loadModel. */
-export async function preloadLocalModel(onProgress?: (p: LocalModelLoadProgress) => void): Promise<void> {
+export async function preloadLocalModel(
+  modelId: LocalModelId,
+  onProgress?: (p: LocalModelLoadProgress) => void,
+): Promise<void> {
   if (!isLocalModelSupported()) {
     throw new Error("This browser doesn't support WebGPU, which the local model needs to run.")
   }
-  await loadModel(onProgress)
+  await loadModel(modelId, onProgress)
 }
 
-/** Whether the model's files are already cached on disk, regardless of whether this page session
+/** Whether a model's files are already cached on disk, regardless of whether this page session
  * has loaded them into memory yet — lets Settings show accurate "downloaded" state on a fresh
  * page load instead of only ever knowing about downloads from the current session. */
-export async function hasDownloadedLocalModel(): Promise<boolean> {
-  if (isReady) return true
+export async function hasDownloadedLocalModel(modelId: LocalModelId): Promise<boolean> {
+  if (modelStates.get(modelId)?.isReady) return true
   const { hasCachedLocalModelFiles } = await import('./localModelCache')
-  return hasCachedLocalModelFiles()
+  return hasCachedLocalModelFiles(modelId)
 }
 
-/** Removes the downloaded model from this device (both the complete-file cache and any
- * in-progress partial download), freeing the ~2.9GB it takes up, and resets in-memory state so the
- * next generation/preload re-downloads from scratch rather than reusing a stale reference. */
-export async function removeLocalModel(): Promise<void> {
-  const [{ clearLocalModelCache }, { clearAllPartialModelDownloads }] = await Promise.all([
+/** Whether a model has an interrupted/incomplete download sitting on disk — distinct from fully
+ * cached, so Settings can offer to clear it even though the model was never actually usable. */
+export async function hasPartiallyDownloadedLocalModel(modelId: LocalModelId): Promise<boolean> {
+  const { hasPartialModelDownload } = await import('./localModelResumableFetch')
+  return hasPartialModelDownload(modelId)
+}
+
+/** Removes a model from this device (both its complete-file cache and any in-progress partial
+ * download), freeing the space it takes up, and resets its in-memory state so the next
+ * generation/preload re-downloads from scratch rather than reusing a stale reference. Other
+ * models' cached data is untouched. */
+export async function removeLocalModel(modelId: LocalModelId): Promise<void> {
+  const [{ clearLocalModelCache }, { clearPartialModelDownload }] = await Promise.all([
     import('./localModelCache'),
     import('./localModelResumableFetch'),
   ])
-  await Promise.all([clearLocalModelCache(), clearAllPartialModelDownloads()])
-  loadPromise = null
-  isReady = false
+  await Promise.all([clearLocalModelCache(modelId), clearPartialModelDownload(modelId)])
+  modelStates.delete(modelId)
 }
 
 /** Shared with Settings' manual "download now" button so both places describe load progress
@@ -190,15 +280,23 @@ export interface GenerateLocalReplyOptions {
   onToken?: (textSoFar: string) => void
 }
 
-export async function generateLocalReply(prompt: string, opts: GenerateLocalReplyOptions = {}): Promise<string> {
+export async function generateLocalReply(
+  modelId: LocalModelId,
+  prompt: string,
+  opts: GenerateLocalReplyOptions = {},
+): Promise<string> {
   if (!isLocalModelSupported()) {
     throw new Error("This browser doesn't support WebGPU, which the local model needs to run.")
   }
 
   const { TextStreamer } = await import('@huggingface/transformers')
-  const { processor, model } = await loadModel(opts.onLoadProgress)
+  const { processor, model } = await loadModel(modelId, opts.onLoadProgress)
 
-  const history = [{ role: 'user', content: [{ type: 'text', text: prompt }] }]
+  // Gemma 4 E2B's chat template is processor-based and expects `content` as a list of typed parts
+  // (to accommodate images/audio, even though this app never sends any); every other model here
+  // uses a plain AutoTokenizer, whose chat template expects `content` as a plain string.
+  const usesProcessor = LOCAL_MODELS[modelId].usesProcessor
+  const history = [{ role: 'user', content: usesProcessor ? [{ type: 'text', text: prompt }] : prompt }]
   const chatText = processor.apply_chat_template(history, {
     enable_thinking: false,
     add_generation_prompt: true,
@@ -206,7 +304,7 @@ export async function generateLocalReply(prompt: string, opts: GenerateLocalRepl
   const inputs = await processor(chatText)
 
   let fullReply = ''
-  const streamer = new TextStreamer(processor.tokenizer, {
+  const streamer = new TextStreamer(processor.tokenizer ?? processor, {
     skip_prompt: true,
     callback_function: (token: string) => {
       fullReply += token

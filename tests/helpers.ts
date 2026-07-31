@@ -61,12 +61,12 @@ export async function setCampaignVoiceProviders(
 const AI_MODE_OPTION_LABEL = {
   manual: 'Manual (copy/paste into claude.ai or chatgpt.com)',
   api: 'Direct API key (Claude)',
-  local: 'Local model (Gemma, runs on this device)',
+  local: 'Local model (runs on this device)',
 } as const
 
-/** Switches a campaign's AI mode (manual copy/paste, direct Claude API, or the local Gemma
- * model) via Settings, saves, and returns to Play. Leaves the Claude model at its default
- * (Sonnet 5). */
+/** Switches a campaign's AI mode (manual copy/paste, direct Claude API, or an on-device local
+ * model) via Settings, saves, and returns to Play. Leaves the Claude model / local model choice
+ * at their defaults (Sonnet 5 / Gemma 3 1B). */
 export async function setCampaignAiMode(page: Page, mode: keyof typeof AI_MODE_OPTION_LABEL): Promise<void> {
   const match = page.url().match(/\/(?:play|codex|settings)\/([^/?#]+)/)
   if (!match) throw new Error(`setCampaignAiMode: no campaign id in URL "${page.url()}"`)

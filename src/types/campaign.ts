@@ -2,8 +2,9 @@
 export const DIFFICULTIES = ['Story', 'Easy', 'Standard', 'Hard', 'Brutal'] as const
 export type Difficulty = (typeof DIFFICULTIES)[number]
 
-/** 'local' runs a small Gemma model fully on-device via WebGPU — no key, no server, no cost,
- * but noticeably weaker at long-context instruction-following than 'api'. See localModel.ts. */
+/** 'local' runs one of several small instruction-tuned models fully on-device via WebGPU — no
+ * key, no server, no cost, but noticeably weaker at long-context instruction-following than
+ * 'api'. See localModel.ts's LOCAL_MODELS for the choices and their tradeoffs. */
 export const AI_MODES = ['manual', 'api', 'local'] as const
 export type AiMode = (typeof AI_MODES)[number]
 
@@ -12,6 +13,20 @@ export type AiMode = (typeof AI_MODES)[number]
  * cost/speed balance than from always reaching for the most capable model. */
 export const CLAUDE_MODELS = ['claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5'] as const
 export type ClaudeModel = (typeof CLAUDE_MODELS)[number]
+
+/** On-device models available for 'local' AI mode — see localModel.ts's LOCAL_MODELS for each
+ * one's approximate download size and loading requirements. Ordered smallest to largest so a
+ * dropdown reads as a size gradient. All are Hugging Face repo IDs of ONNX exports compatible
+ * with @huggingface/transformers' from_pretrained(). */
+export const LOCAL_MODEL_IDS = [
+  'onnx-community/Qwen2.5-0.5B-Instruct',
+  'onnx-community/gemma-3-1b-it-ONNX',
+  'HuggingFaceTB/SmolLM2-1.7B-Instruct',
+  'onnx-community/Llama-3.2-1B-Instruct',
+  'onnx-community/Qwen2.5-1.5B-Instruct',
+  'onnx-community/gemma-4-E2B-it-ONNX',
+] as const
+export type LocalModelId = (typeof LOCAL_MODEL_IDS)[number]
 
 export const STT_PROVIDERS = ['browser', 'elevenlabs'] as const
 export type SttProvider = (typeof STT_PROVIDERS)[number]
@@ -42,6 +57,7 @@ export interface CampaignFile {
 export interface CampaignSettings {
   aiMode: AiMode
   claudeModel: ClaudeModel
+  localModelId: LocalModelId
   sttProvider: SttProvider
   ttsProvider: TtsProvider
   elevenLabsVoiceId?: string
@@ -51,6 +67,7 @@ export interface CampaignSettings {
 export const DEFAULT_SETTINGS: CampaignSettings = {
   aiMode: 'manual',
   claudeModel: 'claude-sonnet-5',
+  localModelId: 'onnx-community/gemma-3-1b-it-ONNX',
   sttProvider: 'browser',
   ttsProvider: 'browser',
   summarizationCadence: 15,
