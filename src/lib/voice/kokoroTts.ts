@@ -1,5 +1,9 @@
 import type { TtsProvider } from './types'
-import { describeModelDownloadProgress, type ModelDownloadProgress } from '@/lib/modelDownloadProgress'
+import {
+  createProgressAggregator,
+  describeModelDownloadProgress,
+  type ModelDownloadProgress,
+} from '@/lib/modelDownloadProgress'
 
 /**
  * Kokoro (kokoro-js) — a small, high-quality on-device TTS model, replacing the noticeably
@@ -56,10 +60,13 @@ function loadKokoro(onProgress?: (p: KokoroLoadProgress) => void) {
   if (!loadPromise) {
     loadPromise = (async () => {
       const { KokoroTTS } = await import('kokoro-js')
+      // KokoroTTS.from_pretrained() internally makes two concurrent from_pretrained() calls (model
+      // weights + tokenizer) sharing one progress_callback, so the same per-file-progress-resets
+      // problem localModel.ts has applies here — see createProgressAggregator's doc comment.
       return KokoroTTS.from_pretrained(MODEL_ID, {
         dtype: 'q8',
         device: 'wasm',
-        progress_callback: onProgress,
+        progress_callback: onProgress ? createProgressAggregator(onProgress) : undefined,
       })
     })()
     loadPromise.then(

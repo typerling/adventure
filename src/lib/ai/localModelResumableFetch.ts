@@ -205,8 +205,17 @@ function isResumableUrl(input: RequestInfo | URL): boolean {
 /** Wraps `fetch` so requests to the model host resume from wherever a previous, interrupted
  * attempt left off. Everything else (other hosts, non-GET, requests that already specify their
  * own Range header — e.g. transformers.js' own file-size probes, or error responses) passes
- * straight through untouched. */
-export function createResumableFetch(baseFetch: typeof fetch, blockSize: number = BLOCK_SIZE): typeof fetch {
+ * straight through untouched.
+ *
+ * `onResume`, when given, fires once per URL that's actually being resumed (a matching partial
+ * record exists and the server honored the Range request) with the byte count already saved —
+ * lets a caller distinguish "downloading fresh" from "picking up a previous attempt" instead of
+ * only being able to infer it from a progress percentage that starts above 0. */
+export function createResumableFetch(
+  baseFetch: typeof fetch,
+  blockSize: number = BLOCK_SIZE,
+  onResume?: (url: string, resumedBytes: number) => void,
+): typeof fetch {
   return async function resumableFetch(input, init) {
     if ((init?.method && init.method !== 'GET') || !isResumableUrl(input)) {
       return baseFetch(input, init)
@@ -258,6 +267,7 @@ export function createResumableFetch(baseFetch: typeof fetch, blockSize: number 
         startMeta = { url, receivedBytes: 0, blockCount: 0, etag: response.headers.get('ETag') }
       } else {
         startMeta = meta!
+        if (startMeta.receivedBytes > 0) onResume?.(url, startMeta.receivedBytes)
       }
     } else {
       // A fresh request, or the server ignored our Range header and sent everything from byte 0
