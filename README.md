@@ -15,10 +15,11 @@ via the browser (Web Speech API, zero config) or ElevenLabs, and text-to-speech 
 ElevenLabs, or **Kokoro** (a small on-device model, no key and no server, and no WebGPU needed).
 The map graph view is the only remaining stub (see DESIGN.md §11). Phase 3's direct AI mode is
 implemented with two options per campaign, both skipping the copy/paste step: **Claude** (needs an
-API key, billed to you directly by Anthropic) and a **local Gemma model** (needs a WebGPU-capable
-browser, no key, no server, runs fully on your device — noticeably weaker at following the reply
-format than Claude). The original manual copy/paste flow keeps working alongside both as the
-no-setup fallback.
+API key, billed to you directly by Anthropic) and a **local on-device model** — pick from several
+(see below), each needing a WebGPU-capable browser, no key, no server, running fully on your
+device — noticeably weaker at following the reply format than Claude, more so for the smaller
+choices. The original manual copy/paste flow keeps working alongside both as the no-setup
+fallback.
 
 ## Setup
 
@@ -50,14 +51,15 @@ Opus 5 or Haiku 4.5 also available). Every turn generated this way is billed dir
 by Anthropic — there's no proxy or server in between.
 
 For the local text model, no key or setup at all either: switch a campaign's AI mode to "Local
-model (Gemma, runs on this device)". It downloads roughly 3 GB (a Gemma model converted for
-in-browser inference, loaded text-only — its vision/audio components are skipped since this app
-never sends images or audio) and caches it; every turn after that runs on-device via WebGPU. Use
-"Download model now" under **Local AI model** in Settings to fetch it ahead of time (with a
-progress bar, resumable if interrupted) and to remove it again later. Needs a browser that
-supports WebGPU (Chrome/Edge on Android 12+, Safari 26+ on iOS/macOS/iPadOS) — on an unsupported
-browser, or if the download fails, it surfaces a clear error rather than hanging. Being a ~3 GB
-in-browser download, it can crash the tab on memory-constrained devices.
+model (runs on this device)" and pick one from the dropdown — sizes range from ~490 MB (Qwen2.5
+0.5B, smallest and weakest) up to ~3 GB (Gemma 4 E2B, largest and highest quality; loaded
+text-only — its vision/audio components are skipped since this app never sends images or audio).
+Bigger models are more capable but slower to download and more likely to crash the tab on
+memory-constrained devices, so if one crashes, try a smaller one. Use the **Local AI models** card
+in Settings to download any of them ahead of time (with a progress bar, resumable if interrupted),
+and to remove a downloaded — or partially downloaded — model to free up space. Needs a browser
+that supports WebGPU (Chrome/Edge on Android 12+, Safari 26+ on iOS/macOS/iPadOS) — on an
+unsupported browser, or if a download fails, it surfaces a clear error rather than hanging.
 
 ## Deploying (GitHub Pages)
 

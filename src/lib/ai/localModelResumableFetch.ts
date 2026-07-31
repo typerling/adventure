@@ -1,8 +1,9 @@
 /**
  * A drop-in replacement for `env.fetch` (see localModel.ts) that resumes an interrupted model
- * download instead of restarting it from byte 0 — the ~2.9GB Gemma download otherwise has to start
- * over every time the page is refreshed (or the network drops) mid-download, which on a slow or
- * flaky connection can mean it never finishes at all.
+ * download instead of restarting it from byte 0 — a several-hundred-MB-to-multi-GB model download
+ * (see localModel.ts's LOCAL_MODELS) otherwise has to start over every time the page is refreshed
+ * (or the network drops) mid-download, which on a slow or flaky connection can mean it never
+ * finishes at all.
  *
  * How it works: downloaded bytes are mirrored into IndexedDB in ~4MB blocks as they stream past.
  * On the next attempt for the same URL, a `Range: bytes=<alreadyHave>-` request picks up from
@@ -114,15 +115,56 @@ async function clearPartial(url: string, blockCount: number): Promise<void> {
   }
 }
 
-/** Deletes every in-progress partial download, if any — used when removing the model entirely
- * (localModel.ts's removeLocalModel), so a stale partial doesn't linger after a fresh download. */
-export function clearAllPartialModelDownloads(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(DB_NAME)
-    req.onsuccess = () => resolve()
-    req.onerror = () => reject(req.error ?? new Error('Failed to clear partial model downloads'))
-    req.onblocked = () => resolve()
-  })
+// Mirrors localModelCache.ts's urlBelongsToModel — cache/partial-download keys are both the full
+// source URL (https://huggingface.co/<modelId>/resolve/<revision>/<file>), which already includes
+// the model ID, so one shared database naturally partitions by model without needing an index.
+const MODEL_HOSTS = ['huggingface.co', 'hf.co']
+
+function urlBelongsToModel(url: string, modelId: string): boolean {
+  return MODEL_HOSTS.some((host) => url.startsWith(`https://${host}/${modelId}/`))
+}
+
+function getAllPartialMetas(): Promise<PartialMeta[]> {
+  return openDb().then(
+    (db) =>
+      new Promise<PartialMeta[]>((resolve, reject) => {
+        const tx = db.transaction(META_STORE, 'readonly')
+        const cursorReq = tx.objectStore(META_STORE).openCursor()
+        const metas: PartialMeta[] = []
+        cursorReq.onsuccess = () => {
+          const cursor = cursorReq.result
+          if (!cursor) {
+            db.close()
+            resolve(metas)
+            return
+          }
+          metas.push(cursor.value as PartialMeta)
+          cursor.continue()
+        }
+        cursorReq.onerror = () => {
+          db.close()
+          reject(cursorReq.error ?? new Error('Failed to scan partial model downloads'))
+        }
+      }),
+  )
+}
+
+/** Whether one model has an interrupted/incomplete download sitting on disk — distinct from
+ * localModelCache.ts's complete-file cache, so Settings can offer to clear space a failed
+ * download used even though the model was never actually usable. */
+export async function hasPartialModelDownload(modelId: string): Promise<boolean> {
+  const metas = await getAllPartialMetas()
+  return metas.some((meta) => urlBelongsToModel(meta.url, modelId))
+}
+
+/** Deletes every in-progress partial download belonging to one model — used when removing that
+ * model (localModel.ts's removeLocalModel) so a stale partial doesn't linger after a fresh
+ * download, or on its own so a player can reclaim the space an abandoned download used. Other
+ * models' partial downloads are untouched. */
+export async function clearPartialModelDownload(modelId: string): Promise<void> {
+  const metas = await getAllPartialMetas()
+  const matching = metas.filter((meta) => urlBelongsToModel(meta.url, modelId))
+  for (const meta of matching) await clearPartial(meta.url, meta.blockCount)
 }
 
 function mergeChunks(chunks: Uint8Array[], totalLength: number): Uint8Array {

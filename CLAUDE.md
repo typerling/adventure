@@ -16,8 +16,8 @@ state validator, Codex/Dashboard/Settings screens. Phase 2 is in progress: voice
 for all three TTS providers (browser, ElevenLabs, and on-device Kokoro) and both STT providers
 (browser, ElevenLabs); the map graph view is the only remaining stub. Phase 3's direct AI mode is
 implemented with two options alongside manual copy/paste (which still works, as the no-setup
-fallback): the Claude API, and a fully on-device Gemma model over WebGPU — see "Direct AI mode"
-below. OpenAI was not requested and isn't implemented.
+fallback): the Claude API, and a choice of several fully on-device models over WebGPU — see
+"Direct AI mode" below. OpenAI was not requested and isn't implemented.
 
 ## Commands
 
@@ -101,7 +101,7 @@ campaign: it loads campaign/settings/sheet-snapshot/rolling-summary/recent-turns
 campaign meta, rolling summary, and turn log). Look here first when tracing "what happens when
 the player submits a turn."
 
-### Direct AI mode (Phase 3: Claude API + local Gemma)
+### Direct AI mode (Phase 3: Claude API + local on-device models)
 
 `CampaignSettings.aiMode` (`'manual' | 'api' | 'local'`) picks how stage 1's prompt reaches an
 actual AI reply.
@@ -117,21 +117,46 @@ actual AI reply.
   (`src/lib/ai/claudeKey.ts`) is `localStorage`-only, same reasoning as `elevenLabsKey.ts`; the
   model choice (`CampaignSettings.claudeModel`, one of `CLAUDE_MODELS`, default `claude-sonnet-5`)
   is per-campaign like `elevenLabsVoiceId`.
-- **`'local'`** — `src/lib/ai/localModel.ts`'s `generateLocalReply(prompt, opts)` runs a small
-  edge-optimized Gemma model (`onnx-community/gemma-4-E2B-it-ONNX`, 4-bit-quantized) entirely
-  in-browser via `@huggingface/transformers` over WebGPU — no key, no server. Unlike the fetch
-  clients elsewhere, `@huggingface/transformers` genuinely is a vendor dependency here, and that's
-  fine: DESIGN.md §11's "no AI vendor SDK" rule was about avoiding a *remote-API* client, not
-  about the on-device inference runtime itself — there's no thin-fetch equivalent for running a
-  model locally. It's **dynamically imported** inside `loadModel()`, not statically at the top of
-  the file, so its ~500KB JS chunk and the ONNX WebAssembly runtime it pulls in only ever load for
-  players who actually pick local mode. `isLocalModelSupported()` checks `navigator.gpu` — note
-  this is *feature detection only*: modern Chromium reports `navigator.gpu` as present even where
-  a real GPU adapter can't be obtained (verified while writing tests for this — see
-  `tests/ai-local-mode.spec.ts`), so genuine failures (no adapter, model download failure, OOM on
-  a low-end phone) surface at generation time via the same try/catch as the API path, not via this
-  check. Model loading is cached process-wide (`loadPromise` module singleton) so it only happens
-  once per page load; a failed load clears the cache so retrying can actually retry.
+- **`'local'`** — `src/lib/ai/localModel.ts`'s `generateLocalReply(modelId, prompt, opts)` runs one
+  of several small instruction-tuned models entirely in-browser via `@huggingface/transformers`
+  over WebGPU — no key, no server. `LOCAL_MODELS` is the catalog (Hugging Face repo ID → display
+  label, approximate download size, and whether it needs a real multimodal `AutoProcessor`), picked
+  per-campaign via `CampaignSettings.localModelId` (default `onnx-community/gemma-3-1b-it-ONNX`)
+  and shown with sizes in Settings' model dropdown. They range from ~490MB (Qwen2.5 0.5B) to ~3GB
+  (Gemma 4 E2B) — the catalog started as just the Gemma 4 E2B model, but that alone was crashing
+  the tab (Chrome's "Aw, Snap") on memory-constrained devices at ~2GB downloaded, so smaller
+  alternatives were added as an escape hatch rather than trying to make one model work everywhere.
+  Every model loads via the generic `AutoModelForCausalLM` (resolved from each checkpoint's own
+  `model_type`), **except** that Gemma 4 E2B's native checkpoint is `Gemma4ForConditionalGeneration`
+  — genuinely multimodal (text decoder + embeddings + a vision encoder + an audio encoder) — and
+  `AutoModelForCausalLM` resolving it to the sibling `Gemma4ForCausalLM` class instead triggers
+  `@huggingface/transformers`' documented cross-architecture "text-only" loading path, which skips
+  fetching/allocating the vision/audio sessions entirely (confirmed against the installed package's
+  `resolveTypeConfig`/`MODEL_SESSION_CONFIG`, not assumed) — this app never sends images or audio,
+  so that's free savings. That same override also throws off the library's own upfront download
+  *size estimate* for Gemma 4 E2B specifically (it's computed independent of the text-only choice),
+  which `localModel.ts`'s `stripUnusedComponents` corrects before the shared progress aggregator
+  sees it. Every model except Gemma 4 E2B loads via a plain `AutoTokenizer` rather than
+  `AutoProcessor` (which throws for a repo with no `preprocessor_config.json`) — `LOCAL_MODELS[id].
+  usesProcessor` also decides whether chat history is built with `content` as a plain string
+  (every `AutoTokenizer`-loaded model) or as a list of typed parts (Gemma 4 E2B's processor-based
+  template). Unlike the fetch clients elsewhere, `@huggingface/transformers` genuinely is a vendor
+  dependency here, and that's fine: DESIGN.md §11's "no AI vendor SDK" rule was about avoiding a
+  *remote-API* client, not about the on-device inference runtime itself — there's no thin-fetch
+  equivalent for running a model locally. It's **dynamically imported** inside `loadModel()`, not
+  statically at the top of the file, so its ~500KB JS chunk and the ONNX WebAssembly runtime it
+  pulls in only ever load for players who actually pick local mode. `isLocalModelSupported()`
+  checks `navigator.gpu` — note this is *feature detection only*: modern Chromium reports
+  `navigator.gpu` as present even where a real GPU adapter can't be obtained (verified while
+  writing tests for this — see `tests/ai-local-mode.spec.ts`), so genuine failures (no adapter,
+  model download failure, OOM on a low-end phone) surface at generation time via the same
+  try/catch as the API path, not via this check. Model loading state (`loadPromise`/`isReady`/
+  download progress/listeners) is keyed per model ID in a module-level `Map`, not one shared
+  singleton — several models can each have their own in-flight load or cached download at once,
+  and each has its own `removeLocalModel(modelId)` to clear both its complete-file cache
+  (`localModelCache.ts`) and any interrupted partial download (`localModelResumableFetch.ts`)
+  without touching other models' data, surfaced in Settings as a per-model "Remove"/"Clear partial
+  download" action. A failed load clears that model's cached state so retrying can actually retry.
 
 `Play.tsx`'s `startTurn` branches on `aiMode`: for `'api'`/`'local'` (`isAutoMode`) it calls
 `generateAndApply` instead of waiting for a manual paste, which calls the matching provider and
@@ -215,7 +240,7 @@ philosophy as the AI backend. Three implementations exist (Kokoro is TTS-only):
   (`CampaignSettings.elevenLabsVoiceId`) is optional and per-campaign (settings.md), separate from
   the API key (global, localStorage).
 - **`huggingface-local`** (`kokoroTts.ts`) — TTS only, via `kokoro-js`: a small on-device model, no
-  key and no server, run over **WASM rather than WebGPU**, so unlike the local Gemma text model
+  key and no server, run over **WASM rather than WebGPU**, so unlike the local text models
   there's no hard support gate. Dynamically imported (it bundles its own ONNX runtime). Read the
   caching caveat at the top of that file before touching it: `kokoro-js` depends on
   `@huggingface/transformers` **v3**, a different major than this app's v4, so npm installs two
@@ -247,7 +272,7 @@ calling `getTtsProvider` per playback: ElevenLabs and Kokoro track their current
 per instance, so a fresh instance per call would leave `stop()` unable to reach audio an earlier
 instance started.
 
-Both on-device models (Gemma for text, Kokoro for voice) expose the same download-management
+Both kinds of on-device model (the local text models, Kokoro for voice) expose the same download-management
 surface — `preload*`/`has*Downloaded*`/`remove*` plus a progress callback formatted through
 `src/lib/modelDownloadProgress.ts` — which Settings renders as matching "download now" /
 progress-bar / "remove downloaded model" cards.

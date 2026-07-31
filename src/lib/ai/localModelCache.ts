@@ -5,8 +5,11 @@
  * secure context (HTTPS, or the `localhost` exception) — this app's local AI mode is meant to be
  * tested on a phone's real GPU over a plain-HTTP LAN connection to the dev server (per
  * DESIGN.md/README), which is exactly the case Cache Storage can't cover. Without a working cache,
- * the ~2.9GB Gemma download repeats on every reload and even on every generation. IndexedDB has no
- * such restriction, so this is used unconditionally rather than only as a fallback.
+ * a several-hundred-MB-to-multi-GB model download (see localModel.ts's LOCAL_MODELS) repeats on
+ * every reload and even on every generation. IndexedDB has no such restriction, so this is used
+ * unconditionally rather than only as a fallback. Shared by every model rather than one database
+ * per model — cache keys are the full source URL (see urlBelongsToModel below), which already
+ * includes the model ID, so one store naturally partitions by model without needing one.
  *
  * Stored in ~4MB blocks (mirroring localModelResumableFetch.ts's partial-download cache) rather
  * than one blob per file. The old one-blob approach called `response.arrayBuffer()` in `put()` —
@@ -103,6 +106,55 @@ function mergeChunks(chunks: Uint8Array[], totalLength: number): Uint8Array {
     offset += chunk.length
   }
   return merged
+}
+
+// Cache keys are the exact request URL (buildResourcePaths() in the installed package's
+// hub.js — https://huggingface.co/<modelId>/resolve/<revision>/<file> — falls back to that as the
+// cache key for any non-filesystem cache, which this is), so a model's own files can always be
+// picked out by URL prefix without needing a separate per-model index.
+const MODEL_HOSTS = ['huggingface.co', 'hf.co']
+
+function urlBelongsToModel(url: string, modelId: string): boolean {
+  return MODEL_HOSTS.some((host) => url.startsWith(`https://${host}/${modelId}/`))
+}
+
+/** Deletes one model's meta record and every block belonging to it, within a single transaction —
+ * used by both hasCachedLocalModelFiles (indirectly, via matching) and clearLocalModelCache. */
+function deleteModelEntry(db: IDBDatabase, url: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction([BLOCK_STORE, META_STORE], 'readwrite')
+    tx.objectStore(META_STORE).delete(url)
+    const cursorReq = tx.objectStore(BLOCK_STORE).openCursor(IDBKeyRange.bound([url, 0], [url, Number.MAX_SAFE_INTEGER]))
+    cursorReq.onsuccess = () => {
+      const cursor = cursorReq.result
+      if (!cursor) return
+      cursor.delete()
+      cursor.continue()
+    }
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error ?? new Error('Failed to clear local model cache entry'))
+  })
+}
+
+/** URLs of every cached file (any model) currently in META_STORE — walked with a cursor since
+ * IndexedDB has no "key starts with" query, only exact/range lookups on the actual key (`url`
+ * alone isn't indexed for prefix matching here). */
+function getAllCachedUrls(db: IDBDatabase): Promise<string[]> {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(META_STORE, 'readonly')
+    const cursorReq = tx.objectStore(META_STORE).openCursor()
+    const urls: string[] = []
+    cursorReq.onsuccess = () => {
+      const cursor = cursorReq.result
+      if (!cursor) {
+        resolve(urls)
+        return
+      }
+      urls.push((cursor.value as StoredMeta).url)
+      cursor.continue()
+    }
+    cursorReq.onerror = () => reject(cursorReq.error ?? new Error('Failed to scan local model cache'))
+  })
 }
 
 export const localModelCache = {
@@ -214,31 +266,29 @@ export const localModelCache = {
   },
 }
 
-/** Whether any complete model file is currently cached — lets Settings show "downloaded" state
- * even on a fresh page load, before anything in this session has touched the model. */
-export async function hasCachedLocalModelFiles(): Promise<boolean> {
+/** Whether any complete file for the given model is currently cached — lets Settings show
+ * "downloaded" state even on a fresh page load, before anything in this session has touched it.
+ * Scoped to one model so having a different model cached doesn't falsely read as this one being
+ * ready — several models can each have their own cached files at once. */
+export async function hasCachedLocalModelFiles(modelId: string): Promise<boolean> {
   const db = await openDb()
   try {
-    const count = await new Promise<number>((resolve, reject) => {
-      const tx = db.transaction(META_STORE, 'readonly')
-      const req = tx.objectStore(META_STORE).count()
-      req.onsuccess = () => resolve(req.result)
-      req.onerror = () => reject(req.error ?? new Error('Failed to count local model cache entries'))
-    })
-    return count > 0
+    const urls = await getAllCachedUrls(db)
+    return urls.some((url) => urlBelongsToModel(url, modelId))
   } finally {
     db.close()
   }
 }
 
-/** Deletes every cached model file, freeing the ~2.9GB it takes up on-device. */
-export function clearLocalModelCache(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.deleteDatabase(DB_NAME)
-    req.onsuccess = () => resolve()
-    req.onerror = () => reject(req.error ?? new Error('Failed to clear local model cache'))
-    // A database can't be deleted while another connection is still open (openDb always closes
-    // its own connection right after use, but guard against it anyway rather than hang forever).
-    req.onblocked = () => resolve()
-  })
+/** Deletes every cached file belonging to one model, freeing the space it takes up on-device —
+ * other models' cached files are untouched. */
+export async function clearLocalModelCache(modelId: string): Promise<void> {
+  const db = await openDb()
+  try {
+    const urls = await getAllCachedUrls(db)
+    const matching = urls.filter((url) => urlBelongsToModel(url, modelId))
+    for (const url of matching) await deleteModelEntry(db, url)
+  } finally {
+    db.close()
+  }
 }

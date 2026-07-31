@@ -18,7 +18,7 @@ import {
 import { useCampaign } from '@/hooks/useCampaign'
 import { usePlayHeaderStore } from '@/store/playHeaderStore'
 import { cn } from '@/lib/utils'
-import type { TtsProvider as TtsProviderKind } from '@/types/campaign'
+import { DEFAULT_SETTINGS, type TtsProvider as TtsProviderKind } from '@/types/campaign'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
@@ -296,7 +296,7 @@ export function Play() {
     toast.success('Correction prompt copied.')
   }
 
-  /** Both auto modes' whole turn loop: generate (via Claude's API or the local Gemma model),
+  /** Both auto modes' whole turn loop: generate (via Claude's API or the campaign's chosen local model),
    * then feed straight into the same submitReply pipeline manual mode uses (parse → validate →
    * apply) — nothing downstream of "raw reply text" differs by mode. */
   async function generateAndApply(promptText: string) {
@@ -308,7 +308,7 @@ export function Play() {
     setStatusMessage(isLocalMode ? 'Loading local model…' : 'Generating your turn…')
     try {
       const text = isLocalMode
-        ? await generateLocalReply(promptText, {
+        ? await generateLocalReply(settings?.localModelId ?? DEFAULT_SETTINGS.localModelId, promptText, {
             onLoadProgress: (p) => {
               setStatusMessage(describeLocalModelProgress(p))
               setDownloadProgress(typeof p.progress === 'number' ? p.progress : null)
@@ -483,7 +483,7 @@ export function Play() {
               {isApiMode
                 ? 'Sent directly to Claude with your API key — no copy/paste needed.'
                 : isLocalMode
-                  ? 'Running fully on this device via a local Gemma model — no key, no server.'
+                  ? 'Running fully on this device via a local model — no key, no server.'
                   : 'Copy this prompt into claude.ai or chatgpt.com, then paste the reply back here.'}
             </DialogDescription>
           </DialogHeader>

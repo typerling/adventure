@@ -66,8 +66,8 @@
         }
       }
 
-      window.__hasCached = () => hasCachedLocalModelFiles()
-      window.__clearCache = () => clearLocalModelCache()
+      window.__hasCached = (modelId) => hasCachedLocalModelFiles(modelId)
+      window.__clearCache = (modelId) => clearLocalModelCache(modelId)
       window.__matchMissing = async (url) => (await localModelCache.match(url)) === undefined
     </script>
   </body>

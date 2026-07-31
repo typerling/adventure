@@ -20,7 +20,9 @@ export interface ModelDownloadProgress {
   files?: Record<string, { loaded: number; total: number }>
 }
 
-function formatBytes(bytes: number): string {
+/** Exported for the model picker/download cards (Settings.tsx), which show each catalog entry's
+ * approximate size the same way progress here does, rather than reformatting bytes twice. */
+export function formatBytes(bytes: number): string {
   const mb = bytes / (1024 * 1024)
   if (mb < 1024) return `${Math.max(1, Math.round(mb))} MB`
   return `${(mb / 1024).toFixed(2)} GB`
