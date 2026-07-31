@@ -18,6 +18,7 @@ import type { LocalModelId } from '@/types/campaign'
 import {
   createProgressAggregator,
   describeModelDownloadProgress,
+  requestPersistentStorage,
   type ModelDownloadProgress,
 } from '@/lib/modelDownloadProgress'
 
@@ -159,6 +160,7 @@ function loadModel(modelId: LocalModelId, onProgress?: (p: LocalModelLoadProgres
     if (state.lastProgress) onProgress(state.lastProgress)
   }
   if (!state.loadPromise) {
+    requestPersistentStorage()
     state.loadPromise = (async () => {
       const { AutoModelForCausalLM, AutoProcessor, AutoTokenizer, env } = await import('@huggingface/transformers')
       const { localModelCache } = await import('./localModelCache')
