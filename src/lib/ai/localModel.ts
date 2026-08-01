@@ -289,19 +289,18 @@ export async function generateLocalReply(
   }
 
   const state = getModelState(modelId)
-  if (opts.onLoadProgress) {
-    state.progressListeners.add(opts.onLoadProgress)
-    if (state.lastProgress) opts.onLoadProgress(state.lastProgress)
-  }
   requestPersistentStorage()
 
   try {
-    const reply = await send(
-      { kind: 'generate', modelId, prompt, device: preferredDevice(modelId) },
-      opts.onToken,
-    )
-    state.isReady = true
-    state.loadPromise = Promise.resolve()
+    // Load through loadModel() rather than letting the worker load lazily inside 'generate'.
+    // loadModel is what publishes `loadPromise`, and that is the only thing
+    // getLocalModelLoadState() — and so Settings' model row, and its effect for reattaching to an
+    // in-flight download — has to go on. Going straight to 'generate' left a download started from
+    // Play invisible in Settings, which sat on an idle "Download" button for the whole thing and
+    // would start a redundant second load if pressed. The worker caches per model and backend, so
+    // the 'generate' that follows doesn't reload anything.
+    await loadModel(modelId, opts.onLoadProgress)
+    const reply = await send({ kind: 'generate', modelId, prompt, device: preferredDevice(modelId) }, opts.onToken)
     return reply ?? ''
   } catch (err) {
     // The worker has already dropped whatever it was holding for this model; clear the mirror of

@@ -213,17 +213,22 @@ async function runGeneration(
  * more slowly.
  */
 async function generate(requestId: number, modelId: LocalModelId, prompt: string, preferred: LocalModelDevice) {
-  if (preferred === 'wasm') {
-    post({ kind: 'backend', modelId, device: 'wasm' })
-    return runGeneration(requestId, modelId, prompt, 'wasm')
-  }
+  // Already pinned to the CPU by an earlier fallback — nothing to report, the main thread is where
+  // that was remembered in the first place.
+  if (preferred === 'wasm') return runGeneration(requestId, modelId, prompt, 'wasm')
+
   try {
     return await runGeneration(requestId, modelId, prompt, 'webgpu')
   } catch (err) {
     if (!isDeviceLost(err)) throw err
     loaded.delete(keyFor(modelId, 'webgpu'))
+    const reply = await runGeneration(requestId, modelId, prompt, 'wasm')
+    // Reported only once the CPU run has actually produced a reply. Announcing the switch before
+    // attempting it would pin this model to the slow backend on the strength of a fallback that
+    // might itself have failed — leaving every later turn starting from the CPU, for a device
+    // whose GPU may well have been the healthier of the two, with "Remove" the only way back.
     post({ kind: 'backend', modelId, device: 'wasm' })
-    return runGeneration(requestId, modelId, prompt, 'wasm')
+    return reply
   }
 }
 
