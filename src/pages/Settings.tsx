@@ -634,6 +634,10 @@ export function Settings() {
                     onValueChange={(v) =>
                       void changeModelDevice(modelId, v as LocalModelDevice)
                     }
+                    // Switching mid-download would leave the in-flight load fetching the build for
+                    // the backend that was just switched away from, and its completion would then
+                    // mark the row ready for a backend whose files were never fetched.
+                    disabled={row.loadState === 'loading' || row.removing}
                   >
                     <SelectTrigger
                       id={`device-${modelId}`}
