@@ -23,7 +23,7 @@ import {
   requestPersistentStorage,
   type ModelDownloadProgress,
 } from '@/lib/modelDownloadProgress'
-import type { LocalModelDevice } from './localModelCatalog'
+import { LOCAL_MODEL_DTYPE_SUFFIX, type LocalModelDevice } from './localModelCatalog'
 import type { WorkerRequest, WorkerRequestInit, WorkerResponse } from './localModelWorkerProtocol'
 
 export { LOCAL_MODELS, type LocalModelInfo } from './localModelCatalog'
@@ -31,9 +31,23 @@ export type { LocalModelDevice } from './localModelCatalog'
 
 export type LocalModelLoadProgress = ModelDownloadProgress
 
+/** Feature detection for WebGPU only. Note this is *not* the same question as "can local mode run
+ * here" — see canRunLocalModel: a model pinned to the CPU backend needs no GPU at all. */
 export function isLocalModelSupported(): boolean {
   return typeof navigator !== 'undefined' && !!navigator.gpu
 }
+
+/** Whether a specific model can run on this device: either the GPU is available, or the model has
+ * been put on the CPU backend, which doesn't touch WebGPU. Keeping the WebGPU check tied to the
+ * resolved backend rather than applied blanket-fashion is what lets a browser without WebGPU run
+ * local mode at all — before the CPU backend existed, refusing outright was the whole story. */
+export function canRunLocalModel(modelId: LocalModelId): boolean {
+  return isLocalModelSupported() || preferredDevice(modelId) === 'wasm'
+}
+
+const NO_WEBGPU_MESSAGE =
+  "This browser doesn't support WebGPU. Set this model to run on the CPU in Settings to use it anyway — " +
+  'it will be a lot slower.'
 
 /**
  * Which backend each model last settled on, remembered across reloads.
@@ -68,10 +82,27 @@ function rememberDevice(modelId: LocalModelId, device: LocalModelDevice): void {
   }
 }
 
-/** Whether a model is currently running on the CPU fallback — for Settings/Play to explain why
- * turns are slow, rather than leaving it looking broken. */
+/** Which backend a model will use for its next run — whether chosen deliberately in Settings or
+ * arrived at by an automatic fallback. */
 export function getLocalModelDevice(modelId: LocalModelId): LocalModelDevice {
   return preferredDevice(modelId)
+}
+
+/**
+ * Pins a model to a backend from Settings, rather than waiting for a GPU crash to discover it the
+ * expensive way. The CPU backend trades speed for not competing for GPU memory at all, which is
+ * the difference between slow and unusable on a device whose GPU can't hold the model.
+ *
+ * Drops the loaded copy on both sides, because the two backends are genuinely different builds
+ * (`_q4f16` vs `_quantized`) and a session created for one cannot serve the other — the next load
+ * has to fetch and initialise the right file. Downloads already on disk are untouched, so
+ * switching back to a build that was fetched before doesn't re-download it.
+ */
+export async function setLocalModelDevice(modelId: LocalModelId, device: LocalModelDevice): Promise<void> {
+  if (preferredDevice(modelId) === device) return
+  rememberDevice(modelId, device)
+  modelStates.delete(modelId)
+  if (worker) await send({ kind: 'evict', modelId })
 }
 
 interface ModelRuntimeState {
@@ -206,9 +237,7 @@ export async function preloadLocalModel(
   modelId: LocalModelId,
   onProgress?: (p: LocalModelLoadProgress) => void,
 ): Promise<void> {
-  if (!isLocalModelSupported()) {
-    throw new Error("This browser doesn't support WebGPU, which the local model needs to run.")
-  }
+  if (!canRunLocalModel(modelId)) throw new Error(NO_WEBGPU_MESSAGE)
   await loadModel(modelId, onProgress)
 }
 
@@ -218,7 +247,11 @@ export async function preloadLocalModel(
 export async function hasDownloadedLocalModel(modelId: LocalModelId): Promise<boolean> {
   if (modelStates.get(modelId)?.isReady) return true
   const { hasCachedLocalModelFiles } = await import('./localModelCache')
-  return hasCachedLocalModelFiles(modelId)
+  // Scoped to the build the *currently selected* backend needs. The GPU and CPU builds are
+  // different files, so a model fetched for the GPU and then switched to the CPU is genuinely not
+  // downloaded yet, and saying otherwise would hide a several-hundred-megabyte fetch behind a row
+  // that claimed to be ready.
+  return hasCachedLocalModelFiles(modelId, LOCAL_MODEL_DTYPE_SUFFIX[preferredDevice(modelId)])
 }
 
 /** Whether a model has an interrupted/incomplete download sitting on disk — distinct from fully
@@ -284,9 +317,7 @@ export async function generateLocalReply(
   prompt: string,
   opts: GenerateLocalReplyOptions = {},
 ): Promise<string> {
-  if (!isLocalModelSupported()) {
-    throw new Error("This browser doesn't support WebGPU, which the local model needs to run.")
-  }
+  if (!canRunLocalModel(modelId)) throw new Error(NO_WEBGPU_MESSAGE)
 
   const state = getModelState(modelId)
   requestPersistentStorage()
