@@ -48,6 +48,14 @@ export const LOCAL_MODEL_GPU_DTYPE = 'q4f16'
  */
 export const LOCAL_MODEL_CPU_DTYPE = 'q8'
 
+/** The filename suffix each dtype above resolves to, mirroring @huggingface/transformers'
+ * DEFAULT_DTYPE_SUFFIX_MAPPING (utils/dtypes.js). Needed on the main thread — which never imports
+ * that library — to tell whether the build a given backend actually needs is already on disk. */
+export const LOCAL_MODEL_DTYPE_SUFFIX: Record<LocalModelDevice, string> = {
+  webgpu: '_q4f16',
+  wasm: '_quantized',
+}
+
 /** Ordered smallest to largest. Gemma 4 E2B is kept as the largest/highest-quality option since
  * it's what this app shipped with first; the rest were added specifically because that one crashed
  * low-memory devices around ~2GB downloaded. */

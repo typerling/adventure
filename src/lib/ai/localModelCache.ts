@@ -342,15 +342,24 @@ export const localModelCache = {
   },
 }
 
-/** Whether any complete file for the given model is currently cached — lets Settings show
+/** Whether a complete weights file for the given model is currently cached — lets Settings show
  * "downloaded" state even on a fresh page load, before anything in this session has touched it.
  * Scoped to one model so having a different model cached doesn't falsely read as this one being
- * ready — several models can each have their own cached files at once. */
-export async function hasCachedLocalModelFiles(modelId: string): Promise<boolean> {
+ * ready — several models can each have their own cached files at once.
+ *
+ * `dtypeSuffix` narrows it to one quantization (`_q4f16` for the GPU build, `_quantized` for the
+ * CPU one — see localModelCatalog.ts). Those are different files, so a model downloaded for the
+ * GPU is *not* downloaded for the CPU: without this, switching a model to the CPU would leave
+ * Settings claiming it was ready while the next turn quietly went and fetched several hundred more
+ * megabytes. Tokenizer/config files are shared between the two and deliberately don't count on
+ * their own, which is why this matches the weights rather than any file at all. */
+export async function hasCachedLocalModelFiles(modelId: string, dtypeSuffix?: string): Promise<boolean> {
   const db = await openDb()
   try {
     const urls = await getAllCachedUrls(db)
-    return urls.some((url) => urlBelongsToModel(url, modelId))
+    return urls.some(
+      (url) => urlBelongsToModel(url, modelId) && (!dtypeSuffix || url.includes(`${dtypeSuffix}.onnx`)),
+    )
   } finally {
     db.close()
   }

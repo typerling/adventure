@@ -165,9 +165,15 @@ actual AI reply.
   the worker retries the turn once on the **CPU/WASM backend** rather than failing: note that's a
   different quantization (`LOCAL_MODEL_CPU_DTYPE` = `q8` → `model_quantized.onnx`, the library's
   own wasm default and the one variant present for every catalog model), so it re-downloads the
-  model and runs in minutes rather than seconds. The choice is remembered per model in
-  `localStorage` so a device that can't sustain WebGPU doesn't rediscover that every turn, shown
-  in Settings' model row, and reset by "Remove". `isLocalModelSupported()`
+  model and runs in minutes rather than seconds. The backend is also **selectable per model** in
+  Settings ("Run on: GPU / CPU"), since on a device whose GPU can't hold the model, waiting for the
+  automatic fallback costs a wasted generation every time. Either way the choice is remembered per
+  model in `localStorage` and reset by "Remove". Two things follow from the two backends being
+  different *files*: `hasDownloadedLocalModel` asks about the build the selected backend needs
+  (`LOCAL_MODEL_DTYPE_SUFFIX`), or a GPU-downloaded model would claim to be ready while the CPU one
+  had yet to be fetched; and `isLocalModelSupported()` (WebGPU feature detection) is no longer the
+  same question as `canRunLocalModel(modelId)`, which is what the load/generate paths gate on — a
+  model pinned to the CPU runs on a browser with no WebGPU at all. `isLocalModelSupported()`
   checks `navigator.gpu` — note this is *feature detection only*: modern Chromium reports
   `navigator.gpu` as present even where a real GPU adapter can't be obtained (verified while
   writing tests for this — see `tests/ai-local-mode.spec.ts`), so genuine failures (no adapter,
