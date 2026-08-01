@@ -145,6 +145,37 @@ function stripUnusedComponents(p: LocalModelLoadProgress): LocalModelLoadProgres
   return { ...p, files, loaded, total, progress: total > 0 ? (loaded / total) * 100 : p.progress }
 }
 
+/**
+ * One throwaway single-token generation before the model is reported ready — what every official
+ * transformers.js WebGPU example does after `from_pretrained` (see the `llama-3.2-webgpu` /
+ * `phi-3.5-webgpu` workers, which run `generate({ ...tokenizer('a'), max_new_tokens: 1 })`), and
+ * something this app was missing.
+ *
+ * It matters more here than in those examples. WebGPU compiles a model's shaders lazily, on first
+ * use, so without this the very first turn pays for all of that *and* a prefill over this app's
+ * DM prompt — persona, difficulty rules, the whole sheet snapshot, rolling summary, six recent
+ * turns and the state contract, i.e. thousands of tokens where those examples send a short chat
+ * message. That combined burst is the single heaviest thing this app ever asks of the GPU, and on
+ * a mobile driver a long enough burst gets reset out from under the page ("Device is lost").
+ * Splitting it in two — compile here on a 1-token input, prefill later — is the cheap half of the
+ * mitigation. (The other half is moving generation off the main thread into a Worker, as those
+ * same examples do.)
+ *
+ * Deliberately non-fatal: a model whose warm-up trips but whose real generation would have worked
+ * shouldn't be bricked by this, and the failure resurfaces immediately at generation time anyway,
+ * where it's reported properly.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function warmUp(processor: any, model: any, usesProcessor: boolean): Promise<void> {
+  try {
+    const tokenizer = processor.tokenizer ?? processor
+    const inputs = usesProcessor ? await processor('a') : await tokenizer('a')
+    await model.generate({ ...inputs, max_new_tokens: 1 })
+  } catch {
+    // Intentionally ignored — see above.
+  }
+}
+
 /** Lets Settings show whether a given model still needs downloading, without triggering it. */
 export function getLocalModelLoadState(modelId: LocalModelId): 'unloaded' | 'loading' | 'ready' {
   const state = modelStates.get(modelId)
@@ -208,6 +239,7 @@ function loadModel(modelId: LocalModelId, onProgress?: (p: LocalModelLoadProgres
           progress_callback: progressCallback,
         }),
       ])
+      await warmUp(processor, model, info.usesProcessor)
       return { processor, model }
     })()
     state.loadPromise.then(
@@ -275,6 +307,22 @@ export function describeLocalModelProgress(p: LocalModelLoadProgress): string {
   return describeModelDownloadProgress(p, 'local model')
 }
 
+/** ONNX Runtime surfaces a lost GPU device as a wall of C++ file paths and buffer-manager
+ * internals ("buffer_manager.cc:553 ... Failed to execute 'mapAsync' on 'GPUBuffer': [Device] is
+ * lost"), which tells a player nothing they can act on. Everything else is passed through as-is
+ * rather than guessed at. */
+function describeGenerationFailure(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err)
+  if (/device.{0,20}(is )?lost|mapAsync/i.test(raw)) {
+    return (
+      "This device's GPU dropped the model mid-reply. That usually means the generation was too " +
+      'heavy for it, or the screen locked or another app claimed the GPU while it ran. Keep the ' +
+      'screen on and retry — if it keeps happening, pick a smaller model in Settings.'
+    )
+  }
+  return raw
+}
+
 export interface GenerateLocalReplyOptions {
   onLoadProgress?: (p: LocalModelLoadProgress) => void
   /** Called with the accumulated reply text as tokens stream in — generation on a phone GPU can
@@ -337,13 +385,25 @@ export async function generateLocalReply(
     },
   })
 
-  await model.generate({
-    ...inputs,
-    max_new_tokens: MAX_NEW_TOKENS,
-    do_sample: true,
-    temperature: 0.7,
-    streamer,
-  })
+  try {
+    await model.generate({
+      ...inputs,
+      max_new_tokens: MAX_NEW_TOKENS,
+      do_sample: true,
+      temperature: 0.7,
+      streamer,
+    })
+  } catch (err) {
+    // A WebGPU device can be lost mid-generation — the driver resets under a long compute burst,
+    // the GPU process is reclaimed under memory pressure, or the page is backgrounded. It is not
+    // recoverable for the session built on it: every later call fails identically. Since the
+    // loaded model is cached module-level, leaving it in place means "Retry" reuses the dead
+    // session and can never succeed, so the only way out would be a full page reload. Dropping
+    // the cached state makes the next attempt rebuild from the already-downloaded files instead
+    // (no re-download — removeLocalModel is what clears those, and this deliberately isn't that).
+    modelStates.delete(modelId)
+    throw new Error(describeGenerationFailure(err))
+  }
 
   if (!fullReply.trim()) {
     throw new Error('The local model produced no text — try again.')
