@@ -26,6 +26,7 @@ import { getClaudeApiKey, setClaudeApiKey } from '@/lib/ai/claudeKey'
 import { formatBytes } from '@/lib/modelDownloadProgress'
 import {
   describeLocalModelProgress,
+  getLocalModelDevice,
   getLocalModelLoadState,
   hasDownloadedLocalModel,
   hasPartiallyDownloadedLocalModel,
@@ -450,6 +451,15 @@ export function Settings() {
                   <div>
                     <p className="text-sm font-medium">{info.label}</p>
                     <p className="text-xs text-muted-foreground">{formatBytes(info.sizeBytes)}</p>
+                    {/* Only shown once a model has actually fallen back. A turn that suddenly takes
+                        minutes instead of seconds otherwise just looks broken, and nothing else in
+                        the UI would say why — or that "Remove" is what puts it back on the GPU. */}
+                    {getLocalModelDevice(modelId) === 'wasm' && (
+                      <p className="text-xs text-muted-foreground">
+                        This device's GPU couldn't run this model, so it now runs on the CPU — much slower, and a
+                        separate download. Remove it to try the GPU again.
+                      </p>
+                    )}
                   </div>
                   {row.loadState === 'ready' ? (
                     <div className="flex items-center justify-between gap-2">

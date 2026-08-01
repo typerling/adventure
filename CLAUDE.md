@@ -25,8 +25,8 @@ fallback): the Claude API, and a choice of several fully on-device models over W
 - `npm run build` — typecheck (`tsc -b`) + production build; **this is the only typecheck
   command** (no separate `typecheck` script). `dist/` will contain a multi-MB ONNX Runtime
   WebAssembly file — that's `@huggingface/transformers` (local AI mode's on-device inference
-  runtime), pulled in via dynamic `import()` so it's a separate chunk fetched only when a player
-  actually uses local mode, not part of the main app bundle.
+  runtime). It is imported only by `localModel.worker.ts`, so it lands in that worker's own chunk,
+  fetched when a player actually uses local mode and never part of the main app bundle.
 - `npm run lint` — oxlint (config in `.oxlintrc.json`)
 - `npm run preview` — preview the production build locally
 - `npm run test:e2e` — Playwright end-to-end tests (`playwright.config.ts`, specs in `tests/`).
@@ -143,16 +143,39 @@ actual AI reply.
   template). Unlike the fetch clients elsewhere, `@huggingface/transformers` genuinely is a vendor
   dependency here, and that's fine: DESIGN.md §11's "no AI vendor SDK" rule was about avoiding a
   *remote-API* client, not about the on-device inference runtime itself — there's no thin-fetch
-  equivalent for running a model locally. It's **dynamically imported** inside `loadModel()`, not
-  statically at the top of the file, so its ~500KB JS chunk and the ONNX WebAssembly runtime it
-  pulls in only ever load for players who actually pick local mode. `isLocalModelSupported()`
+  equivalent for running a model locally.
+
+  **The model runs in a dedicated Web Worker** (`localModel.worker.ts`), as every official
+  transformers.js WebGPU example does; `localModel.ts` is only the main-thread face of it — public
+  API, per-model UI state (load status/progress/listeners), and the IndexedDB
+  downloaded/partial/remove helpers — talking over the typed protocol in
+  `localModelWorkerProtocol.ts`. Three things fall out of that split and are easy to trip over:
+  the catalog lives in its own `localModelCatalog.ts` because the worker importing `localModel.ts`
+  would recursively spawn workers; `navigator.storage.persist()` is Window-only so
+  `requestPersistentStorage()` stays on the main thread; and `@huggingface/transformers` is now
+  imported *only* by the worker, so its JS chunk and the ONNX WebAssembly runtime never touch the
+  main bundle at all. Generation is a long unbroken stretch of work — on the main thread it froze
+  the whole UI (including the streaming preview meant to show it was alive) for the entire turn.
+
+  Loading also **warms up** with a throwaway one-token `generate` before reporting ready (what the
+  reference workers do): WebGPU compiles shaders lazily, so without it the first turn paid for all
+  of that *plus* a prefill over this app's multi-thousand-token DM prompt in one burst — measured
+  at ~23.5s versus ~2.5s for a real generation right after — and a burst that long gets reset out
+  from under the page by a mobile GPU driver ("Device is lost"). If a device *is* lost mid-reply
+  the worker retries the turn once on the **CPU/WASM backend** rather than failing: note that's a
+  different quantization (`LOCAL_MODEL_CPU_DTYPE` = `q8` → `model_quantized.onnx`, the library's
+  own wasm default and the one variant present for every catalog model), so it re-downloads the
+  model and runs in minutes rather than seconds. The choice is remembered per model in
+  `localStorage` so a device that can't sustain WebGPU doesn't rediscover that every turn, shown
+  in Settings' model row, and reset by "Remove". `isLocalModelSupported()`
   checks `navigator.gpu` — note this is *feature detection only*: modern Chromium reports
   `navigator.gpu` as present even where a real GPU adapter can't be obtained (verified while
   writing tests for this — see `tests/ai-local-mode.spec.ts`), so genuine failures (no adapter,
   model download failure, OOM on a low-end phone) surface at generation time via the same
   try/catch as the API path, not via this check. Model loading state (`loadPromise`/`isReady`/
-  download progress/listeners) is keyed per model ID in a module-level `Map`, not one shared
-  singleton — several models can each have their own in-flight load or cached download at once,
+  download progress/listeners) is keyed per model ID in a module-level `Map` on the main thread
+  (the worker keys its loaded models by model ID *and* backend, since the GPU and CPU builds are
+  different files), not one shared singleton — several models can each have their own in-flight load or cached download at once,
   and each has its own `removeLocalModel(modelId)` to clear both its complete-file cache
   (`localModelCache.ts`) and any interrupted partial download (`localModelResumableFetch.ts`)
   without touching other models' data, surfaced in Settings as a per-model "Remove"/"Clear partial
