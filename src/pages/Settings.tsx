@@ -263,6 +263,11 @@ export function Settings() {
 
   function saveElevenLabsKey() {
     setElevenLabsApiKey(elevenLabsKey);
+    // A new/cleared key invalidates any voice list already loaded under the old one — without
+    // this, reopening the picker would keep showing the previous account's voices instead of
+    // refetching under the key just saved.
+    setVoices([]);
+    setVoicesLoadState("idle");
     toast.success(
       elevenLabsKey.trim()
         ? "ElevenLabs API key saved."
@@ -296,12 +301,19 @@ export function Settings() {
     };
     previewAudioRef.current = audio;
     setPreviewingVoiceId(voice.voiceId);
-    void audio.play();
+    // Switching previews quickly pauses the previous Audio before its play() promise settles,
+    // which rejects with an AbortError — not a real playback failure (onerror above handles
+    // those), so it's swallowed here rather than left as an unhandled rejection.
+    void audio.play().catch(() => {});
   }
 
   async function openVoicePicker() {
     setVoicePickerOpen(true);
-    if (voicesLoadState === "loaded") return;
+    // Skip re-fetching once a load has already succeeded, and also while one is still in
+    // flight — otherwise a second click before the first request resolves fires a duplicate,
+    // undeduplicated fetch, and if that redundant call fails after the first one already
+    // succeeded, its error would wrongly clobber a good "loaded" state.
+    if (voicesLoadState === "loaded" || voicesLoadState === "loading") return;
     setVoicesLoadState("loading");
     try {
       const list = await listElevenLabsVoicesForStoredKey();
