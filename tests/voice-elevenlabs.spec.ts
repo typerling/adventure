@@ -1,6 +1,10 @@
 import { test, expect } from '@playwright/test'
 import { installGoogleApiMock } from './mocks/googleApi'
-import { installElevenLabsApiMock, installFakeAudioPlayback } from './mocks/elevenLabs'
+import {
+  installControllableAudioPlayback,
+  installElevenLabsApiMock,
+  installFakeAudioPlayback,
+} from './mocks/elevenLabs'
 import { installFakeMediaRecorder } from './mocks/mediaRecorder'
 import { createRandomCampaign, setCampaignVoiceProviders, submitFreeTextTurn } from './helpers'
 
@@ -72,6 +76,62 @@ test.describe('ElevenLabs voice provider', () => {
     await setCampaignVoiceProviders(page, { tts: 'elevenlabs' })
     await page.goto(`/settings/${campaignId}`)
     await expect(page.locator('#elevenLabsKey')).toBeVisible()
+  })
+
+  test('voice picker lists ElevenLabs voices, previews one, and selecting one sets the voice ID', async ({ page }) => {
+    await installGoogleApiMock(page)
+    const elevenLabs = await installElevenLabsApiMock(page, {
+      voices: [
+        { voice_id: '21m00Tcm4TlvDq8ikWAM', name: 'Rachel', category: 'premade', preview_url: 'https://example.com/rachel.mp3' },
+        { voice_id: 'AZnzlk1XvdvUeBnXmlld', name: 'Domi', category: 'premade', preview_url: 'https://example.com/domi.mp3' },
+        // A voice with no hosted sample — the preview button for it should be disabled rather
+        // than attempt to play `new Audio(undefined)`.
+        { voice_id: 'no-preview-voice', name: 'Silent Sam', category: 'cloned', preview_url: null },
+      ],
+    })
+    // Deliberately not the auto-ending fake — previews need a window to click "stop" before
+    // playback would resolve on its own (same reasoning as the play-button toggle test below).
+    await installControllableAudioPlayback(page)
+
+    await createRandomCampaign(page)
+    await setCampaignVoiceProviders(page, { tts: 'elevenlabs' })
+    const campaignId = campaignIdFromUrl(page)
+    await saveElevenLabsKey(page, campaignId, 'sk_test_12345')
+
+    await page.getByRole('button', { name: 'Browse voices' }).click()
+    await expect(page.getByRole('dialog', { name: 'Choose an ElevenLabs voice' })).toBeVisible()
+    await expect(page.getByRole('button', { name: /^Rachel/ })).toBeVisible()
+    await expect(page.getByRole('button', { name: /^Domi/ })).toBeVisible()
+    expect(elevenLabs.voicesRequests).toBe(1)
+
+    // A voice with no preview_url can't be auditioned.
+    await expect(page.getByRole('button', { name: 'Preview Silent Sam' })).toBeDisabled()
+
+    // Preview toggles to a stop button, doesn't touch the voice ID field, and doesn't hit the
+    // text-to-speech endpoint (it plays ElevenLabs' hosted sample directly).
+    await page.getByRole('button', { name: 'Preview Rachel' }).click()
+    await expect(page.getByRole('button', { name: 'Stop preview of Rachel' })).toBeVisible()
+    expect(elevenLabs.ttsRequests).toHaveLength(0)
+    await expect(page.locator('#voiceId')).toHaveValue('')
+
+    // Switching to a different voice's preview stops the first rather than layering audio.
+    await page.getByRole('button', { name: 'Preview Domi' }).click()
+    await expect(page.getByRole('button', { name: 'Stop preview of Domi' })).toBeVisible()
+    await expect(page.getByRole('button', { name: /^Preview Rachel$/ })).toBeVisible()
+
+    // Explicitly stopping a preview reverts its button without selecting anything.
+    await page.getByRole('button', { name: 'Stop preview of Domi' }).click()
+    await expect(page.getByRole('button', { name: /^Preview Domi$/ })).toBeVisible()
+    await expect(page.locator('#voiceId')).toHaveValue('')
+
+    await page.getByRole('button', { name: /^Domi/ }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await expect(page.locator('#voiceId')).toHaveValue('AZnzlk1XvdvUeBnXmlld')
+
+    // Reopening the picker reuses the already-loaded list instead of refetching.
+    await page.getByRole('button', { name: 'Browse voices' }).click()
+    await expect(page.getByRole('dialog', { name: 'Choose an ElevenLabs voice' })).toBeVisible()
+    expect(elevenLabs.voicesRequests).toBe(1)
   })
 
   test('selecting ElevenLabs for STT/TTS drives the real request shapes', async ({ page }) => {
