@@ -74,6 +74,31 @@ test.describe('ElevenLabs voice provider', () => {
     await expect(page.locator('#elevenLabsKey')).toBeVisible()
   })
 
+  test('voice picker lists ElevenLabs voices, previews one, and selecting one sets the voice ID', async ({ page }) => {
+    await installGoogleApiMock(page)
+    const elevenLabs = await installElevenLabsApiMock(page)
+    await installFakeAudioPlayback(page)
+
+    await createRandomCampaign(page)
+    await setCampaignVoiceProviders(page, { tts: 'elevenlabs' })
+    const campaignId = campaignIdFromUrl(page)
+    await saveElevenLabsKey(page, campaignId, 'sk_test_12345')
+
+    await page.getByRole('button', { name: 'Browse voices' }).click()
+    await expect(page.getByRole('dialog', { name: 'Choose an ElevenLabs voice' })).toBeVisible()
+    await expect(page.getByRole('button', { name: /^Rachel/ })).toBeVisible()
+    await expect(page.getByRole('button', { name: /^Domi/ })).toBeVisible()
+    expect(elevenLabs.voicesRequests).toBe(1)
+
+    // Preview doesn't hit the text-to-speech endpoint or the voice ID field.
+    await page.getByRole('button', { name: 'Preview Rachel' }).click()
+    expect(elevenLabs.ttsRequests).toHaveLength(0)
+
+    await page.getByRole('button', { name: /^Domi/ }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await expect(page.locator('#voiceId')).toHaveValue('AZnzlk1XvdvUeBnXmlld')
+  })
+
   test('selecting ElevenLabs for STT/TTS drives the real request shapes', async ({ page }) => {
     await installGoogleApiMock(page)
     const elevenLabs = await installElevenLabsApiMock(page, { transcript: 'Search the altar for clues' })

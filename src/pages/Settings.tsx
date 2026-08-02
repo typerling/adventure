@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { toast } from "sonner";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Loader2, Play, Square } from "lucide-react";
 import {
   loadCampaignFile,
   loadSettings,
@@ -38,12 +38,24 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Progress } from "@/components/ui/progress";
 import { useGoogleAuth } from "@/lib/google/authStore";
 import {
   getElevenLabsApiKey,
   setElevenLabsApiKey,
 } from "@/lib/voice/elevenLabsKey";
+import {
+  listElevenLabsVoicesForStoredKey,
+  type ElevenLabsVoice,
+} from "@/lib/voice/elevenLabsVoices";
 import { getClaudeApiKey, setClaudeApiKey } from "@/lib/ai/claudeKey";
 import { formatBytes } from "@/lib/modelDownloadProgress";
 import {
@@ -131,6 +143,15 @@ export function Settings() {
     number | null
   >(null);
   const [removingVoiceModel, setRemovingVoiceModel] = useState(false);
+  const [voicePickerOpen, setVoicePickerOpen] = useState(false);
+  const [voices, setVoices] = useState<ElevenLabsVoice[]>([]);
+  const [voicesLoadState, setVoicesLoadState] = useState<
+    "idle" | "loading" | "error" | "loaded"
+  >("idle");
+  const [previewingVoiceId, setPreviewingVoiceId] = useState<string | null>(
+    null,
+  );
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const setHeaderContext = usePlayHeaderStore((s) => s.setContext);
 
   function patchModelRow(
@@ -175,6 +196,11 @@ export function Settings() {
     });
     return () => setHeaderContext(null);
   }, [campaignId, campaignName, setHeaderContext]);
+
+  // Leaving the page mid-preview shouldn't leave a voice sample playing in the background.
+  useEffect(() => {
+    return () => previewAudioRef.current?.pause();
+  }, []);
 
   // Refines the in-memory-only guess from getLocalModelLoadState() (which only knows about this
   // page session) with what's actually on disk — a model downloaded in an earlier session should
@@ -242,6 +268,58 @@ export function Settings() {
         ? "ElevenLabs API key saved."
         : "ElevenLabs API key cleared.",
     );
+  }
+
+  function stopVoicePreview() {
+    previewAudioRef.current?.pause();
+    previewAudioRef.current = null;
+    setPreviewingVoiceId(null);
+  }
+
+  function togglePreview(voice: ElevenLabsVoice) {
+    if (previewingVoiceId === voice.voiceId) {
+      stopVoicePreview();
+      return;
+    }
+    if (!voice.previewUrl) return;
+    previewAudioRef.current?.pause();
+    const audio = new Audio(voice.previewUrl);
+    audio.onended = () =>
+      setPreviewingVoiceId((current) =>
+        current === voice.voiceId ? null : current,
+      );
+    audio.onerror = () => {
+      toast.error("Couldn't play that voice preview.");
+      setPreviewingVoiceId((current) =>
+        current === voice.voiceId ? null : current,
+      );
+    };
+    previewAudioRef.current = audio;
+    setPreviewingVoiceId(voice.voiceId);
+    void audio.play();
+  }
+
+  async function openVoicePicker() {
+    setVoicePickerOpen(true);
+    if (voicesLoadState === "loaded") return;
+    setVoicesLoadState("loading");
+    try {
+      const list = await listElevenLabsVoicesForStoredKey();
+      setVoices(list);
+      setVoicesLoadState("loaded");
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to load ElevenLabs voices.",
+      );
+      setVoicesLoadState("error");
+    }
+  }
+
+  function selectVoice(voice: ElevenLabsVoice) {
+    if (!settings) return;
+    setSettings({ ...settings, elevenLabsVoiceId: voice.voiceId });
+    stopVoicePreview();
+    setVoicePickerOpen(false);
   }
 
   function saveClaudeKey() {
@@ -535,22 +613,123 @@ export function Settings() {
               settings.ttsProvider === "elevenlabs") && (
               <div className="flex flex-col gap-2">
                 <Label htmlFor="voiceId">ElevenLabs voice ID (optional)</Label>
-                <Input
-                  id="voiceId"
-                  value={settings.elevenLabsVoiceId ?? ""}
-                  onChange={(e) =>
-                    setSettings({
-                      ...settings,
-                      elevenLabsVoiceId: e.target.value.trim() || undefined,
-                    })
-                  }
-                  placeholder="Defaults to a standard ElevenLabs voice if left blank"
-                />
+                <div className="flex gap-2">
+                  <Input
+                    id="voiceId"
+                    value={settings.elevenLabsVoiceId ?? ""}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        elevenLabsVoiceId: e.target.value.trim() || undefined,
+                      })
+                    }
+                    placeholder="Defaults to a standard ElevenLabs voice if left blank"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => void openVoicePicker()}
+                  >
+                    Browse voices
+                  </Button>
+                </div>
                 <p className="text-xs text-muted-foreground">
+                  {voicesLoadState === "loaded" &&
+                    settings.elevenLabsVoiceId &&
+                    (() => {
+                      const name = voices.find(
+                        (v) => v.voiceId === settings.elevenLabsVoiceId,
+                      )?.name;
+                      return name ? `Currently: ${name}. ` : "";
+                    })()}
                   Only used for text-to-speech.
                 </p>
               </div>
             )}
+
+            <Dialog
+              open={voicePickerOpen}
+              onOpenChange={(open) => {
+                setVoicePickerOpen(open);
+                if (!open) stopVoicePreview();
+              }}
+            >
+              <DialogContent className="sm:max-w-md">
+                <DialogHeader>
+                  <DialogTitle>Choose an ElevenLabs voice</DialogTitle>
+                  <DialogDescription>
+                    Preview plays ElevenLabs' hosted sample clip for each
+                    voice — no text-to-speech call is made just to listen.
+                  </DialogDescription>
+                </DialogHeader>
+                {voicesLoadState === "loading" && (
+                  <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+                    <Loader2 className="size-4 animate-spin" />
+                    Loading voices…
+                  </div>
+                )}
+                {voicesLoadState === "error" && (
+                  <p className="py-4 text-sm text-muted-foreground">
+                    Couldn't load voices. Make sure your ElevenLabs API key
+                    (below) is saved and valid, then try again.
+                  </p>
+                )}
+                {voicesLoadState === "loaded" &&
+                  (voices.length === 0 ? (
+                    <p className="py-4 text-sm text-muted-foreground">
+                      No voices found on this ElevenLabs account.
+                    </p>
+                  ) : (
+                    <ScrollArea className="h-80 pr-3">
+                      <div className="flex flex-col gap-1">
+                        {voices.map((voice) => (
+                          <div
+                            key={voice.voiceId}
+                            className="flex items-center gap-2 rounded-md p-2 hover:bg-muted/50"
+                          >
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="shrink-0"
+                              disabled={!voice.previewUrl}
+                              onClick={() => togglePreview(voice)}
+                              aria-label={
+                                previewingVoiceId === voice.voiceId
+                                  ? `Stop preview of ${voice.name}`
+                                  : `Preview ${voice.name}`
+                              }
+                            >
+                              {previewingVoiceId === voice.voiceId ? (
+                                <Square className="size-4" />
+                              ) : (
+                                <Play className="size-4" />
+                              )}
+                            </Button>
+                            <button
+                              type="button"
+                              className="flex-1 truncate text-left text-sm"
+                              onClick={() => selectVoice(voice)}
+                            >
+                              {voice.name}
+                              {voice.category && (
+                                <span className="ml-1.5 text-xs text-muted-foreground">
+                                  {voice.category}
+                                </span>
+                              )}
+                            </button>
+                            {settings.elevenLabsVoiceId === voice.voiceId && (
+                              <span className="shrink-0 text-xs text-muted-foreground">
+                                Selected
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </ScrollArea>
+                  ))}
+              </DialogContent>
+            </Dialog>
 
             <div className="flex flex-col gap-2">
               <Label htmlFor="cadence">Re-summarize every N turns</Label>
