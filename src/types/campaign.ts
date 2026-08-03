@@ -62,6 +62,10 @@ export interface CampaignSettings {
   ttsProvider: TtsProvider
   elevenLabsVoiceId?: string
   summarizationCadence: number
+  /** Auto-narrates each newly-applied turn (and, when the latest turn offers options, chains
+   * straight into speaking those too) — see useTtsPlayback. Off by default since it's an opt-in
+   * audiobook-style mode, not everyone wants turns spoken without asking. */
+  autoReadAloud: boolean
 }
 
 export const DEFAULT_SETTINGS: CampaignSettings = {
@@ -71,6 +75,7 @@ export const DEFAULT_SETTINGS: CampaignSettings = {
   sttProvider: 'browser',
   ttsProvider: 'browser',
   summarizationCadence: 15,
+  autoReadAloud: false,
 }
 
 /** A campaign as listed in the picked Drive folder, before its full data is loaded. */

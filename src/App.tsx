@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { BrowserRouter, Link, Route, Routes } from 'react-router-dom'
-import { BookOpen, MapPin, Settings as SettingsIcon, Volume2, VolumeX } from 'lucide-react'
+import { BookOpen, Loader2, MapPin, Pause, Play as PlayIcon, Settings as SettingsIcon } from 'lucide-react'
 import { Toaster } from '@/components/ui/sonner'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -16,8 +16,7 @@ import { cn } from '@/lib/utils'
 
 function Header() {
   const context = usePlayHeaderStore((s) => s.context)
-  const readAloud = usePlayHeaderStore((s) => s.readAloud)
-  const toggleReadAloud = usePlayHeaderStore((s) => s.toggleReadAloud)
+  const ttsControl = usePlayHeaderStore((s) => s.ttsControl)
   const [turnInfoOpen, setTurnInfoOpen] = useState(false)
 
   return (
@@ -58,21 +57,44 @@ function Header() {
               <MapPin className="size-4" />
             </Button>
           )}
-          {context?.showReadAloudToggle && (
+          {ttsControl && (
             <Button
               size="icon-sm"
-              variant={readAloud ? 'default' : 'outline'}
-              onClick={toggleReadAloud}
-              aria-pressed={readAloud}
-              title={readAloud ? 'Stop reading turns aloud' : 'Read new turns aloud'}
-              aria-label={readAloud ? 'Stop reading turns aloud' : 'Read new turns aloud'}
+              variant={ttsControl.status === 'playing' || ttsControl.status === 'paused' ? 'default' : 'outline'}
+              onClick={ttsControl.toggle}
+              disabled={ttsControl.status === 'loading'}
+              title={
+                ttsControl.status === 'loading'
+                  ? 'Loading…'
+                  : ttsControl.status === 'playing'
+                    ? 'Pause playback'
+                    : ttsControl.status === 'paused'
+                      ? 'Resume playback'
+                      : 'Play latest turn aloud'
+              }
+              aria-label={
+                ttsControl.status === 'loading'
+                  ? 'Loading…'
+                  : ttsControl.status === 'playing'
+                    ? 'Pause playback'
+                    : ttsControl.status === 'paused'
+                      ? 'Resume playback'
+                      : 'Play latest turn aloud'
+              }
             >
-              {readAloud ? <Volume2 className="size-4" /> : <VolumeX className="size-4" />}
+              {ttsControl.status === 'loading' ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : ttsControl.status === 'playing' ? (
+                <Pause className="size-4" />
+              ) : (
+                <PlayIcon className="size-4" />
+              )}
             </Button>
           )}
-          {/* Codex/Settings links are redundant with BottomNav once a campaign context exists,
-              so they only need to reappear once the viewport is wide enough that BottomNav hides
-              itself (md:hidden there, so md:inline-flex here mirrors it back). */}
+          {/* Codex is redundant with BottomNav once a campaign context exists, so it only needs
+              to reappear once the viewport is wide enough that BottomNav hides itself (md:hidden
+              there, so md:inline-flex here mirrors it back). Settings is device-global — not tied
+              to a campaign — so it stays visible at every width instead of deferring to BottomNav. */}
           {context && (
             <Button size="icon-sm" variant="outline" className="hidden md:inline-flex" asChild>
               <Link to={`/codex/${context.campaignId}`} title="Codex" aria-label="Codex">
@@ -80,17 +102,8 @@ function Header() {
               </Link>
             </Button>
           )}
-          <Button
-            size="icon-sm"
-            variant="outline"
-            className={cn(context && 'hidden md:inline-flex')}
-            asChild
-          >
-            <Link
-              to={context ? `/settings/${context.campaignId}` : '/settings'}
-              title="Settings"
-              aria-label="Settings"
-            >
+          <Button size="icon-sm" variant="outline" asChild>
+            <Link to="/settings" title="Settings" aria-label="Settings">
               <SettingsIcon className="size-4" />
             </Link>
           </Button>
@@ -123,7 +136,6 @@ function AppShell() {
           <Route path="/play/:campaignId" element={<Play />} />
           <Route path="/codex/:campaignId" element={<Codex />} />
           <Route path="/settings" element={<Settings />} />
-          <Route path="/settings/:campaignId" element={<Settings />} />
         </Routes>
       </div>
       <BottomNav />

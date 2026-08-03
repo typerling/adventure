@@ -1,24 +1,9 @@
-import { useEffect, useRef, useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { ArrowLeft, Loader2, Play, Square } from "lucide-react";
+import { ArrowLeft } from "lucide-react";
 import {
-  loadCampaignFile,
-  loadSettings,
-  saveSettings,
-} from "@/lib/google/campaignRepo";
-import {
-  getCachedCampaign,
-  patchCachedCampaignSettings,
-} from "@/hooks/campaignCache";
-import { usePlayHeaderStore } from "@/store/playHeaderStore";
-import {
-  AI_MODES,
-  CLAUDE_MODELS,
   LOCAL_MODEL_IDS,
-  STT_PROVIDERS,
-  TTS_PROVIDERS,
-  type CampaignSettings,
   type LocalModelId,
 } from "@/types/campaign";
 import { Button } from "@/components/ui/button";
@@ -38,24 +23,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Progress } from "@/components/ui/progress";
 import { useGoogleAuth } from "@/lib/google/authStore";
 import {
   getElevenLabsApiKey,
   setElevenLabsApiKey,
 } from "@/lib/voice/elevenLabsKey";
-import {
-  listElevenLabsVoicesForStoredKey,
-  type ElevenLabsVoice,
-} from "@/lib/voice/elevenLabsVoices";
 import { getClaudeApiKey, setClaudeApiKey } from "@/lib/ai/claudeKey";
 import { formatBytes } from "@/lib/modelDownloadProgress";
 import {
@@ -102,18 +75,15 @@ const INITIAL_ROW_STATE: LocalModelRowState = {
   device: "webgpu",
 };
 
-const CLAUDE_MODEL_LABELS: Record<(typeof CLAUDE_MODELS)[number], string> = {
-  "claude-opus-5": "Opus 5 — strongest reasoning, highest cost",
-  "claude-sonnet-5": "Sonnet 5 — balanced (recommended)",
-  "claude-haiku-4-5": "Haiku 4.5 — fastest, cheapest",
-};
-
+/**
+ * Device-global settings only — no key, no server, nothing tied to any one campaign: on-device
+ * model downloads, API keys (localStorage-only), and the Google account connection. Everything
+ * campaign-specific (AI mode, voice provider choices, summarization cadence, etc.) lives in
+ * Codex's "Settings" tab instead — see Codex.tsx.
+ */
 export function Settings() {
-  const { campaignId } = useParams<{ campaignId: string }>();
+  const navigate = useNavigate();
   const { signOut } = useGoogleAuth();
-  const [settings, setSettings] = useState<CampaignSettings | null>(null);
-  const [campaignName, setCampaignName] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
   const [elevenLabsKey, setElevenLabsKeyInput] = useState(
     () => getElevenLabsApiKey() ?? "",
   );
@@ -143,16 +113,6 @@ export function Settings() {
     number | null
   >(null);
   const [removingVoiceModel, setRemovingVoiceModel] = useState(false);
-  const [voicePickerOpen, setVoicePickerOpen] = useState(false);
-  const [voices, setVoices] = useState<ElevenLabsVoice[]>([]);
-  const [voicesLoadState, setVoicesLoadState] = useState<
-    "idle" | "loading" | "error" | "loaded"
-  >("idle");
-  const [previewingVoiceId, setPreviewingVoiceId] = useState<string | null>(
-    null,
-  );
-  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
-  const setHeaderContext = usePlayHeaderStore((s) => s.setContext);
 
   function patchModelRow(
     modelId: LocalModelId,
@@ -163,44 +123,6 @@ export function Settings() {
       [modelId]: { ...prev[modelId], ...patch },
     }));
   }
-
-  useEffect(() => {
-    if (!campaignId) return;
-    // If Play/Codex already loaded this campaign this session, reuse its cache instead of
-    // fetching settings.md (and the campaign file, for its name) from Drive again.
-    const cached = getCachedCampaign(campaignId);
-    if (cached) {
-      setSettings(cached.settings);
-      setCampaignName(cached.campaign.meta.name);
-      return;
-    }
-    void loadSettings(campaignId)
-      .then(setSettings)
-      // Without this a Drive failure was an unhandled rejection *and* a silently empty form.
-      .catch((err) =>
-        toast.error(err instanceof Error ? err.message : String(err)),
-      );
-    void loadCampaignFile(campaignId)
-      .then((f) => setCampaignName(f.meta.name))
-      .catch(() => {});
-  }, [campaignId]);
-
-  // See Play.tsx for why the top-bar header reads this from a shared store.
-  useEffect(() => {
-    if (!campaignId || !campaignName) return;
-    setHeaderContext({
-      campaignId,
-      campaignName,
-      showReadAloudToggle: false,
-      turnLabel: null,
-    });
-    return () => setHeaderContext(null);
-  }, [campaignId, campaignName, setHeaderContext]);
-
-  // Leaving the page mid-preview shouldn't leave a voice sample playing in the background.
-  useEffect(() => {
-    return () => previewAudioRef.current?.pause();
-  }, []);
 
   // Refines the in-memory-only guess from getLocalModelLoadState() (which only knows about this
   // page session) with what's actually on disk — a model downloaded in an earlier session should
@@ -247,91 +169,13 @@ export function Settings() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function save() {
-    if (!campaignId || !settings) return;
-    setSaving(true);
-    try {
-      await saveSettings(campaignId, settings);
-      patchCachedCampaignSettings(campaignId, settings);
-      toast.success("Settings saved.");
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
-    }
-  }
-
   function saveElevenLabsKey() {
     setElevenLabsApiKey(elevenLabsKey);
-    // A new/cleared key invalidates any voice list already loaded under the old one — without
-    // this, reopening the picker would keep showing the previous account's voices instead of
-    // refetching under the key just saved.
-    setVoices([]);
-    setVoicesLoadState("idle");
     toast.success(
       elevenLabsKey.trim()
         ? "ElevenLabs API key saved."
         : "ElevenLabs API key cleared.",
     );
-  }
-
-  function stopVoicePreview() {
-    previewAudioRef.current?.pause();
-    previewAudioRef.current = null;
-    setPreviewingVoiceId(null);
-  }
-
-  function togglePreview(voice: ElevenLabsVoice) {
-    if (previewingVoiceId === voice.voiceId) {
-      stopVoicePreview();
-      return;
-    }
-    if (!voice.previewUrl) return;
-    previewAudioRef.current?.pause();
-    const audio = new Audio(voice.previewUrl);
-    audio.onended = () =>
-      setPreviewingVoiceId((current) =>
-        current === voice.voiceId ? null : current,
-      );
-    audio.onerror = () => {
-      toast.error("Couldn't play that voice preview.");
-      setPreviewingVoiceId((current) =>
-        current === voice.voiceId ? null : current,
-      );
-    };
-    previewAudioRef.current = audio;
-    setPreviewingVoiceId(voice.voiceId);
-    // Switching previews quickly pauses the previous Audio before its play() promise settles,
-    // which rejects with an AbortError — not a real playback failure (onerror above handles
-    // those), so it's swallowed here rather than left as an unhandled rejection.
-    void audio.play().catch(() => {});
-  }
-
-  async function openVoicePicker() {
-    setVoicePickerOpen(true);
-    // Skip re-fetching once a load has already succeeded, and also while one is still in
-    // flight — otherwise a second click before the first request resolves fires a duplicate,
-    // undeduplicated fetch, and if that redundant call fails after the first one already
-    // succeeded, its error would wrongly clobber a good "loaded" state.
-    if (voicesLoadState === "loaded" || voicesLoadState === "loading") return;
-    setVoicesLoadState("loading");
-    try {
-      const list = await listElevenLabsVoicesForStoredKey();
-      setVoices(list);
-      setVoicesLoadState("loaded");
-    } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : "Failed to load ElevenLabs voices.",
-      );
-      setVoicesLoadState("error");
-    }
-  }
-
-  function selectVoice(voice: ElevenLabsVoice) {
-    if (!settings) return;
-    setSettings({ ...settings, elevenLabsVoiceId: voice.voiceId });
-    stopVoicePreview();
-    setVoicePickerOpen(false);
   }
 
   function saveClaudeKey() {
@@ -453,318 +297,17 @@ export function Settings() {
         <h1 className="font-heading text-2xl font-medium text-foreground">
           Settings
         </h1>
-        <Button asChild size="sm" variant="ghost">
-          <Link to={campaignId ? `/play/${campaignId}` : "/"}>
-            <ArrowLeft className="size-4" />
-            Back
-          </Link>
+        <Button size="sm" variant="ghost" onClick={() => navigate(-1)}>
+          <ArrowLeft className="size-4" />
+          Back
         </Button>
       </div>
 
-      {campaignId && settings && (
-        <Card data-testid="campaign-settings">
-          <CardHeader>
-            <CardTitle>This campaign</CardTitle>
-            <CardDescription>
-              AI mode and voice provider choices, stored in this campaign's
-              settings.md.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-4">
-            <div className="flex flex-col gap-2">
-              <Label>AI mode</Label>
-              <Select
-                value={settings.aiMode}
-                onValueChange={(v) =>
-                  setSettings({
-                    ...settings,
-                    aiMode: v as CampaignSettings["aiMode"],
-                  })
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {AI_MODES.map((m) => (
-                    <SelectItem key={m} value={m}>
-                      {m === "manual"
-                        ? "Manual (copy/paste into claude.ai or chatgpt.com)"
-                        : m === "api"
-                          ? "Direct API key (Claude)"
-                          : "Local model (runs on this device)"}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            {settings.aiMode === "local" && (
-              <div className="flex flex-col gap-2">
-                <Label>Local model</Label>
-                <Select
-                  value={settings.localModelId}
-                  onValueChange={(v) =>
-                    setSettings({
-                      ...settings,
-                      localModelId: v as LocalModelId,
-                    })
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {LOCAL_MODEL_IDS.map((id) => (
-                      <SelectItem key={id} value={id}>
-                        {LOCAL_MODELS[id].label} —{" "}
-                        {formatBytes(LOCAL_MODELS[id].sizeBytes)}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground">
-                  No key needed — everything runs on this device. Needs a
-                  browser with WebGPU (Chrome/Edge on Android, Safari 26+ on
-                  iOS/macOS). Bigger models are higher quality but slower to
-                  download and more likely to crash the tab on
-                  memory-constrained devices — see "Local AI models" below to
-                  download or remove any of them ahead of time. Quality and
-                  reliability (especially following the reply format) are
-                  noticeably weaker than the API mode, more so for smaller
-                  models.
-                </p>
-              </div>
-            )}
-
-            {settings.aiMode === "api" && (
-              <div className="flex flex-col gap-2">
-                <Label>Claude model</Label>
-                <Select
-                  value={settings.claudeModel}
-                  onValueChange={(v) =>
-                    setSettings({
-                      ...settings,
-                      claudeModel: v as CampaignSettings["claudeModel"],
-                    })
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {CLAUDE_MODELS.map((m) => (
-                      <SelectItem key={m} value={m}>
-                        {CLAUDE_MODEL_LABELS[m]}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-xs text-muted-foreground">
-                  Needs a Claude API key below — every turn is billed to your
-                  own key.
-                </p>
-              </div>
-            )}
-
-            <div className="flex flex-col gap-2">
-              <Label>Speech-to-text</Label>
-              <Select
-                value={settings.sttProvider}
-                onValueChange={(v) =>
-                  setSettings({
-                    ...settings,
-                    sttProvider: v as CampaignSettings["sttProvider"],
-                  })
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {STT_PROVIDERS.map((p) => (
-                    <SelectItem key={p} value={p}>
-                      {p === "browser"
-                        ? "Browser (Web Speech API)"
-                        : "ElevenLabs (Scribe)"}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="flex flex-col gap-2">
-              <Label>Text-to-speech</Label>
-              <Select
-                value={settings.ttsProvider}
-                onValueChange={(v) =>
-                  setSettings({
-                    ...settings,
-                    ttsProvider: v as CampaignSettings["ttsProvider"],
-                  })
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {TTS_PROVIDERS.map((p) => (
-                    <SelectItem key={p} value={p}>
-                      {p === "browser"
-                        ? "Browser (SpeechSynthesis)"
-                        : p === "elevenlabs"
-                          ? "ElevenLabs"
-                          : "Kokoro (on-device, runs locally)"}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            {(settings.sttProvider === "elevenlabs" ||
-              settings.ttsProvider === "elevenlabs") && (
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="voiceId">ElevenLabs voice ID (optional)</Label>
-                <div className="flex gap-2">
-                  <Input
-                    id="voiceId"
-                    value={settings.elevenLabsVoiceId ?? ""}
-                    onChange={(e) =>
-                      setSettings({
-                        ...settings,
-                        elevenLabsVoiceId: e.target.value.trim() || undefined,
-                      })
-                    }
-                    placeholder="Defaults to a standard ElevenLabs voice if left blank"
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => void openVoicePicker()}
-                  >
-                    Browse voices
-                  </Button>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {voicesLoadState === "loaded" &&
-                    settings.elevenLabsVoiceId &&
-                    (() => {
-                      const name = voices.find(
-                        (v) => v.voiceId === settings.elevenLabsVoiceId,
-                      )?.name;
-                      return name ? `Currently: ${name}. ` : "";
-                    })()}
-                  Only used for text-to-speech.
-                </p>
-              </div>
-            )}
-
-            <Dialog
-              open={voicePickerOpen}
-              onOpenChange={(open) => {
-                setVoicePickerOpen(open);
-                if (!open) stopVoicePreview();
-              }}
-            >
-              <DialogContent className="sm:max-w-md">
-                <DialogHeader>
-                  <DialogTitle>Choose an ElevenLabs voice</DialogTitle>
-                  <DialogDescription>
-                    Preview plays ElevenLabs' hosted sample clip for each
-                    voice — no text-to-speech call is made just to listen.
-                  </DialogDescription>
-                </DialogHeader>
-                {voicesLoadState === "loading" && (
-                  <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
-                    <Loader2 className="size-4 animate-spin" />
-                    Loading voices…
-                  </div>
-                )}
-                {voicesLoadState === "error" && (
-                  <p className="py-4 text-sm text-muted-foreground">
-                    Couldn't load voices. Make sure your ElevenLabs API key
-                    (below) is saved and valid, then try again.
-                  </p>
-                )}
-                {voicesLoadState === "loaded" &&
-                  (voices.length === 0 ? (
-                    <p className="py-4 text-sm text-muted-foreground">
-                      No voices found on this ElevenLabs account.
-                    </p>
-                  ) : (
-                    <ScrollArea className="h-80 pr-3">
-                      <div className="flex flex-col gap-1">
-                        {voices.map((voice) => (
-                          <div
-                            key={voice.voiceId}
-                            className="flex items-center gap-2 rounded-md p-2 hover:bg-muted/50"
-                          >
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon"
-                              className="shrink-0"
-                              disabled={!voice.previewUrl}
-                              onClick={() => togglePreview(voice)}
-                              aria-label={
-                                previewingVoiceId === voice.voiceId
-                                  ? `Stop preview of ${voice.name}`
-                                  : `Preview ${voice.name}`
-                              }
-                            >
-                              {previewingVoiceId === voice.voiceId ? (
-                                <Square className="size-4" />
-                              ) : (
-                                <Play className="size-4" />
-                              )}
-                            </Button>
-                            <button
-                              type="button"
-                              className="flex-1 truncate text-left text-sm"
-                              onClick={() => selectVoice(voice)}
-                            >
-                              {voice.name}
-                              {voice.category && (
-                                <span className="ml-1.5 text-xs text-muted-foreground">
-                                  {voice.category}
-                                </span>
-                              )}
-                            </button>
-                            {settings.elevenLabsVoiceId === voice.voiceId && (
-                              <span className="shrink-0 text-xs text-muted-foreground">
-                                Selected
-                              </span>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </ScrollArea>
-                  ))}
-              </DialogContent>
-            </Dialog>
-
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="cadence">Re-summarize every N turns</Label>
-              <Input
-                id="cadence"
-                type="number"
-                min={5}
-                value={settings.summarizationCadence}
-                onChange={(e) =>
-                  setSettings({
-                    ...settings,
-                    summarizationCadence: Number(e.target.value) || 15,
-                  })
-                }
-              />
-            </div>
-
-            <Button onClick={() => void save()} disabled={saving}>
-              {saving ? "Saving…" : "Save settings"}
-            </Button>
-          </CardContent>
-        </Card>
-      )}
+      <p className="text-sm text-muted-foreground">
+        These apply to this device, not any one campaign. AI mode, voice
+        provider choices, and other per-campaign settings live in each
+        campaign's Codex, under its "Settings" tab.
+      </p>
 
       <Card>
         <CardHeader>
@@ -860,16 +403,14 @@ export function Settings() {
                   </div>
                 ) : (
                   <div className="flex flex-col gap-2">
-                    <div className="flex items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <Button
                         size="sm"
                         variant="outline"
                         onClick={() => void downloadModel(modelId)}
                         disabled={row.loadState === "loading"}
                       >
-                        {row.loadState === "loading"
-                          ? row.statusMessage || "Downloading…"
-                          : "Download"}
+                        {row.loadState === "loading" ? "Downloading…" : "Download"}
                       </Button>
                       {row.hasPartial && row.loadState !== "loading" && (
                         <Button
@@ -884,6 +425,11 @@ export function Settings() {
                         </Button>
                       )}
                     </div>
+                    {row.loadState === "loading" && row.statusMessage && (
+                      <p className="text-xs break-words text-muted-foreground">
+                        {row.statusMessage}
+                      </p>
+                    )}
                     {row.downloadProgress !== null && (
                       <Progress
                         value={row.downloadProgress}
@@ -935,9 +481,14 @@ export function Settings() {
                 disabled={voiceLoadState === "loading"}
               >
                 {voiceLoadState === "loading"
-                  ? voiceStatusMessage || "Downloading…"
+                  ? "Downloading…"
                   : "Download voice model now"}
               </Button>
+              {voiceLoadState === "loading" && voiceStatusMessage && (
+                <p className="text-xs break-words text-muted-foreground">
+                  {voiceStatusMessage}
+                </p>
+              )}
               {voiceDownloadProgress !== null && (
                 <Progress value={voiceDownloadProgress} className="w-full" />
               )}
@@ -953,74 +504,67 @@ export function Settings() {
         </CardContent>
       </Card>
 
-      {campaignId && settings?.aiMode === "api" && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Claude API</CardTitle>
-            <CardDescription>
-              Needed since this campaign uses the direct API AI mode. Stored
-              only in this browser's local storage — never written to Drive.
-              Every turn generated this way is billed to this key directly by
-              Anthropic.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-3">
-            <div className="flex flex-col gap-2">
-              <Label htmlFor="claudeKey">API key</Label>
-              <Input
-                id="claudeKey"
-                type="password"
-                autoComplete="off"
-                value={claudeKey}
-                onChange={(e) => setClaudeKeyInput(e.target.value)}
-                placeholder="sk-ant-…"
-              />
-            </div>
-            <Button
-              variant="outline"
-              onClick={saveClaudeKey}
-              className="self-start"
-            >
-              {claudeKey.trim() ? "Save key" : "Clear key"}
-            </Button>
-          </CardContent>
-        </Card>
-      )}
+      <Card>
+        <CardHeader>
+          <CardTitle>Claude API</CardTitle>
+          <CardDescription>
+            Needed by any campaign using the direct API AI mode. Stored only in
+            this browser's local storage — never written to Drive. Every turn
+            generated this way is billed to this key directly by Anthropic.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="claudeKey">API key</Label>
+            <Input
+              id="claudeKey"
+              type="password"
+              autoComplete="off"
+              value={claudeKey}
+              onChange={(e) => setClaudeKeyInput(e.target.value)}
+              placeholder="sk-ant-…"
+            />
+          </div>
+          <Button
+            variant="outline"
+            onClick={saveClaudeKey}
+            className="self-start"
+          >
+            {claudeKey.trim() ? "Save key" : "Clear key"}
+          </Button>
+        </CardContent>
+      </Card>
 
-      {campaignId &&
-        (settings?.sttProvider === "elevenlabs" ||
-          settings?.ttsProvider === "elevenlabs") && (
-          <Card>
-            <CardHeader>
-              <CardTitle>ElevenLabs</CardTitle>
-              <CardDescription>
-                Needed since this campaign uses ElevenLabs for speech-to-text or
-                text-to-speech. Stored only in this browser's local storage —
-                never written to Drive.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-3">
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="elevenLabsKey">API key</Label>
-                <Input
-                  id="elevenLabsKey"
-                  type="password"
-                  autoComplete="off"
-                  value={elevenLabsKey}
-                  onChange={(e) => setElevenLabsKeyInput(e.target.value)}
-                  placeholder="sk_…"
-                />
-              </div>
-              <Button
-                variant="outline"
-                onClick={saveElevenLabsKey}
-                className="self-start"
-              >
-                {elevenLabsKey.trim() ? "Save key" : "Clear key"}
-              </Button>
-            </CardContent>
-          </Card>
-        )}
+      <Card>
+        <CardHeader>
+          <CardTitle>ElevenLabs</CardTitle>
+          <CardDescription>
+            Needed by any campaign using ElevenLabs for speech-to-text or
+            text-to-speech. Stored only in this browser's local storage — never
+            written to Drive.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="elevenLabsKey">API key</Label>
+            <Input
+              id="elevenLabsKey"
+              type="password"
+              autoComplete="off"
+              value={elevenLabsKey}
+              onChange={(e) => setElevenLabsKeyInput(e.target.value)}
+              placeholder="sk_…"
+            />
+          </div>
+          <Button
+            variant="outline"
+            onClick={saveElevenLabsKey}
+            className="self-start"
+          >
+            {elevenLabsKey.trim() ? "Save key" : "Clear key"}
+          </Button>
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

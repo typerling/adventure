@@ -3,46 +3,45 @@ import { installGoogleApiMock } from './mocks/googleApi'
 import { createRandomCampaign, getRecordedToasts, recordToasts } from './helpers'
 
 /**
- * Regression coverage for a real gap: the app's only "Settings" link anywhere (the top-bar
- * header) used to always go to /settings with no campaign ID, and that page hides the AI mode
- * selector entirely without one — so a campaign's own Settings (AI mode, voice providers) was
- * reachable only by typing /settings/:campaignId directly. The header's single Settings link is
- * now campaign-aware (src/store/playHeaderStore.ts) — it points at the currently open campaign
- * whenever one is active, and at plain /settings otherwise.
+ * Regression coverage for a real gap: a campaign's own settings (AI mode, voice providers) used
+ * to live on the same page as device-global settings, gated on a `:campaignId` route param that
+ * was easy to lose. They're now Codex's final "Settings" tab (src/pages/Codex.tsx) — reachable
+ * from Play via the Codex link, and directly from the Dashboard via a `?tab=settings` deep link.
  */
-test.describe('reaching a campaign\'s own Settings', () => {
-  test('is reachable from the Play screen', async ({ page }) => {
+test.describe("reaching a campaign's own settings", () => {
+  test('is reachable from the Play screen via Codex', async ({ page }) => {
     await installGoogleApiMock(page)
     await createRandomCampaign(page)
 
-    await expect(page.getByRole('link', { name: 'Codex' })).toBeVisible()
-    await page.getByRole('link', { name: 'Settings' }).click()
+    await page.getByRole('link', { name: 'Codex' }).click()
+    await expect(page).toHaveURL(/\/codex\/.+/)
+    await page.getByRole('tab', { name: 'Settings' }).click()
 
-    await expect(page).toHaveURL(/\/settings\/.+/)
     await expect(page.getByText('This campaign', { exact: true })).toBeVisible()
     await expect(page.getByText('AI mode', { exact: true })).toBeVisible()
   })
 
-  test('is reachable from the Dashboard', async ({ page }) => {
+  test('is reachable directly from the Dashboard', async ({ page }) => {
     await installGoogleApiMock(page)
     await createRandomCampaign(page)
 
     await page.goto('/')
     await page.getByRole('link', { name: 'Campaign settings' }).click()
 
-    await expect(page).toHaveURL(/\/settings\/.+/)
+    await expect(page).toHaveURL(/\/codex\/.+\?tab=settings/)
     await expect(page.getByText('This campaign', { exact: true })).toBeVisible()
     await expect(page.getByText('AI mode', { exact: true })).toBeVisible()
   })
 })
 
 /**
- * Play/Codex/Settings used to each carry their own Codex/Settings/"Back to play" links, separate
- * from (and inconsistent with) the top-bar header's own single global Settings link. They now all
- * share one header (src/store/playHeaderStore.ts): exactly one Settings link and one Codex link,
- * both campaign-aware, plus the campaign name shown as "Adventure - <name>".
+ * Settings (src/pages/Settings.tsx) is device-global now — not campaign-scoped at all — so its
+ * header link is always the same plain `/settings` regardless of whether a campaign is open, and
+ * stays visible at every viewport width (no more deferring to BottomNav on mobile). Play/Codex
+ * still share one header (src/store/playHeaderStore.ts) for the campaign title, the Codex link,
+ * and the campaign name shown as "Adventure - <name>".
  */
-test.describe('the top-bar header merges campaign navigation', () => {
+test.describe('the top-bar header', () => {
   test('shows just "Adventure" with no campaign chrome when no campaign is open', async ({ page }) => {
     await installGoogleApiMock(page)
     await page.goto('/')
@@ -55,9 +54,7 @@ test.describe('the top-bar header merges campaign navigation', () => {
     await expect(page).toHaveURL(/\/settings$/)
   })
 
-  test('shows the campaign name and exactly one Codex/Settings link on Play, Codex, and Settings', async ({
-    page,
-  }) => {
+  test('shows the campaign name and exactly one Codex link on Play and Codex', async ({ page }) => {
     await installGoogleApiMock(page)
     await createRandomCampaign(page)
 
@@ -72,12 +69,18 @@ test.describe('the top-bar header merges campaign navigation', () => {
     await expect(page.getByTitle('Back to play')).toHaveText(campaignName ?? '')
     await expect(page.getByRole('link', { name: 'Codex' })).toHaveCount(1)
     await expect(page.getByRole('link', { name: 'Settings' })).toHaveCount(1)
+  })
+
+  test('Settings always points at the same global page, even with a campaign open', async ({ page }) => {
+    await installGoogleApiMock(page)
+    await createRandomCampaign(page)
 
     await page.getByRole('link', { name: 'Settings' }).click()
-    await expect(page).toHaveURL(/\/settings\/.+/)
-    await expect(page.getByTitle('Back to play')).toHaveText(campaignName ?? '')
-    await expect(page.getByRole('link', { name: 'Codex' })).toHaveCount(1)
-    await expect(page.getByRole('link', { name: 'Settings' })).toHaveCount(1)
+    await expect(page).toHaveURL(/\/settings$/)
+    // Leaving the campaign entirely — Settings is device-global, so the header drops back to
+    // the plain "Adventure" logo instead of showing the campaign that was open.
+    await expect(page.getByTitle('Back to play')).toHaveCount(0)
+    await expect(page.getByRole('link', { name: 'Adventure' })).toBeVisible()
   })
 
   test('the turn/location icon button opens a dialog, not a toast', async ({ page }) => {

@@ -54,8 +54,18 @@ export async function installFakeWebSpeechApi(page: Page, opts: FakeSpeechOption
 
       if (ttsSupported) {
         ;(window as unknown as Record<string, unknown>).__spokenTexts = []
-        function FakeUtterance(this: { text: string; voice?: unknown; onend: (() => void) | null; onerror: ((e: unknown) => void) | null }, text: string) {
+        function FakeUtterance(
+          this: {
+            text: string
+            voice?: unknown
+            onstart: (() => void) | null
+            onend: (() => void) | null
+            onerror: ((e: unknown) => void) | null
+          },
+          text: string,
+        ) {
           this.text = text
+          this.onstart = null
           this.onend = null
           this.onerror = null
         }
@@ -64,29 +74,50 @@ export async function installFakeWebSpeechApi(page: Page, opts: FakeSpeechOption
         // API does. A no-op cancel() would make this mock unable to model interruption at all —
         // which is exactly how a bug where cancel() rejected speak() (surfacing a spurious error
         // toast on every stop) stayed invisible to these tests.
-        let speaking: { onend: (() => void) | null; onerror: ((e: unknown) => void) | null } | null = null
+        type FakeUtteranceInstance = {
+          onstart: (() => void) | null
+          onend: (() => void) | null
+          onerror: ((e: unknown) => void) | null
+        }
+        let speaking: FakeUtteranceInstance | null = null
+        let paused: FakeUtteranceInstance | null = null
+        let endTimer: ReturnType<typeof setTimeout> | null = null
+        function scheduleEnd(utterance: FakeUtteranceInstance) {
+          endTimer = setTimeout(() => {
+            if (speaking !== utterance) return // cancelled/paused before it finished
+            speaking = null
+            utterance.onend?.()
+          }, ttsDurationMs)
+        }
         Object.defineProperty(window, 'speechSynthesis', {
           configurable: true,
           value: {
             getVoices: () => [],
             cancel: () => {
-              const active = speaking
+              const active = speaking ?? paused
               speaking = null
+              paused = null
+              if (endTimer) clearTimeout(endTimer)
               // Real SpeechSynthesis reports a cancelled utterance through `error`, not `end`.
               active?.onerror?.({ error: 'interrupted' })
             },
-            speak: (utterance: {
-              text: string
-              onend: (() => void) | null
-              onerror: ((e: unknown) => void) | null
-            }) => {
+            pause: () => {
+              if (!speaking) return
+              if (endTimer) clearTimeout(endTimer)
+              paused = speaking
+              speaking = null
+            },
+            resume: () => {
+              if (!paused) return
+              speaking = paused
+              paused = null
+              scheduleEnd(speaking)
+            },
+            speak: (utterance: FakeUtteranceInstance & { text: string }) => {
               ;((window as unknown as Record<string, unknown>).__spokenTexts as string[]).push(utterance.text)
               speaking = utterance
-              setTimeout(() => {
-                if (speaking !== utterance) return // cancelled before it finished
-                speaking = null
-                utterance.onend?.()
-              }, ttsDurationMs)
+              utterance.onstart?.()
+              scheduleEnd(utterance)
             },
           },
         })

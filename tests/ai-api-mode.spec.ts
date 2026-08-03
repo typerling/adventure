@@ -10,11 +10,10 @@ function claudeCard(page: Page) {
   return page.locator('[data-slot="card"]', { has: page.locator('#claudeKey') })
 }
 
-/** The Claude API key card only renders on a campaign's own Settings page once that campaign's
- * AI mode is set to 'api' (see Settings.tsx) — so every test that needs to fill in a key first
- * needs a campaign already in that mode, not just a bare /settings visit. */
-async function saveClaudeKey(page: Page, campaignId: string, key: string): Promise<void> {
-  await page.goto(`/settings/${campaignId}`)
+/** The Claude API key lives on the device-global Settings page (src/pages/Settings.tsx),
+ * unconditionally — not gated on any campaign's AI mode. */
+async function saveClaudeKey(page: Page, key: string): Promise<void> {
+  await page.goto('/settings')
   await page.locator('#claudeKey').fill(key)
   await claudeCard(page).getByRole('button', { name: /Save key|Clear key/ }).click()
 }
@@ -35,12 +34,11 @@ test.describe('Claude direct API mode', () => {
     await installGoogleApiMock(page)
     await createRandomCampaign(page)
     await setCampaignAiMode(page, 'api')
-    const campaignId = campaignIdFromUrl(page)
 
-    await page.goto(`/settings/${campaignId}`)
+    await page.goto('/settings')
     await expect(page.locator('#claudeKey')).toHaveValue('')
 
-    await saveClaudeKey(page, campaignId, 'sk-ant-test-12345')
+    await saveClaudeKey(page, 'sk-ant-test-12345')
     expect(await page.evaluate((key) => localStorage.getItem(key), KEY_STORAGE)).toBe('sk-ant-test-12345')
 
     await page.reload()
@@ -61,7 +59,7 @@ test.describe('Claude direct API mode', () => {
     await createRandomCampaign(page)
     await setCampaignAiMode(page, 'api')
     const campaignId = campaignIdFromUrl(page)
-    await saveClaudeKey(page, campaignId, 'sk-ant-test-12345')
+    await saveClaudeKey(page, 'sk-ant-test-12345')
     await page.goto(`/play/${campaignId}`)
 
     await page.getByPlaceholder('Say or do anything…').fill('look around')
@@ -100,7 +98,7 @@ test.describe('Claude direct API mode', () => {
     await createRandomCampaign(page)
     await setCampaignAiMode(page, 'api')
     const campaignId = campaignIdFromUrl(page)
-    await saveClaudeKey(page, campaignId, 'sk-ant-test-12345')
+    await saveClaudeKey(page, 'sk-ant-test-12345')
     await page.goto(`/play/${campaignId}`)
 
     for (const [i, action] of ['look around', 'open the door'].entries()) {
@@ -142,7 +140,7 @@ test.describe('Claude direct API mode', () => {
     await createRandomCampaign(page)
     await setCampaignAiMode(page, 'api')
     const campaignId = campaignIdFromUrl(page)
-    await saveClaudeKey(page, campaignId, 'sk-ant-test-12345')
+    await saveClaudeKey(page, 'sk-ant-test-12345')
     await page.goto(`/play/${campaignId}`)
 
     await actAndOpenDialog(page, 'search the room')

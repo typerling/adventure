@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'react-router-dom'
-import { Compass, BookOpen, Settings as SettingsIcon, type LucideIcon } from 'lucide-react'
+import { Compass, BookOpen, type LucideIcon } from 'lucide-react'
 import { usePlayHeaderStore } from '@/store/playHeaderStore'
 import { cn } from '@/lib/utils'
 
@@ -11,11 +11,12 @@ interface NavItem {
 }
 
 /**
- * Mobile bottom tab bar for the three campaign-scoped screens (Play/Codex/Settings) — a phone
- * screen doesn't have room for the top header's icon row *and* a thumb-reachable nav, so this
- * takes over campaign navigation below the `md` breakpoint while the header keeps handling it on
- * larger screens. Only renders once a campaign context is registered (see playHeaderStore) —
- * Dashboard/NewCampaign have nothing campaign-scoped to navigate between.
+ * Mobile bottom tab bar for the two campaign-scoped screens (Play/Codex) — a phone screen doesn't
+ * have room for the top header's icon row *and* a thumb-reachable nav, so this takes over campaign
+ * navigation below the `md` breakpoint while the header keeps handling it on larger screens.
+ * Settings isn't here — it's device-global, not campaign-scoped, so it lives only as the header's
+ * always-visible top-right icon (see App.tsx). Only renders once a campaign context is registered
+ * (see playHeaderStore) — Dashboard/NewCampaign have nothing campaign-scoped to navigate between.
  */
 export function BottomNav() {
   const context = usePlayHeaderStore((s) => s.context)
@@ -26,7 +27,6 @@ export function BottomNav() {
   const items: NavItem[] = [
     { to: `/play/${context.campaignId}`, label: 'Adventure', icon: Compass, match: '/play' },
     { to: `/codex/${context.campaignId}`, label: 'Codex', icon: BookOpen, match: '/codex' },
-    { to: `/settings/${context.campaignId}`, label: 'Settings', icon: SettingsIcon, match: '/settings' },
   ]
 
   return (

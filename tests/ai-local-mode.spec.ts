@@ -40,18 +40,16 @@ test.describe("local (on-device) AI mode", () => {
     ).toBeVisible();
 
     // Still there for a campaign whose AI mode is NOT local (manual is the default for a fresh
-    // campaign) — this list doesn't depend on the currently-viewed campaign's settings.
+    // campaign) — this list is device-global and doesn't depend on any campaign's settings at all.
     await createRandomCampaign(page);
-    const match = page.url().match(/\/play\/([^/?#]+)/);
-    const campaignId = match![1];
-    await page.goto(`/settings/${campaignId}`);
+    await page.goto("/settings");
     await expect(
       page.getByText("Local AI models", { exact: true }),
     ).toBeVisible();
     await expect(page.locator(DEFAULT_MODEL_ROW)).toBeVisible();
   });
 
-  test("is selectable in Settings, defaults to a specific model, and persists across a reload", async ({
+  test("is selectable in Codex's Settings tab, defaults to a specific model, and persists across a reload", async ({
     page,
   }) => {
     await installGoogleApiMock(page);
@@ -60,7 +58,7 @@ test.describe("local (on-device) AI mode", () => {
 
     const match = page.url().match(/\/play\/([^/?#]+)/);
     const campaignId = match![1];
-    await page.goto(`/settings/${campaignId}`);
+    await page.goto(`/codex/${campaignId}?tab=settings`);
 
     await expect(
       page
@@ -117,9 +115,7 @@ test.describe("local (on-device) AI mode", () => {
     await createRandomCampaign(page);
     await setCampaignAiMode(page, "local");
 
-    const match = page.url().match(/\/play\/([^/?#]+)/);
-    const campaignId = match![1];
-    await page.goto(`/settings/${campaignId}`);
+    await page.goto("/settings");
 
     const row = page.locator(DEFAULT_MODEL_ROW);
     const downloadButton = row.getByRole("button", { name: "Download" });

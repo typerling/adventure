@@ -6,7 +6,7 @@ import {
   installFakeAudioPlayback,
 } from './mocks/elevenLabs'
 import { installFakeMediaRecorder } from './mocks/mediaRecorder'
-import { createRandomCampaign, setCampaignVoiceProviders, submitFreeTextTurn } from './helpers'
+import { createRandomCampaign, setCampaignAutoReadAloud, setCampaignVoiceProviders, submitFreeTextTurn } from './helpers'
 
 const KEY_STORAGE = 'adventure:elevenlabs-api-key'
 
@@ -16,15 +16,10 @@ function elevenLabsCard(page: import('@playwright/test').Page) {
   return page.locator('[data-slot="card"]', { has: page.locator('#elevenLabsKey') })
 }
 
-/** The ElevenLabs key card only renders on a campaign's own Settings page once that campaign
- * actually selected ElevenLabs for STT or TTS (see Settings.tsx) — so filling in a key requires a
- * campaign already configured that way, not just a bare /settings visit. */
-async function saveElevenLabsKey(
-  page: import('@playwright/test').Page,
-  campaignId: string,
-  key: string,
-): Promise<void> {
-  await page.goto(`/settings/${campaignId}`)
+/** The ElevenLabs API key lives on the device-global Settings page (src/pages/Settings.tsx),
+ * unconditionally — not gated on any campaign's provider choice. */
+async function saveElevenLabsKey(page: import('@playwright/test').Page, key: string): Promise<void> {
+  await page.goto('/settings')
   await page.locator('#elevenLabsKey').fill(key)
   await elevenLabsCard(page).getByRole('button', { name: /Save key|Clear key/ }).click()
 }
@@ -40,12 +35,11 @@ test.describe('ElevenLabs voice provider', () => {
     await installGoogleApiMock(page)
     await createRandomCampaign(page)
     await setCampaignVoiceProviders(page, { tts: 'elevenlabs' })
-    const campaignId = campaignIdFromUrl(page)
 
-    await page.goto(`/settings/${campaignId}`)
+    await page.goto('/settings')
     await expect(page.locator('#elevenLabsKey')).toHaveValue('')
 
-    await saveElevenLabsKey(page, campaignId, 'sk_test_12345')
+    await saveElevenLabsKey(page, 'sk_test_12345')
     expect(await page.evaluate((key) => localStorage.getItem(key), KEY_STORAGE)).toBe('sk_test_12345')
 
     // Reload — the field should rehydrate from localStorage, not reset.
@@ -58,23 +52,19 @@ test.describe('ElevenLabs voice provider', () => {
     expect(await page.evaluate((key) => localStorage.getItem(key), KEY_STORAGE)).toBeNull()
   })
 
-  test('the API key card is hidden unless a campaign actually uses ElevenLabs', async ({ page }) => {
+  test('the API key card is always visible on Settings, regardless of any campaign\'s provider choice', async ({
+    page,
+  }) => {
     await installGoogleApiMock(page)
 
-    // Global settings, no campaign — nothing here uses ElevenLabs, so no key field.
+    // Device-global, no campaign needed — visible even before any campaign exists.
     await page.goto('/settings')
-    await expect(page.locator('#elevenLabsKey')).toHaveCount(0)
+    await expect(page.locator('#elevenLabsKey')).toBeVisible()
 
-    // A fresh campaign defaults to the browser voice providers — still hidden.
+    // A fresh campaign defaults to the browser voice providers — key card still visible, since
+    // it's no longer gated on any one campaign's choice.
     await createRandomCampaign(page)
-    const campaignId = campaignIdFromUrl(page)
-    await page.goto(`/settings/${campaignId}`)
-    await expect(page.getByText('AI mode', { exact: true })).toBeVisible()
-    await expect(page.locator('#elevenLabsKey')).toHaveCount(0)
-
-    // Selecting ElevenLabs for text-to-speech reveals it.
-    await setCampaignVoiceProviders(page, { tts: 'elevenlabs' })
-    await page.goto(`/settings/${campaignId}`)
+    await page.goto('/settings')
     await expect(page.locator('#elevenLabsKey')).toBeVisible()
   })
 
@@ -96,7 +86,8 @@ test.describe('ElevenLabs voice provider', () => {
     await createRandomCampaign(page)
     await setCampaignVoiceProviders(page, { tts: 'elevenlabs' })
     const campaignId = campaignIdFromUrl(page)
-    await saveElevenLabsKey(page, campaignId, 'sk_test_12345')
+    await saveElevenLabsKey(page, 'sk_test_12345')
+    await page.goto(`/codex/${campaignId}?tab=settings`)
 
     await page.getByRole('button', { name: 'Browse voices' }).click()
     await expect(page.getByRole('dialog', { name: 'Choose an ElevenLabs voice' })).toBeVisible()
@@ -143,7 +134,7 @@ test.describe('ElevenLabs voice provider', () => {
     await createRandomCampaign(page)
     await setCampaignVoiceProviders(page, { stt: 'elevenlabs', tts: 'elevenlabs' })
     const campaignId = campaignIdFromUrl(page)
-    await saveElevenLabsKey(page, campaignId, 'sk_test_12345')
+    await saveElevenLabsKey(page, 'sk_test_12345')
     await page.goto(`/play/${campaignId}`)
 
     // --- STT: record, stop, and the transcript lands in the free-text box ---
@@ -156,23 +147,25 @@ test.describe('ElevenLabs voice provider', () => {
     await expect(page.getByPlaceholder('Say or do anything…')).toHaveValue('Search the altar for clues')
     expect(elevenLabs.sttRequests).toBe(1)
 
-    // --- TTS: Read aloud sends the applied turn's narrative to ElevenLabs ---
-    await page.getByRole('button', { name: 'Read new turns aloud' }).click()
+    // --- TTS: auto-read-aloud sends the applied turn's narrative to ElevenLabs, then its options
+    // as a second request once the narrative finishes ---
+    await setCampaignAutoReadAloud(page, true)
     await submitFreeTextTurn(page, 'search the altar', 'Dust rises as your fingers find a hidden latch.')
     await expect(page.getByText('Dust rises as your fingers find a hidden latch.')).toBeVisible()
 
-    await expect.poll(() => elevenLabs.ttsRequests.length).toBe(1)
+    await expect.poll(() => elevenLabs.ttsRequests.length).toBe(2)
     expect(elevenLabs.ttsRequests[0].text).toBe('Dust rises as your fingers find a hidden latch.')
     expect(elevenLabs.ttsRequests[0].voiceId).toBeTruthy()
+    expect(elevenLabs.ttsRequests[1].text).toBe('Your options: 1. Look around. 2. Move on.')
   })
 
-  test('a turn\'s play button toggles to stop, and starting another turn stops the first', async ({ page }) => {
+  test("a turn's play button toggles to pause, and starting another turn pauses the first", async ({ page }) => {
     await installGoogleApiMock(page)
     await installElevenLabsApiMock(page)
     // Deliberately not using the shared installFakeAudioPlayback() — that fake resolves `ended`
-    // almost immediately, leaving no window to click "stop" before playback finishes on its own.
+    // almost immediately, leaving no window to click "pause" before playback finishes on its own.
     // This one plays indefinitely until explicitly paused, and counts play()/pause() calls so the
-    // test can confirm stop() actually reaches whatever's currently playing.
+    // test can confirm pause() actually reaches whatever's currently playing.
     await page.addInitScript(() => {
       ;(window as unknown as Record<string, unknown>).__audioEvents = { plays: 0, pauses: 0 }
       class NeverEndingAudio {
@@ -193,7 +186,7 @@ test.describe('ElevenLabs voice provider', () => {
     await createRandomCampaign(page)
     await setCampaignVoiceProviders(page, { tts: 'elevenlabs' })
     const campaignId = campaignIdFromUrl(page)
-    await saveElevenLabsKey(page, campaignId, 'sk_test_12345')
+    await saveElevenLabsKey(page, 'sk_test_12345')
     await page.goto(`/play/${campaignId}`)
 
     await submitFreeTextTurn(page, 'look around', 'A dusty room, empty save for a locked chest.')
@@ -202,18 +195,23 @@ test.describe('ElevenLabs voice provider', () => {
     await expect(page.getByText('Turn applied.')).toBeVisible()
     await submitFreeTextTurn(page, 'open the chest', 'Inside: a folded letter, sealed with wax.')
 
+    // The header's master control mirrors the same state, so scope to the per-turn (icon-xs)
+    // buttons specifically — both would otherwise match by name.
     const playButtons = page.getByRole('button', { name: 'Play this turn aloud' })
+    const perTurnPauseButtons = page.getByRole('button', { name: 'Pause playback' }).and(page.locator('[data-size="icon-xs"]'))
+    const perTurnResumeButtons = page.getByRole('button', { name: 'Resume playback' }).and(page.locator('[data-size="icon-xs"]'))
     await expect(playButtons).toHaveCount(2)
 
-    // Start turn 1 — its button becomes a stop button.
+    // Start turn 1 — its button becomes a pause button.
     await playButtons.first().click()
-    await expect(page.getByRole('button', { name: 'Stop playback' })).toHaveCount(1)
+    await expect(perTurnPauseButtons).toHaveCount(1)
     await expect(playButtons).toHaveCount(1)
 
-    // Starting turn 2 while turn 1 is still "playing" stops turn 1 first (this is exactly the bug
-    // report: a stale provider instance per call meant stop() couldn't reach earlier audio).
+    // Starting turn 2 while turn 1 is still playing pauses turn 1 first (this is exactly the bug
+    // report: a stale provider instance per call meant pause()/stop() couldn't reach earlier
+    // audio) — turn 1's button reverts to idle since it's no longer the active turn.
     await playButtons.first().click() // now the only remaining "Play" button — turn 2's
-    await expect(page.getByRole('button', { name: 'Stop playback' })).toHaveCount(1)
+    await expect(perTurnPauseButtons).toHaveCount(1)
     await expect(playButtons).toHaveCount(1)
 
     // play()/pause() happen after an async fetch (the mocked TTS request) — poll rather than
@@ -222,12 +220,16 @@ test.describe('ElevenLabs voice provider', () => {
       page.evaluate(() => (window as unknown as Record<string, unknown>).__audioEvents as { plays: number; pauses: number })
     await expect.poll(readAudioEvents).toEqual({ plays: 2, pauses: 1 }) // both turns played; turn 1 paused when turn 2 started
 
-    // Stopping turn 2 explicitly reverts its button immediately (not waiting on any "ended"
-    // event, which this fake never fires) and actually pauses the audio.
-    await page.getByRole('button', { name: 'Stop playback' }).click()
-    await expect(page.getByRole('button', { name: 'Stop playback' })).toHaveCount(0)
-    await expect(playButtons).toHaveCount(2)
+    // Pausing turn 2 explicitly reverts its button to "Resume playback" — not back to idle, since
+    // pausing keeps position rather than discarding it — and actually pauses the audio.
+    await perTurnPauseButtons.click()
+    await expect(perTurnResumeButtons).toHaveCount(1)
     await expect.poll(readAudioEvents).toEqual({ plays: 2, pauses: 2 })
+
+    // Resuming continues playing the same turn rather than starting over.
+    await perTurnResumeButtons.click()
+    await expect(perTurnPauseButtons).toHaveCount(1)
+    await expect.poll(readAudioEvents).toEqual({ plays: 3, pauses: 2 })
   })
 
   test('missing API key surfaces a clear error instead of failing silently', async ({ page }) => {

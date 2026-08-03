@@ -17,7 +17,7 @@ test("Kokoro is selectable as a text-to-speech provider in Settings", async ({
 
   const match = page.url().match(/\/play\/([^/?#]+)/);
   const campaignId = match![1];
-  await page.goto(`/settings/${campaignId}`);
+  await page.goto(`/codex/${campaignId}?tab=settings`);
 
   // AI mode (0), Speech-to-text (1), Text-to-speech (2) — manual AI mode (the default) adds no
   // extra select before these.

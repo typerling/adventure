@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { toast } from 'sonner'
 import {
@@ -11,14 +11,16 @@ import {
   Loader2,
   Mic,
   MicOff,
+  Pause,
+  Play as PlayIcon,
   Sparkles,
-  Square,
   Volume2,
 } from 'lucide-react'
 import { useCampaign } from '@/hooks/useCampaign'
+import { useTtsPlayback } from '@/hooks/useTtsPlayback'
 import { usePlayHeaderStore } from '@/store/playHeaderStore'
 import { cn } from '@/lib/utils'
-import { DEFAULT_SETTINGS, type TtsProvider as TtsProviderKind } from '@/types/campaign'
+import { DEFAULT_SETTINGS } from '@/types/campaign'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
@@ -33,9 +35,9 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog'
 import type { ValidationIssue } from '@/types/turn'
-import { getSttProvider, getTtsProvider, isSttProviderAvailable, isTtsProviderAvailable } from '@/lib/voice/getProvider'
-import type { SttProvider, TtsProvider } from '@/lib/voice/types'
-import { describeKokoroProgress } from '@/lib/voice/kokoroTts'
+import { getSttProvider, isSttProviderAvailable, isTtsProviderAvailable } from '@/lib/voice/getProvider'
+import type { SttProvider } from '@/lib/voice/types'
+import { describeOptionsForSpeech } from '@/lib/voice/optionsSpeech'
 import { generateClaudeReply } from '@/lib/ai/claudeProvider'
 import { describeLocalModelProgress, generateLocalReply } from '@/lib/ai/localModel'
 
@@ -76,24 +78,13 @@ export function Play() {
   const [downloadProgress, setDownloadProgress] = useState<number | null>(null)
 
   const [listening, setListening] = useState(false)
-  /** Turn number currently being read aloud (by auto-narrate or a manual per-turn button), if
-   * any — drives which turn's button shows a stop icon instead of a play icon. */
-  const [playingTurn, setPlayingTurn] = useState<number | null>(null)
-  /** Kokoro's first-use model download status, shown next to the story log so read-aloud doesn't
-   * look frozen while it fetches. Empty once loaded (or for providers with nothing to download). */
-  const [voiceLoadMessage, setVoiceLoadMessage] = useState('')
-  const readAloud = usePlayHeaderStore((s) => s.readAloud)
   const setHeaderContext = usePlayHeaderStore((s) => s.setContext)
+  const setTtsControl = usePlayHeaderStore((s) => s.setTtsControl)
   const sttProviderRef = useRef<SttProvider | null>(null)
-  /** Kept alongside the provider *kind* so a settings change gets a fresh instance, but repeated
-   * speak() calls for the same kind reuse one — ElevenLabs/Kokoro track their currently-playing
-   * audio per instance, so a fresh instance per call meant stop() could never reach audio started
-   * by an earlier instance. */
-  const ttsProviderRef = useRef<{ kind: TtsProviderKind; provider: TtsProvider } | null>(null)
   /** The last turn number we've already spoken aloud — set to the campaign's current turn on
    * load so resuming a session never re-narrates history, only turns completed from here on. */
   const spokenTurnRef = useRef<number | null>(null)
-  const prevReadAloudRef = useRef(readAloud)
+  const prevAutoReadAloudRef = useRef(false)
   const bottomRef = useRef<HTMLDivElement>(null)
 
   const lastTurn = recentTurns.at(-1)
@@ -107,15 +98,45 @@ export function Play() {
   const campaignName = campaign?.meta.name
   const turnLabel = campaign ? `Turn ${campaign.meta.currentTurn} · ${campaign.meta.currentLocation}` : null
 
+  const playback = useTtsPlayback({
+    ttsProviderKind: settings?.ttsProvider,
+    voice: settings?.elevenLabsVoiceId,
+    campaignName,
+    onError: (message) => toast.error(message),
+  })
+
+  /** The latest turn's options are the only ones still "current" — replaying an older turn never
+   * chains into them, but narrating the latest turn (auto or manual) always does. */
+  function chainTextFor(turn: number): string | undefined {
+    if (!lastTurn || turn !== lastTurn.turn || options.length === 0) return undefined
+    return describeOptionsForSpeech(options)
+  }
+
   // The top-bar header (src/App.tsx) is a sibling, not a parent, of this page — it can't read
-  // props from here, so this pushes what it needs (title, Codex/Settings links, whether to show
-  // the Read-aloud toggle, the turn/location line) into a shared store instead. Cleared on
-  // unmount so navigating away doesn't leave a stale campaign context showing on Dashboard.
+  // props from here, so this pushes what it needs (title, the Codex link, the turn/location line)
+  // into a shared store instead. Cleared on unmount so navigating away doesn't leave a stale
+  // campaign context showing on Dashboard.
   useEffect(() => {
     if (!campaignId || !campaignName) return
-    setHeaderContext({ campaignId, campaignName, showReadAloudToggle: ttsAvailable, turnLabel })
+    setHeaderContext({ campaignId, campaignName, turnLabel })
     return () => setHeaderContext(null)
-  }, [campaignId, campaignName, ttsAvailable, turnLabel, setHeaderContext])
+  }, [campaignId, campaignName, turnLabel, setHeaderContext])
+
+  // Same reasoning, for the header's master play/pause control — only shown while TTS is
+  // available, and always reflects/drives whatever useTtsPlayback currently has active.
+  useEffect(() => {
+    if (!ttsAvailable) {
+      setTtsControl(null)
+      return
+    }
+    setTtsControl({
+      status: playback.state,
+      toggle: () =>
+        playback.handleHeaderToggle(lastTurn?.turn, lastTurn?.narrative, lastTurn ? chainTextFor(lastTurn.turn) : undefined),
+    })
+    return () => setTtsControl(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ttsAvailable, playback.state, lastTurn, options, setTtsControl])
 
   useEffect(() => {
     if (spokenTurnRef.current === null && campaign) {
@@ -123,77 +144,30 @@ export function Play() {
     }
   }, [campaign])
 
-  // Reacts to the header's Read-aloud toggle (see playHeaderStore) — must run before the
-  // auto-narrate effect below so a just-enabled toggle's spokenTurnRef reset takes effect before
-  // that effect checks it in the same commit.
+  // Reacts to the campaign's auto-read-aloud setting (Codex's Settings tab) flipping — must run
+  // before the auto-narrate effect below so a just-enabled setting's spokenTurnRef reset takes
+  // effect before that effect checks it in the same commit.
   useEffect(() => {
-    if (prevReadAloudRef.current === readAloud) return
-    prevReadAloudRef.current = readAloud
-    if (!readAloud) {
-      ttsProviderRef.current?.provider.stop()
-      setPlayingTurn(null)
+    const auto = settings?.autoReadAloud ?? false
+    if (prevAutoReadAloudRef.current === auto) return
+    prevAutoReadAloudRef.current = auto
+    if (!auto) {
+      playback.stop()
     } else {
       // Turning it on should only narrate turns from here forward, not retroactively speak
       // whatever turn is already sitting on screen (e.g. one applied while it was off).
       spokenTurnRef.current = lastTurn?.turn ?? spokenTurnRef.current
     }
-  }, [readAloud, lastTurn])
-
-  /** Speaks arbitrary turn text — used both for the auto-narrate-new-turns effect below and the
-   * per-turn "play this turn" button, so a turn missed the first time (read-aloud was off, or you
-   * weren't listening) can always be replayed on demand. `turn`, if given, drives which turn's
-   * button shows a stop icon while this plays. */
-  const speakText = useCallback(
-    (text: string, turn?: number) => {
-      if (!settings) return
-      const kind = settings.ttsProvider
-      // Reuse the existing instance for the same provider kind — a fresh instance per call would
-      // have its own private "currently playing" state, so stop() could never reach audio a
-      // previous instance started (this is exactly what made the per-turn stop button not work).
-      const provider =
-        ttsProviderRef.current?.kind === kind
-          ? ttsProviderRef.current.provider
-          : getTtsProvider(kind, {
-              // Kokoro downloads a model on its very first use — without this, read-aloud would
-              // just sit silent for the duration with nothing on screen explaining why.
-              onKokoroLoadProgress: (p) => setVoiceLoadMessage(describeKokoroProgress(p)),
-            })
-      if (!provider) {
-        toast.error("Text-to-speech isn't available — check Settings or your browser's support.")
-        return
-      }
-      ttsProviderRef.current = { kind, provider }
-      setPlayingTurn(turn ?? null)
-      provider
-        .speak(text, { voice: settings.elevenLabsVoiceId })
-        .catch((err) => {
-          toast.error(err instanceof Error ? err.message : 'Failed to read this aloud.')
-        })
-        .finally(() => {
-          setVoiceLoadMessage('')
-          // Only clear if nothing newer has already taken over (e.g. stop() was called manually
-          // and already reset this, or another turn started playing in the meantime).
-          setPlayingTurn((current) => (current === (turn ?? null) ? null : current))
-        })
-    },
-    [settings],
-  )
-
-  function toggleTurnPlayback(turn: number, narrative: string) {
-    if (playingTurn === turn) {
-      ttsProviderRef.current?.provider.stop()
-      setPlayingTurn(null)
-      return
-    }
-    speakText(narrative, turn)
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings?.autoReadAloud, lastTurn])
 
   useEffect(() => {
-    if (!readAloud || !ttsAvailable || !lastTurn) return
+    if (!settings?.autoReadAloud || !ttsAvailable || !lastTurn) return
     if (spokenTurnRef.current !== null && lastTurn.turn <= spokenTurnRef.current) return
     spokenTurnRef.current = lastTurn.turn
-    speakText(lastTurn.narrative, lastTurn.turn)
-  }, [lastTurn, readAloud, ttsAvailable, settings, speakText])
+    playback.play(lastTurn.narrative, lastTurn.turn, chainTextFor(lastTurn.turn))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastTurn, settings?.autoReadAloud, ttsAvailable])
 
   // Scrolls to the newest turn as soon as one is added — a chat-style "jump to the latest
   // message" so a freshly-generated/applied turn is never left scrolled out of view.
@@ -204,7 +178,6 @@ export function Play() {
   useEffect(() => {
     return () => {
       sttProviderRef.current?.stop()
-      ttsProviderRef.current?.provider.stop()
     }
   }, [])
 
@@ -377,17 +350,39 @@ export function Play() {
                   <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
                     Turn {t.turn} — you: {t.playerAction}
                   </p>
-                  {ttsAvailable && (
-                    <Button
-                      size="icon-xs"
-                      variant="ghost"
-                      onClick={() => toggleTurnPlayback(t.turn, t.narrative)}
-                      title={playingTurn === t.turn ? 'Stop playback' : 'Play this turn aloud'}
-                      aria-label={playingTurn === t.turn ? 'Stop playback' : 'Play this turn aloud'}
-                    >
-                      {playingTurn === t.turn ? <Square className="size-3.5" /> : <Volume2 className="size-3.5" />}
-                    </Button>
-                  )}
+                  {ttsAvailable &&
+                    (() => {
+                      const isActive = playback.activeTurn === t.turn
+                      const label = !isActive
+                        ? 'Play this turn aloud'
+                        : playback.state === 'loading'
+                          ? 'Loading…'
+                          : playback.state === 'playing'
+                            ? 'Pause playback'
+                            : playback.state === 'paused'
+                              ? 'Resume playback'
+                              : 'Play this turn aloud'
+                      return (
+                        <Button
+                          size="icon-xs"
+                          variant="ghost"
+                          onClick={() => playback.toggleTurn(t.turn, t.narrative, chainTextFor(t.turn))}
+                          disabled={isActive && playback.state === 'loading'}
+                          title={label}
+                          aria-label={label}
+                        >
+                          {isActive && playback.state === 'loading' ? (
+                            <Loader2 className="size-3.5 animate-spin" />
+                          ) : isActive && playback.state === 'playing' ? (
+                            <Pause className="size-3.5" />
+                          ) : isActive && playback.state === 'paused' ? (
+                            <PlayIcon className="size-3.5" />
+                          ) : (
+                            <Volume2 className="size-3.5" />
+                          )}
+                        </Button>
+                      )
+                    })()}
                 </div>
                 <p className="font-serif text-base leading-relaxed whitespace-pre-wrap">{t.narrative}</p>
               </div>
@@ -397,7 +392,7 @@ export function Play() {
         )}
       </ScrollArea>
 
-      {voiceLoadMessage && <p className="text-xs text-muted-foreground">{voiceLoadMessage}</p>}
+      {playback.voiceLoadMessage && <p className="text-xs text-muted-foreground">{playback.voiceLoadMessage}</p>}
 
       {options.length > 0 && (
         <div className="flex flex-col gap-2.5">

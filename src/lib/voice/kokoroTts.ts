@@ -214,6 +214,22 @@ export function createKokoroTtsProvider(opts: KokoroTtsOptions = {}): TtsProvide
    * 'error', so without this the promise never settles: the blob URL is never revoked, the chunk
    * loop never reaches its isStale() check, and its lookahead-rejection guards never run. */
   let settleCurrent: (() => void) | null = null
+  /** True between pause() and resume() — checked before starting each chunk's audio, so a pause
+   * that lands during the brief inter-chunk generation gap (not just mid-audio) still holds
+   * instead of the next chunk starting to play anyway. */
+  let paused = false
+  let resumeWaiters: Array<() => void> = []
+
+  function waitIfPaused(): Promise<void> {
+    if (!paused) return Promise.resolve()
+    return new Promise((resolve) => resumeWaiters.push(resolve))
+  }
+
+  function releaseWaiters() {
+    const waiters = resumeWaiters
+    resumeWaiters = []
+    for (const w of waiters) w()
+  }
 
   function playBlob(blob: Blob): Promise<void> {
     const url = URL.createObjectURL(blob)
@@ -233,10 +249,13 @@ export function createKokoroTtsProvider(opts: KokoroTtsOptions = {}): TtsProvide
 
   return {
     async speak(text, speakOpts) {
+      speakOpts?.onStateChange?.('loading')
       const token = ++playToken
       const isStale = () => token !== playToken
       currentAudio?.pause()
       currentAudio = null
+      paused = false
+      releaseWaiters()
 
       const tts = await loadKokoro(opts.onLoadProgress)
       if (isStale()) return
@@ -267,7 +286,13 @@ export function createKokoroTtsProvider(opts: KokoroTtsOptions = {}): TtsProvide
           upcoming?.catch(() => {})
           return
         }
+        await waitIfPaused()
+        if (isStale()) {
+          upcoming?.catch(() => {})
+          return
+        }
         try {
+          if (i === 0) speakOpts?.onStateChange?.('playing')
           await playBlob(audioData.toBlob())
         } catch (err) {
           upcoming?.catch(() => {})
@@ -279,8 +304,19 @@ export function createKokoroTtsProvider(opts: KokoroTtsOptions = {}): TtsProvide
         }
       }
     },
+    pause() {
+      paused = true
+      currentAudio?.pause()
+    },
+    resume() {
+      paused = false
+      void currentAudio?.play().catch(() => {})
+      releaseWaiters()
+    },
     stop() {
       playToken++
+      paused = false
+      releaseWaiters()
       currentAudio?.pause()
       currentAudio = null
       // Resolve (not reject) the in-flight clip: the chunk loop then sees isStale() and returns

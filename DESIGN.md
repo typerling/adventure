@@ -217,8 +217,23 @@ Two small provider interfaces, swappable independently and per-function in Setti
 
 ```ts
 interface STTProvider { start(): void; stop(): void; onResult(cb: (text: string) => void): void; }
-interface TTSProvider { speak(text: string, opts?: {voice?: string}): Promise<void>; stop(): void; }
+interface TTSProvider {
+  speak(text: string, opts?: { voice?: string; onStateChange?: (state: 'loading' | 'playing') => void }): Promise<void>
+  pause(): void
+  resume(): void
+  stop(): void
+}
 ```
+
+A single centralized player (`useTtsPlayback`) is the only thing that ever calls these — the
+header's master play/pause control and every per-turn "play this turn" button are just alternate
+entry points into it, so only one utterance plays at a time regardless of which triggered it. It's
+wired to `navigator.mediaSession` (metadata + play/pause/stop action handlers) so OS/headphone
+controls work, and `onStateChange` lets it show a loading spinner distinct from "playing" instead
+of a control that looks unresponsive while audio is still being fetched/generated. When the
+campaign's `autoReadAloud` setting narrates the latest turn (or a "play this turn" button targets
+it specifically), the player chains straight into speaking that turn's offered options once the
+narrative finishes, so audio-only play doesn't go silent right at the decision point.
 
 - `browser` STT/TTS: `webkitSpeechRecognition` / `speechSynthesis` — zero config, works
   offline-ish, quality varies by OS/browser.
@@ -266,16 +281,20 @@ Sources: [DriveThruRPG — PbtA introduction](https://pages.drivethrurpg.com/pow
    skills), starting inventory, world & scenario prompt, tone/expectations free-text,
    difficulty picker. On finish: creates the campaign folder, `campaign.md`, and the
    `<campaign-name> — Data` spreadsheet with all tabs pre-headered.
-2. **Play screen** (the core loop) — narration text (with a "read aloud" toggle driving the
-   active TTS provider), option buttons, free-text box, mic button, and — in manual mode — a
-   "Copy DM prompt" button plus a "Paste AI reply" box with inline validation errors.
-3. **Codex** (shadcn Tabs) — Inventory, Stats/Skills, NPCs, Monsters, Lore, Timeline/Quests.
-   Each tab is a thin read view over its corresponding sheet tab (Lore entries expand to their
-   linked Markdown file when present).
+2. **Play screen** (the core loop) — narration text, a header-level master play/pause TTS
+   control (§8) driving the active provider, option buttons, free-text box, mic button, and —
+   in manual mode — a "Copy DM prompt" button plus a "Paste AI reply" box with inline validation
+   errors.
+3. **Codex** (shadcn Tabs) — Inventory, Stats/Skills, NPCs, Monsters, Lore, Timeline/Quests, plus
+   a final **Settings** tab for this campaign's own settings (AI mode, STT/TTS provider + voice
+   assignment, auto-read-aloud, summarization cadence). Each read-only tab is a thin view over its
+   corresponding sheet tab (Lore entries expand to their linked Markdown file when present).
 4. **Map** — the discovered-location graph from the `Map` sheet tab, rendered as connected
    nodes that reveal as `new_locations` deltas land; undiscovered edges hinted but greyed out.
-5. **Settings** — Drive folder picker, AI mode (manual/API + key), STT provider + key, TTS
-   provider + key/voice assignments, summarization cadence.
+5. **Settings** — device-global only, reachable from an always-visible top-right icon regardless
+   of what's open: Drive folder picker, on-device model downloads (local AI models, Kokoro voice
+   model), and API keys (Claude, ElevenLabs). Per-campaign settings live in Codex's Settings tab
+   instead (see #3), not here.
 
 ---
 

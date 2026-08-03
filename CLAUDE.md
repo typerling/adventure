@@ -243,10 +243,14 @@ and Sheets are the actual source of truth, not the in-memory store.
 
 `src/App.tsx` wires `react-router-dom` routes, each backed by one page in `src/pages/`:
 `/` → Dashboard (campaign list), `/new` → NewCampaign (setup wizard), `/play/:campaignId` → Play
-(the turn loop UI), `/codex/:campaignId` → Codex (read-only tabs over sheet data — Inventory,
-Stats/Skills, NPCs, Monsters, Lore, Timeline/Quests), `/settings` and `/settings/:campaignId` →
-Settings (global + per-campaign). `AuthGate` (`src/components/AuthGate.tsx`) wraps the whole app
-shell and gates everything on Google sign-in state.
+(the turn loop UI), `/codex/:campaignId` → Codex (mostly read-only tabs over sheet data —
+Inventory, Stats/Skills, NPCs, Monsters, Lore, Timeline/Quests — plus a final **Settings** tab
+holding this campaign's own settings, editable; `?tab=settings` deep-links straight to it), and
+`/settings` → Settings, device-global only (Drive folder picker, on-device model downloads, API
+keys) and not campaign-scoped at all — no `:campaignId` route param, reachable from the same
+always-visible top-right header icon regardless of what page is open. `AuthGate`
+(`src/components/AuthGate.tsx`) wraps the whole app shell and gates everything on Google sign-in
+state.
 
 ### Voice (Phase 2: browser, ElevenLabs, and on-device Kokoro)
 
@@ -292,14 +296,24 @@ philosophy as the AI backend. Three implementations exist (Kokoro is TTS-only):
 `isSttProviderAvailable`/`isTtsProviderAvailable` for gating UI before an API key is even needed
 (missing-key errors surface later, as a toast, when actually used — not by hiding controls, since
 the user picked that provider on purpose). Consumed from `Play.tsx`: a mic button feeds
-`SttProvider.onResult` into the free-text box, and the header's "read aloud" toggle speaks each
-newly-applied turn's narrative via `TtsProvider.speak`, tracked with a `spokenTurnRef` so resuming
-a campaign never narrates history and turning the toggle on mid-session only narrates turns from
-that point forward. Each turn also has its own play/stop button for replaying it on demand — note
-that `Play.tsx` caches **one provider instance per provider kind** (`ttsProviderRef`) rather than
-calling `getTtsProvider` per playback: ElevenLabs and Kokoro track their currently-playing `Audio`
-per instance, so a fresh instance per call would leave `stop()` unable to reach audio an earlier
-instance started.
+`SttProvider.onResult` into the free-text box; TTS playback goes through **one centralized player**
+(`src/hooks/useTtsPlayback.ts`) shared by the header's master play/pause control and every
+per-turn "play this turn" button — only one utterance plays at a time, and pausing/resuming/
+stopping always acts on whichever one that is, regardless of which control triggered it. It's
+wired to `navigator.mediaSession` (metadata + `play`/`pause`/`stop` action handlers), so OS/
+headphone controls work. `TtsProvider.speak`'s `onStateChange` callback reports `'loading'` (audio
+still being fetched/generated) separately from `'playing'`, so the controls can show a spinner and
+disable themselves instead of looking stuck or inviting a second click; `pause()`/`resume()` are
+real provider methods now, not just `stop()` — see `types.ts` and each implementation.
+`CampaignSettings.autoReadAloud` (a Codex Settings-tab toggle, not a header control) drives
+auto-narrating each newly-applied turn, tracked with a `spokenTurnRef` so resuming a campaign never
+narrates history and turning the setting on mid-session only narrates turns from that point
+forward. When the turn being narrated (auto or manual) is the *latest* one and it offers options,
+the player chains straight into speaking those options once the narrative finishes — audio-only
+play shouldn't go silent right at the decision point. The hook caches **one provider instance per
+provider kind** rather than calling `getTtsProvider` per playback: ElevenLabs and Kokoro track
+their currently-playing `Audio` per instance, so a fresh instance per call would leave `pause()`/
+`stop()` unable to reach audio an earlier instance started.
 
 Both kinds of on-device model (the local text models, Kokoro for voice) expose the same download-management
 surface — `preload*`/`has*Downloaded*`/`remove*` plus a progress callback formatted through

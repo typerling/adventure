@@ -65,7 +65,7 @@ export function Dashboard() {
                 <Link to={`/codex/${c.folderId}`}>Codex</Link>
               </Button>
               <Button asChild size="sm" variant="outline" title="Campaign settings" aria-label="Campaign settings">
-                <Link to={`/settings/${c.folderId}`}>
+                <Link to={`/codex/${c.folderId}?tab=settings`}>
                   <SettingsIcon className="size-4" />
                 </Link>
               </Button>

@@ -33,20 +33,20 @@ export async function submitFreeTextTurn(
   await page.getByRole("button", { name: "Apply turn" }).click();
 }
 
-/** Switches a campaign's voice providers via its Settings page, saves, and returns to Play.
- * Call while `page` is on /play/:id, /codex/:id, or /settings/:id for that campaign. */
+/** Switches a campaign's voice providers via Codex's Settings tab, saves, and returns to Play.
+ * Call while `page` is on /play/:id or /codex/:id for that campaign. */
 export async function setCampaignVoiceProviders(
   page: Page,
   opts: { stt?: "browser" | "elevenlabs"; tts?: "browser" | "elevenlabs" },
 ): Promise<void> {
-  const match = page.url().match(/\/(?:play|codex|settings)\/([^/?#]+)/);
+  const match = page.url().match(/\/(?:play|codex)\/([^/?#]+)/);
   if (!match)
     throw new Error(
       `setCampaignVoiceProviders: no campaign id in URL "${page.url()}"`,
     );
   const campaignId = match[1];
 
-  await page.goto(`/settings/${campaignId}`);
+  await page.goto(`/codex/${campaignId}?tab=settings`);
   // Scoped to the campaign card: the "Local AI models" card below it renders its own selects,
   // and it renders *before* this card does (it doesn't wait on settings loading from Drive), so
   // an unscoped positional lookup can land on a per-model "Run on" select instead.
@@ -89,23 +89,50 @@ const AI_MODE_OPTION_LABEL = {
 } as const;
 
 /** Switches a campaign's AI mode (manual copy/paste, direct Claude API, or an on-device local
- * model) via Settings, saves, and returns to Play. Leaves the Claude model / local model choice
- * at their defaults (Sonnet 5 / Gemma 3 1B). */
+ * model) via Codex's Settings tab, saves, and returns to Play. Leaves the Claude model / local
+ * model choice at their defaults (Sonnet 5 / Gemma 3 1B). */
 export async function setCampaignAiMode(
   page: Page,
   mode: keyof typeof AI_MODE_OPTION_LABEL,
 ): Promise<void> {
-  const match = page.url().match(/\/(?:play|codex|settings)\/([^/?#]+)/);
+  const match = page.url().match(/\/(?:play|codex)\/([^/?#]+)/);
   if (!match)
     throw new Error(`setCampaignAiMode: no campaign id in URL "${page.url()}"`);
   const campaignId = match[1];
 
-  await page.goto(`/settings/${campaignId}`);
+  await page.goto(`/codex/${campaignId}?tab=settings`);
   await page
     .locator('[data-testid="campaign-settings"] [data-slot="select-trigger"]')
     .first()
     .click();
   await page.getByRole("option", { name: AI_MODE_OPTION_LABEL[mode] }).click();
+
+  await page.getByRole("button", { name: "Save settings" }).click();
+  await expect(page.getByText("Settings saved.")).toBeVisible();
+  await page.goto(`/play/${campaignId}`);
+}
+
+/** Toggles a campaign's "Read new turns aloud" setting via Codex's Settings tab, saves, and
+ * returns to Play. */
+export async function setCampaignAutoReadAloud(
+  page: Page,
+  enabled: boolean,
+): Promise<void> {
+  const match = page.url().match(/\/(?:play|codex)\/([^/?#]+)/);
+  if (!match)
+    throw new Error(
+      `setCampaignAutoReadAloud: no campaign id in URL "${page.url()}"`,
+    );
+  const campaignId = match[1];
+
+  await page.goto(`/codex/${campaignId}?tab=settings`);
+  const toggle = page
+    .locator('[data-testid="campaign-settings"]')
+    .getByRole("button", { name: /narrated automatically|play turns manually/ });
+  const pressed = (await toggle.getAttribute("aria-pressed")) === "true";
+  if (pressed !== enabled) {
+    await toggle.click();
+  }
 
   await page.getByRole("button", { name: "Save settings" }).click();
   await expect(page.getByText("Settings saved.")).toBeVisible();

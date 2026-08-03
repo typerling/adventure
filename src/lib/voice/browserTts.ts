@@ -10,6 +10,7 @@ export function isBrowserTtsSupported(): boolean {
 export function createBrowserTtsProvider(): TtsProvider {
   return {
     speak(text, opts) {
+      opts?.onStateChange?.('loading')
       return new Promise((resolve, reject) => {
         // Only one utterance plays at a time — cancel anything already in progress first.
         window.speechSynthesis.cancel()
@@ -20,6 +21,7 @@ export function createBrowserTtsProvider(): TtsProvider {
             .find((v) => v.name === opts.voice || v.voiceURI === opts.voice)
           if (match) utterance.voice = match
         }
+        utterance.onstart = () => opts?.onStateChange?.('playing')
         utterance.onend = () => resolve()
         utterance.onerror = (event) => {
           // cancel() — from stop(), or from the pre-emptive cancel above when a new utterance
@@ -34,6 +36,12 @@ export function createBrowserTtsProvider(): TtsProvider {
         }
         window.speechSynthesis.speak(utterance)
       })
+    },
+    pause() {
+      window.speechSynthesis.pause()
+    },
+    resume() {
+      window.speechSynthesis.resume()
     },
     stop() {
       window.speechSynthesis.cancel()

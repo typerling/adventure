@@ -36,10 +36,12 @@ test('revisiting a campaign this session reuses cached Drive/Sheets data instead
   await page.getByTitle('Back to play').click()
   await expect(page.getByPlaceholder('Say or do anything…')).toBeVisible()
 
+  // Settings is device-global now (src/pages/Settings.tsx) and touches no campaign data at all,
+  // but its "Back" button uses browser history — confirms that still lands back on Play.
   await page.getByRole('link', { name: 'Settings' }).click()
-  await expect(page.getByText('AI mode', { exact: true })).toBeVisible()
+  await expect(page.getByText('Local AI models', { exact: true })).toBeVisible()
 
-  await page.getByRole('link', { name: 'Back' }).click()
+  await page.getByRole('button', { name: 'Back' }).click()
   await expect(page.getByPlaceholder('Say or do anything…')).toBeVisible()
 
   // The campaign's spreadsheet was fetched once, when the campaign was first created/opened —

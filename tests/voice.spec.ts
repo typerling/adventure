@@ -1,7 +1,13 @@
 import { test, expect } from '@playwright/test'
 import { installGoogleApiMock } from './mocks/googleApi'
 import { installFakeWebSpeechApi, simulateSpeechResult, getSpokenTexts } from './mocks/webSpeech'
-import { createRandomCampaign, getRecordedToasts, recordToasts, submitFreeTextTurn } from './helpers'
+import {
+  createRandomCampaign,
+  getRecordedToasts,
+  recordToasts,
+  setCampaignAutoReadAloud,
+  submitFreeTextTurn,
+} from './helpers'
 
 test.describe('browser voice (STT/TTS)', () => {
   test('mic button transcribes speech into the free-text box', async ({ page }) => {
@@ -24,23 +30,25 @@ test.describe('browser voice (STT/TTS)', () => {
     await expect(page.getByRole('button', { name: 'Speak your action' })).toBeVisible()
   })
 
-  test('Read aloud speaks new turns but not campaign history on load', async ({ page }) => {
+  test('auto-read-aloud speaks new turns but not campaign history on load', async ({ page }) => {
     await installGoogleApiMock(page)
     await installFakeWebSpeechApi(page, { sttSupported: true, ttsSupported: true })
     await createRandomCampaign(page)
 
     expect(await getSpokenTexts(page)).toEqual([])
 
-    await page.getByRole('button', { name: 'Read new turns aloud' }).click()
-    await expect(page.getByRole('button', { name: 'Stop reading turns aloud' })).toBeVisible()
+    await setCampaignAutoReadAloud(page, true)
 
     await submitFreeTextTurn(page, 'look around', 'You step into a quiet, dust-lit room.')
     await expect(page.getByText('You step into a quiet, dust-lit room.')).toBeVisible()
 
-    await expect.poll(() => getSpokenTexts(page)).toEqual(['You step into a quiet, dust-lit room.'])
+    // The latest turn's narrative is followed by its options, spoken as one continuous playback.
+    await expect
+      .poll(() => getSpokenTexts(page))
+      .toEqual(['You step into a quiet, dust-lit room.', 'Your options: 1. Look around. 2. Move on.'])
   })
 
-  test('does not speak a turn applied before Read aloud was turned on', async ({ page }) => {
+  test('does not speak a turn applied before auto-read-aloud was turned on', async ({ page }) => {
     await installGoogleApiMock(page)
     await installFakeWebSpeechApi(page, { sttSupported: true, ttsSupported: true })
     await createRandomCampaign(page)
@@ -48,10 +56,10 @@ test.describe('browser voice (STT/TTS)', () => {
     await submitFreeTextTurn(page, 'look around', 'You step into a quiet, dust-lit room.')
     await expect(page.getByText('You step into a quiet, dust-lit room.')).toBeVisible()
 
-    // Read aloud is still off — applying the turn above must not have queued any speech.
+    // Auto-read-aloud is still off — applying the turn above must not have queued any speech.
     expect(await getSpokenTexts(page)).toEqual([])
 
-    await page.getByRole('button', { name: 'Read new turns aloud' }).click()
+    await setCampaignAutoReadAloud(page, true)
     await page.waitForTimeout(200)
     expect(await getSpokenTexts(page)).toEqual([])
   })
@@ -62,32 +70,59 @@ test.describe('browser voice (STT/TTS)', () => {
     await createRandomCampaign(page)
 
     await expect(page.getByRole('button', { name: 'Speak your action' })).toHaveCount(0)
-    await expect(page.getByRole('button', { name: 'Read new turns aloud' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Play latest turn aloud' })).toHaveCount(0)
     // The rest of the turn loop still works without voice.
     await expect(page.getByPlaceholder('Say or do anything…')).toBeVisible()
   })
 
-  test('a turn can be replayed on demand via its own play button, regardless of Read aloud', async ({ page }) => {
+  test('a turn can be replayed on demand via its own play button, regardless of auto-read-aloud', async ({
+    page,
+  }) => {
     await installGoogleApiMock(page)
     await installFakeWebSpeechApi(page, { sttSupported: true, ttsSupported: true })
     await createRandomCampaign(page)
 
-    // Read aloud stays off — this turn is never auto-narrated.
+    // Auto-read-aloud stays off — this turn is never auto-narrated.
     await submitFreeTextTurn(page, 'look around', 'You step into a quiet, dust-lit room.')
     await expect(page.getByText('You step into a quiet, dust-lit room.')).toBeVisible()
     expect(await getSpokenTexts(page)).toEqual([])
 
-    // "In case one missed the opportunity" — replaying it manually still works.
+    // "In case one missed the opportunity" — replaying it manually still works, and since this
+    // is the latest turn its options are spoken afterward too.
     await page.getByRole('button', { name: 'Play this turn aloud' }).click()
-    await expect.poll(() => getSpokenTexts(page)).toEqual(['You step into a quiet, dust-lit room.'])
+    await expect
+      .poll(() => getSpokenTexts(page))
+      .toEqual(['You step into a quiet, dust-lit room.', 'Your options: 1. Look around. 2. Move on.'])
   })
 
-  test('stopping playback is not reported as an error', async ({ page }) => {
+  test('the per-turn button shows loading, then playing, then lets you pause and resume', async ({ page }) => {
+    await installGoogleApiMock(page)
+    await installFakeWebSpeechApi(page, { sttSupported: true, ttsSupported: true, ttsDurationMs: 3000 })
+    await createRandomCampaign(page)
+
+    await submitFreeTextTurn(page, 'look around', 'You step into a quiet, dust-lit room.')
+    await expect(page.getByText('You step into a quiet, dust-lit room.')).toBeVisible()
+
+    // The header's master control mirrors the same state, so scope to the per-turn (icon-xs)
+    // button specifically — both are visible and both would otherwise match by name.
+    const perTurnPauseButton = page.getByRole('button', { name: 'Pause playback' }).and(page.locator('[data-size="icon-xs"]'))
+    const perTurnResumeButton = page.getByRole('button', { name: 'Resume playback' }).and(page.locator('[data-size="icon-xs"]'))
+
+    await page.getByRole('button', { name: 'Play this turn aloud' }).click()
+    await expect(perTurnPauseButton).toBeVisible()
+
+    await perTurnPauseButton.click()
+    await expect(perTurnResumeButton).toBeVisible()
+
+    await perTurnResumeButton.click()
+    await expect(perTurnPauseButton).toBeVisible()
+  })
+
+  test('pausing and resuming playback is not reported as an error', async ({ page }) => {
     // Regression test: SpeechSynthesis reports a cancelled utterance through `error`
     // ('interrupted'/'canceled'), not `end`. browserTts rejected on any error, so speak()'s
-    // rejection reached Play.tsx's catch and popped a bogus "Speech synthesis error: interrupted"
-    // toast on every stop, every read-aloud toggle-off, and every auto-narrate that pre-empted a
-    // still-playing turn. The mock's cancel() used to be a no-op, which hid this entirely.
+    // rejection reached the player's catch and popped a bogus "Speech synthesis error: interrupted"
+    // toast on every stop/pause. The mock's cancel() used to be a no-op, which hid this entirely.
     await installGoogleApiMock(page)
     await recordToasts(page)
     // Long-running utterance so there is a real window in which speech is active to interrupt.
@@ -97,14 +132,15 @@ test.describe('browser voice (STT/TTS)', () => {
     await submitFreeTextTurn(page, 'look around', 'You step into a quiet, dust-lit room.')
     await expect(page.getByText('You step into a quiet, dust-lit room.')).toBeVisible()
 
+    const perTurnPauseButton = page.getByRole('button', { name: 'Pause playback' }).and(page.locator('[data-size="icon-xs"]'))
+    const perTurnResumeButton = page.getByRole('button', { name: 'Resume playback' }).and(page.locator('[data-size="icon-xs"]'))
+
     await page.getByRole('button', { name: 'Play this turn aloud' }).click()
     await expect.poll(() => getSpokenTexts(page)).toEqual(['You step into a quiet, dust-lit room.'])
 
-    // Stop mid-utterance, then toggle read-aloud on and off (which also cancels) — none of these
-    // are failures, so none should surface an error.
-    await page.getByRole('button', { name: 'Stop playback' }).click()
-    await page.getByRole('button', { name: 'Read new turns aloud' }).click()
-    await page.getByRole('button', { name: 'Stop reading turns aloud' }).click()
+    await perTurnPauseButton.click()
+    await perTurnResumeButton.click()
+    await perTurnPauseButton.click()
     await page.waitForTimeout(500)
 
     // Plain (non-retrying) assertion against the recorded history — see recordToasts for why a
@@ -114,19 +150,34 @@ test.describe('browser voice (STT/TTS)', () => {
     )
   })
 
-  test('the Read-aloud toggle only appears in the header while on the Play screen', async ({ page }) => {
+  test('the master play/pause control only appears in the header while on the Play screen', async ({ page }) => {
     await installGoogleApiMock(page)
     await installFakeWebSpeechApi(page, { sttSupported: true, ttsSupported: true })
     await createRandomCampaign(page)
 
-    await expect(page.getByRole('button', { name: 'Read new turns aloud' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Play latest turn aloud' })).toBeVisible()
 
     await page.getByRole('link', { name: 'Codex' }).click()
     await expect(page).toHaveURL(/\/codex\/.+/)
-    await expect(page.getByRole('button', { name: 'Read new turns aloud' })).toHaveCount(0)
+    await expect(page.getByRole('button', { name: 'Play latest turn aloud' })).toHaveCount(0)
 
     await page.getByTitle('Back to play').click()
     await expect(page.getByPlaceholder('Say or do anything…')).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Read new turns aloud' })).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Play latest turn aloud' })).toBeVisible()
+  })
+
+  test('the header control narrates the latest turn and speaks its options afterward', async ({ page }) => {
+    await installGoogleApiMock(page)
+    await installFakeWebSpeechApi(page, { sttSupported: true, ttsSupported: true })
+    await createRandomCampaign(page)
+
+    await submitFreeTextTurn(page, 'look around', 'You step into a quiet, dust-lit room.')
+    await expect(page.getByText('You step into a quiet, dust-lit room.')).toBeVisible()
+
+    await page.getByRole('button', { name: 'Play latest turn aloud' }).click()
+
+    await expect
+      .poll(() => getSpokenTexts(page))
+      .toEqual(['You step into a quiet, dust-lit room.', 'Your options: 1. Look around. 2. Move on.'])
   })
 })

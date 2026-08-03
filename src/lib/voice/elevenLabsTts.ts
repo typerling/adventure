@@ -17,6 +17,7 @@ export function createElevenLabsTtsProvider(): TtsProvider {
 
   return {
     async speak(text, opts) {
+      opts?.onStateChange?.('loading')
       const apiKey = getElevenLabsApiKey()
       if (!apiKey) {
         throw new Error('Add your ElevenLabs API key in Settings first.')
@@ -43,13 +44,22 @@ export function createElevenLabsTtsProvider(): TtsProvider {
           settleCurrent = resolve
           audio.onended = () => resolve()
           audio.onerror = () => reject(new Error('Audio playback failed.'))
-          audio.play().catch(reject)
+          // Keyed off play()'s own promise resolving rather than the 'playing' DOM event — the
+          // event doesn't fire in every environment (e.g. test fakes that stub Audio), while the
+          // promise resolving is the actual contract play() makes.
+          audio.play().then(() => opts?.onStateChange?.('playing')).catch(reject)
         })
       } finally {
         settleCurrent = null
         URL.revokeObjectURL(url)
         if (currentAudio === audio) currentAudio = null
       }
+    },
+    pause() {
+      currentAudio?.pause()
+    },
+    resume() {
+      void currentAudio?.play().catch(() => {})
     },
     stop() {
       currentAudio?.pause()
