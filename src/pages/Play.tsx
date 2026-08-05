@@ -97,10 +97,19 @@ export function Play() {
   const prevReadAloudRef = useRef(readAloud)
   const bottomRef = useRef<HTMLDivElement>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
-  /** Whether the story log is scrolled to its bottom — the options and free-text input are only
-   * relevant once the player has read up to the latest turn, so they're hidden until then (with
-   * a "scroll down to continue" affordance in their place) rather than sitting below text the
-   * player hasn't reached yet. */
+  /** Whether the options/free-text input are shown — relevant only once the player has read up to
+   * the latest turn, so they're hidden while scrolled away (with a "scroll down to continue"
+   * affordance, and the log growing to reclaim the freed space, in their place) rather than
+   * sitting below text the player hasn't reached yet, or leaving that space blank.
+   *
+   * A one-way latch, not a live "currently at the bottom" reading: the IntersectionObserver below
+   * only ever turns it *off* (leaving the bottom); turning it back on only ever happens via an
+   * explicit scrollToBottom() call (the "scroll to continue" tap, or a new turn's auto-scroll).
+   * That's deliberate, not an oversight — the log's own height depends on this flag (see the
+   * ScrollArea wrapper below), so if reaching the bottom automatically flipped it back on, the
+   * resulting shrink could push the bottom back out of view, flipping it off again, regrowing the
+   * log, revealing the bottom again — an infinite resize loop. Requiring an explicit action to
+   * turn it back on breaks that cycle by construction. */
   const [isAtBottom, setIsAtBottom] = useState(true)
   /** Whether the free-text box currently has focus — kept separate from isAtBottom so that
    * scrolling the log away from the bottom (e.g. an incidental wheel/trackpad nudge) never yanks
@@ -208,33 +217,79 @@ export function Play() {
     speakText(lastTurn.narrative, lastTurn.turn)
   }, [lastTurn, readAloud, ttsAvailable, settings, speakText])
 
-  // Tracks whether the bottom-of-log sentinel is actually visible within the ScrollArea's
-  // viewport, rather than computing it by hand from scrollTop/scrollHeight on every 'scroll'
-  // event. An IntersectionObserver reports the *real* overlap at each moment, so — unlike a
-  // manual scroll-position check — it can't be fooled by reading stale geometry mid-animation
-  // during the smooth scrollIntoView() below; no suppression window needed. rootMargin gives the
-  // same "close enough" slack a pixel-distance check would, without hardcoding scroll math.
+  /** While true, the observer below ignores what it sees — set for a short window around a
+   * programmatic scrollToBottom(). That scroll is smooth (animated over several frames), and the
+   * sentinel is genuinely out of view for the earlier frames of that animation, before it
+   * actually arrives — an accurate reading, just a premature one relative to our intent (we're
+   * already headed there). Ordinarily a premature "false" would self-correct once the animation
+   * settles at "true" — but isAtBottom is a one-way latch (see its doc comment) specifically to
+   * avoid a resize feedback loop, and a one-way latch can't self-correct: a premature false during
+   * our *own* auto-scroll would latch shut permanently, hiding the input right after a turn
+   * lands, exactly when the player needs it back. */
+  const suppressObserverRef = useRef(false)
+  const suppressTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Detects leaving the bottom of the log via the sentinel's real visibility within the
+  // ScrollArea's viewport, rather than computing it by hand from scrollTop/scrollHeight on every
+  // 'scroll' event — an IntersectionObserver reports the *actual* overlap at each moment, so it
+  // can't be fooled by reading stale geometry the way a plain scroll-math check can. rootMargin
+  // gives the same "close enough" slack a pixel-distance check would.
+  // One-way only (see isAtBottom's doc comment for why): never sets it back to true.
   useEffect(() => {
     const root = viewportRef.current
     const target = bottomRef.current
     if (!root || !target) return
-    const observer = new IntersectionObserver(([entry]) => setIsAtBottom(entry.isIntersecting), {
-      root,
-      rootMargin: '0px 0px 32px 0px',
-    })
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (suppressObserverRef.current) return
+        if (!entry.isIntersecting) setIsAtBottom(false)
+      },
+      { root, rootMargin: '0px 0px 32px 0px' },
+    )
     observer.observe(target)
     return () => observer.disconnect()
-  }, [recentTurns.length])
+    // Deliberately lastTurn?.turn, not recentTurns.length: useCampaign keeps only the most recent
+    // 6 turns (slice(-6)), so length plateaus once a session passes that many — turn *number*
+    // keeps climbing regardless, which is what should re-arm this on every actual new turn.
+  }, [lastTurn?.turn])
+
+  // Clears suppression exactly when the programmatic scroll actually finishes, rather than
+  // guessing a fixed duration — 'scrollend' fires once the browser's smooth-scroll animation
+  // settles, however long that took for however far it had to travel (a long story log can need
+  // more than a token delay). The timeout in scrollToBottom is a fallback only, for when nothing
+  // moves at all (already at the bottom) and 'scrollend' never fires to begin with.
+  useEffect(() => {
+    const el = viewportRef.current
+    if (!el) return
+    const onScrollEnd = () => {
+      suppressObserverRef.current = false
+    }
+    el.addEventListener('scrollend', onScrollEnd)
+    return () => el.removeEventListener('scrollend', onScrollEnd)
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      if (suppressTimeoutRef.current) clearTimeout(suppressTimeoutRef.current)
+    }
+  }, [])
 
   function scrollToBottom() {
+    setIsAtBottom(true)
+    suppressObserverRef.current = true
+    if (suppressTimeoutRef.current) clearTimeout(suppressTimeoutRef.current)
+    suppressTimeoutRef.current = setTimeout(() => {
+      suppressObserverRef.current = false
+    }, 1500)
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }
 
   // Scrolls to the newest turn as soon as one is added — a chat-style "jump to the latest
-  // message" so a freshly-generated/applied turn is never left scrolled out of view.
+  // message" so a freshly-generated/applied turn is never left scrolled out of view. See the
+  // observer effect above for why lastTurn?.turn, not recentTurns.length.
   useEffect(() => {
     scrollToBottom()
-  }, [recentTurns.length])
+  }, [lastTurn?.turn])
 
   useEffect(() => {
     return () => {
@@ -398,9 +453,22 @@ export function Play() {
       {/* Padding lives on the inner content, not on ScrollArea itself — Radix's Viewport clips
           at its own edge, and text sitting exactly flush against that clip boundary triggers a
           software-rasterization glyph artifact in some renderers. A wrapper div inside the
-          clipped viewport keeps glyphs safely away from the clip edge. */}
+          clipped viewport keeps glyphs safely away from the clip edge.
+
+          The log grows to a taller *fixed* height while the options/input are hidden, reclaiming
+          most of the vertical space they'd otherwise leave blank below a lone "Scroll to
+          continue" button. Deliberately an explicit bound (calc against the viewport), not
+          flex-1/min-h — a flex-grow child of an auto/min-height-only flex container has no fixed
+          budget to distribute, and different browsers resolve that ambiguity by sizing the child
+          to its full *content* height instead of the visible viewport (confirmed empirically: the
+          log's clientHeight grew to match its entire scrollHeight, thousands of pixels tall). That
+          also would have kept the bottom sentinel permanently visible, which — combined with
+          isAtBottom's one-way latch — meant "Scroll to continue" never went away again. An
+          explicit calc() height has no such ambiguity to resolve. Approximate, not exact: the
+          point is reclaiming most of the freed area, not filling to the pixel, and undershooting
+          is deliberately safer than overshooting into an unwanted extra scrollbar. */}
       <div className="relative">
-        <ScrollArea className="h-[50vh]" viewportRef={viewportRef}>
+        <ScrollArea className={isAtBottom ? 'h-[50vh]' : 'h-[calc(100svh-11rem)]'} viewportRef={viewportRef}>
           {recentTurns.length === 0 ? (
             <p className="p-4 font-serif text-sm text-muted-foreground italic sm:p-5">
               No story yet — describe your first action below to begin.
