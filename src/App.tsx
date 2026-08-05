@@ -116,7 +116,10 @@ function AppShell() {
   return (
     <div className="min-h-svh">
       <Header />
-      <div className={cn(context && 'pb-16 md:pb-0')}>
+      {/* Bottom padding reserves space for the fixed BottomNav so it can't overlap the end of a
+          page's content — only while a campaign context exists (that's the only time BottomNav
+          renders at all), and only below `md` (where BottomNav itself is hidden). */}
+      <div data-testid="app-content" className={cn(context && 'pb-16 md:pb-0')}>
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/new" element={<NewCampaign />} />

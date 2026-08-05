@@ -42,6 +42,11 @@ import { describeLocalModelProgress, generateLocalReply } from '@/lib/ai/localMo
 
 type DialogStage = 'closed' | 'prompt'
 
+/** How far past the bottom of the story log still counts as "at the bottom", in px. Shared by the
+ * IntersectionObserver's rootMargin and the reconcile check that runs when suppression ends — the
+ * two must agree or they'd disagree about the same scroll position. */
+const AT_BOTTOM_SLACK_PX = 32
+
 /** Options are arbitrary AI-generated strings with no inherent icon/color meaning — these just
  * cycle to give the choice list the same varied, illustrated-card look as a fixed icon per option
  * would, without pretending to understand what each option is about. */
@@ -229,6 +234,22 @@ export function Play() {
   const suppressObserverRef = useRef(false)
   const suppressTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  /** Ends the suppression window and immediately reconciles against reality. The re-check is the
+   * important half: an IntersectionObserver only fires on *changes*, so anything it was told to
+   * ignore mid-window is not re-reported afterwards. Without this, a player who scrolls up during
+   * the post-turn auto-scroll would leave the options/input showing over text they haven't read,
+   * stuck that way until some later scroll happened to change the intersection state again. */
+  const endSuppression = useCallback(() => {
+    suppressObserverRef.current = false
+    const root = viewportRef.current
+    const target = bottomRef.current
+    if (!root || !target) return
+    // Same test the observer's rootMargin encodes, just evaluated once here rather than per frame.
+    const isSentinelInView =
+      target.getBoundingClientRect().top <= root.getBoundingClientRect().bottom + AT_BOTTOM_SLACK_PX
+    if (!isSentinelInView) setIsAtBottom(false)
+  }, [])
+
   // Detects leaving the bottom of the log via the sentinel's real visibility within the
   // ScrollArea's viewport, rather than computing it by hand from scrollTop/scrollHeight on every
   // 'scroll' event — an IntersectionObserver reports the *actual* overlap at each moment, so it
@@ -244,7 +265,7 @@ export function Play() {
         if (suppressObserverRef.current) return
         if (!entry.isIntersecting) setIsAtBottom(false)
       },
-      { root, rootMargin: '0px 0px 32px 0px' },
+      { root, rootMargin: `0px 0px ${AT_BOTTOM_SLACK_PX}px 0px` },
     )
     observer.observe(target)
     return () => observer.disconnect()
@@ -253,20 +274,19 @@ export function Play() {
     // keeps climbing regardless, which is what should re-arm this on every actual new turn.
   }, [lastTurn?.turn])
 
-  // Clears suppression exactly when the programmatic scroll actually finishes, rather than
-  // guessing a fixed duration — 'scrollend' fires once the browser's smooth-scroll animation
-  // settles, however long that took for however far it had to travel (a long story log can need
-  // more than a token delay). The timeout in scrollToBottom is a fallback only, for when nothing
-  // moves at all (already at the bottom) and 'scrollend' never fires to begin with.
+  // Ends suppression exactly when the programmatic scroll actually finishes, rather than guessing
+  // a fixed duration — 'scrollend' fires once the browser's smooth-scroll animation settles,
+  // however long that took for however far it had to travel (a long story log can need more than
+  // a token delay). It also fires when a *user* scroll ends, which is what closes the
+  // scrolled-up-mid-animation case described on endSuppression. The timeout in scrollToBottom is
+  // a fallback only, for when nothing moves at all (already at the bottom) and 'scrollend' never
+  // fires to begin with.
   useEffect(() => {
     const el = viewportRef.current
     if (!el) return
-    const onScrollEnd = () => {
-      suppressObserverRef.current = false
-    }
-    el.addEventListener('scrollend', onScrollEnd)
-    return () => el.removeEventListener('scrollend', onScrollEnd)
-  }, [])
+    el.addEventListener('scrollend', endSuppression)
+    return () => el.removeEventListener('scrollend', endSuppression)
+  }, [endSuppression])
 
   useEffect(() => {
     return () => {
@@ -274,22 +294,20 @@ export function Play() {
     }
   }, [])
 
-  function scrollToBottom() {
+  const scrollToBottom = useCallback(() => {
     setIsAtBottom(true)
     suppressObserverRef.current = true
     if (suppressTimeoutRef.current) clearTimeout(suppressTimeoutRef.current)
-    suppressTimeoutRef.current = setTimeout(() => {
-      suppressObserverRef.current = false
-    }, 1500)
+    suppressTimeoutRef.current = setTimeout(endSuppression, 1500)
     bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }
+  }, [endSuppression])
 
   // Scrolls to the newest turn as soon as one is added — a chat-style "jump to the latest
   // message" so a freshly-generated/applied turn is never left scrolled out of view. See the
   // observer effect above for why lastTurn?.turn, not recentTurns.length.
   useEffect(() => {
     scrollToBottom()
-  }, [lastTurn?.turn])
+  }, [lastTurn?.turn, scrollToBottom])
 
   useEffect(() => {
     return () => {

@@ -34,7 +34,15 @@ fallback): the Claude API, and a choice of several fully on-device models over W
   API call is intercepted by `tests/mocks/googleApi.ts` (an in-memory fake backend) and a fake
   session is seeded into `localStorage` before each test, so no real Google account or network
   access is needed. Run a single file with `npx playwright test tests/new-campaign.spec.ts`, or
-  `--headed`/`--debug` while writing new specs.
+  `--headed`/`--debug` while writing new specs. `tests/mobile-layout.spec.ts` holds the
+  **page-level** responsive coverage (component-level lives in Storybook, below): it drives
+  Play/Codex/Settings at 390×844 and 1280×900 via `test.use({ viewport })`, asserting the two
+  halves of one contract — `BottomNav` (`md:hidden`) and the header's Codex/Settings icons
+  (`hidden md:inline-flex`) are complementary, so campaign navigation is reachable exactly once at
+  any width — plus that the app shell's `pb-16 md:pb-0` actually reserves the fixed nav's height
+  (`[data-testid="app-content"]`), and that no page scrolls sideways at phone width. It hides the
+  Sonner toast layer via `addInitScript`, because toasts pin to the bottom of the viewport and on
+  a phone-width screen genuinely sit over Play's input row and intercept clicks meant for it.
 - `npm run storybook` — Storybook dev server on port 6006, for viewing/developing
   `src/components/**/*.stories.tsx` in isolation (every `src/components/ui/*` primitive, plus
   `BottomNav`). `npm run build-storybook` produces a static `storybook-static/` build (not
