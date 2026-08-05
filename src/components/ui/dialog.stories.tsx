@@ -111,7 +111,7 @@ function TurnDialog() {
  * than resizing an already-open one, which is what makes the e2e version of this timing-sensitive.
  */
 export const NarrowOnMobile: Story = {
-  parameters: { viewport: { defaultViewport: 'mobile' } },
+  globals: { viewport: { value: 'mobile' } },
   render: () => <TurnDialog />,
   play: async ({ canvasElement }) => {
     const body = within(canvasElement.ownerDocument.body)
@@ -129,7 +129,7 @@ export const NarrowOnMobile: Story = {
 }
 
 export const WiderOnDesktop: Story = {
-  parameters: { viewport: { defaultViewport: 'desktop' } },
+  globals: { viewport: { value: 'desktop' } },
   render: () => <TurnDialog />,
   play: async ({ canvasElement }) => {
     const body = within(canvasElement.ownerDocument.body)

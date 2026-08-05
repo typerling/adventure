@@ -1,13 +1,10 @@
 /// <reference types="vitest/config" />
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { storybookTest } from '@storybook/addon-vitest/vitest-plugin'
 import { playwright } from '@vitest/browser-playwright'
-
-const dirname = typeof __dirname !== 'undefined' ? __dirname : path.dirname(fileURLToPath(import.meta.url))
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -26,17 +23,14 @@ export default defineConfig({
   // Component-level interaction tests (`npm run test:stories`) — runs each story's `play`
   // function through Vitest's browser mode with the Playwright provider, driven by
   // @storybook/addon-vitest against the Storybook config in .storybook/. See CLAUDE.md's
-  // Commands section for the two non-obvious gotchas found writing these (Radix's open-animation
-  // opacity, and this browser instance's fixed desktop viewport).
+  // Commands section for the gotchas found writing these.
   test: {
     projects: [
       {
         extends: true,
         plugins: [
-          // The plugin will run tests for the stories defined in your Storybook config
-          // See options at: https://storybook.js.org/docs/next/writing-tests/integrations/vitest-addon#storybooktest
           storybookTest({
-            configDir: path.join(dirname, '.storybook'),
+            configDir: path.resolve(__dirname, '.storybook'),
           }),
         ],
         test: {

@@ -53,11 +53,18 @@ export const OverflowsAndScrolls: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    // The last turn starts out of view — that's the point of a capped-height, scrollable log.
-    await expect(canvas.getByText('Turn 1 — the dust settles over Redrock as the gate creaks shut behind you.')).toBeVisible()
-
     const viewport = canvasElement.querySelector('[data-slot="scroll-area-viewport"]') as HTMLElement
-    canvasElement.querySelector('#turn-12')?.scrollIntoView()
+
+    // The first turn is in view and the last one isn't — that's the point of a capped-height,
+    // scrollable log (the content overflows rather than stretching the container).
+    await expect(canvas.getByText(/^Turn 1 —/)).toBeVisible()
+    expect(viewport.scrollHeight).toBeGreaterThan(viewport.clientHeight)
+    const lastTurn = canvasElement.querySelector('#turn-12')!
+    expect(lastTurn.getBoundingClientRect().top).toBeGreaterThan(viewport.getBoundingClientRect().bottom)
+
+    // ...and scrolling to it actually moves the viewport, rather than the page around it.
+    lastTurn.scrollIntoView()
     await waitFor(() => expect(viewport.scrollTop).toBeGreaterThan(0))
+    await expect(canvas.getByText(/^Turn 12 —/)).toBeVisible()
   },
 }

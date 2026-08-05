@@ -15,14 +15,16 @@ const meta = {
   title: 'App/BottomNav',
   component: BottomNav,
   tags: ['autodocs'],
-  parameters: {
-    // This nav only exists below Tailwind's `md` (it's `md:hidden` — the top header takes over
-    // campaign navigation on wider screens, see BottomNav's own doc comment). At the addon's
-    // default 1200px viewport it is genuinely `display: none`, which also removes it from the
-    // accessibility tree, so getByRole would find nothing. Every story here therefore runs at the
-    // mobile viewport; HiddenAboveBreakpoint below overrides it to assert the other half.
-    viewport: { defaultViewport: 'mobile' },
-  },
+  // This nav only exists below Tailwind's `md` (it's `md:hidden` — the top header takes over
+  // campaign navigation on wider screens, see BottomNav's own doc comment). At the default
+  // 1200px viewport it is genuinely `display: none`, which also removes it from the accessibility
+  // tree, so getByRole would find nothing. Every story here therefore runs at the mobile
+  // viewport; HiddenAboveBreakpoint below overrides it to assert the other half.
+  // `globals`, not `parameters.viewport.defaultViewport` — the latter was removed in Storybook 10
+  // and is ignored by the Storybook UI (it only still works in test runs, via a fallback in
+  // @storybook/addon-vitest), which would leave these stories rendering at desktop width in the
+  // browser while passing in CI.
+  globals: { viewport: { value: 'mobile' } },
   // BottomNav renders nothing until a campaign context is registered in the shared header store
   // (see playHeaderStore's doc comment — Play/Codex/Settings each set this on mount). A loader,
   // not a decorator's useEffect: loaders are guaranteed to resolve *before* the story's first
@@ -71,7 +73,7 @@ export const OnCodexRoute: Story = {
  * or a desktop user would get both it *and* the header's Codex/Settings icons (which are
  * `hidden md:inline-flex` — the two are deliberately complementary, see App.tsx's Header). */
 export const HiddenAboveBreakpoint: Story = {
-  parameters: { viewport: { defaultViewport: 'desktop' } },
+  globals: { viewport: { value: 'desktop' } },
   decorators: [routeDecorator('/play/demo-campaign')],
   play: async ({ canvasElement }) => {
     const nav = canvasElement.querySelector('nav')

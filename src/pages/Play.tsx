@@ -274,13 +274,13 @@ export function Play() {
     // keeps climbing regardless, which is what should re-arm this on every actual new turn.
   }, [lastTurn?.turn])
 
-  // Ends suppression exactly when the programmatic scroll actually finishes, rather than guessing
-  // a fixed duration — 'scrollend' fires once the browser's smooth-scroll animation settles,
-  // however long that took for however far it had to travel (a long story log can need more than
-  // a token delay). It also fires when a *user* scroll ends, which is what closes the
-  // scrolled-up-mid-animation case described on endSuppression. The timeout in scrollToBottom is
-  // a fallback only, for when nothing moves at all (already at the bottom) and 'scrollend' never
-  // fires to begin with.
+  // Ends suppression when the scroll actually finishes rather than after a guessed duration —
+  // 'scrollend' fires once the browser's smooth-scroll animation settles, however far it had to
+  // travel (a long story log can need more than a token delay). The timeout in scrollToBottom
+  // remains a genuine fallback: 'scrollend' never fires when nothing moved at all (already at the
+  // bottom), and measurement showed it can also fail to fire for a user scroll that happens
+  // *during* the programmatic one — in that case the timeout is what ends the window, so the
+  // options can linger over unread text for up to its duration rather than clearing immediately.
   useEffect(() => {
     const el = viewportRef.current
     if (!el) return
@@ -299,7 +299,16 @@ export function Play() {
     suppressObserverRef.current = true
     if (suppressTimeoutRef.current) clearTimeout(suppressTimeoutRef.current)
     suppressTimeoutRef.current = setTimeout(endSuppression, 1500)
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+    // Deferred a frame rather than scrolled straight away, because setIsAtBottom(true) above
+    // *shrinks* the log (the taller scrolled-away height collapses back to h-[50svh]) and React
+    // hasn't committed that yet. A synchronous scrollIntoView would aim at the pre-shrink layout
+    // and stop a few hundred px short of the real bottom — which then made endSuppression measure
+    // "not at the bottom", latch closed again, regrow the log, and leave "Scroll to continue"
+    // showing while the player was already at the bottom. Clicking it just alternated between the
+    // two states forever.
+    requestAnimationFrame(() => {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+    })
   }, [endSuppression])
 
   // Scrolls to the newest turn as soon as one is added — a chat-style "jump to the latest
@@ -484,9 +493,20 @@ export function Play() {
           isAtBottom's one-way latch — meant "Scroll to continue" never went away again. An
           explicit calc() height has no such ambiguity to resolve. Approximate, not exact: the
           point is reclaiming most of the freed area, not filling to the pixel, and undershooting
-          is deliberately safer than overshooting into an unwanted extra scrollbar. */}
+          is deliberately safer than overshooting into an unwanted extra scrollbar.
+
+          Both heights are in `svh`, not a mix of `vh` and `svh`: on iOS `vh` tracks the *large*
+          viewport (toolbars hidden) while `svh` tracks the small one, so mixing them would measure
+          the two states against different boxes and make the "grown" height not actually the
+          bigger of the two while the toolbars are showing. The max() guards the same thing for
+          short viewports generally — below roughly 350px of height, `100svh - 11rem` is *smaller*
+          than `50svh`, so without it the log would shrink on scrolling away instead of growing
+          (landscape phones hit this; the tests' fixed 844px viewport does not). */}
       <div className="relative">
-        <ScrollArea className={isAtBottom ? 'h-[50vh]' : 'h-[calc(100svh-11rem)]'} viewportRef={viewportRef}>
+        <ScrollArea
+          className={isAtBottom ? 'h-[50svh]' : 'h-[max(50svh,calc(100svh-11rem))]'}
+          viewportRef={viewportRef}
+        >
           {recentTurns.length === 0 ? (
             <p className="p-4 font-serif text-sm text-muted-foreground italic sm:p-5">
               No story yet — describe your first action below to begin.

@@ -17,18 +17,26 @@ const MOBILE = { width: 390, height: 844 } // below Tailwind's `md` (768px)
 const DESKTOP = { width: 1280, height: 900 } // above it
 
 /**
- * Sonner renders toasts pinned to the bottom of the viewport, which on a phone-width screen sits
- * directly over the Play screen's input row — so a toast left over from campaign creation can
- * intercept a click meant for the page underneath. That's a real thing on mobile, but it's a
- * *transient* overlay and not what these layout assertions are about, so hide the toast layer
- * outright rather than sprinkling waits around every interaction. addInitScript so it survives
- * the navigations each test does.
+ * Sonner renders toasts pinned to the bottom of the viewport, which at phone width sits directly
+ * over the Play screen's input row — so a toast left over from campaign creation intercepts
+ * clicks meant for the page underneath. Headless Chromium never fires Sonner's auto-dismiss
+ * timer, so waiting it out isn't an option either; the overlap is permanent here.
+ *
+ * These are layout assertions, so the toast layer is hidden rather than worked around. Note the
+ * `document.head` guard: init scripts run before the document exists, so touching
+ * `document.documentElement` directly throws — and Playwright swallows that, leaving a helper
+ * that silently does nothing (which is exactly what this used to do, until a 1-in-8 flake on the
+ * click below gave it away).
  */
 async function hideToasts(page: Page): Promise<void> {
   await page.addInitScript(() => {
-    const style = document.createElement('style')
-    style.textContent = '[data-sonner-toaster] { display: none !important; }'
-    document.documentElement.appendChild(style)
+    const inject = () => {
+      const style = document.createElement('style')
+      style.textContent = '[data-sonner-toaster] { display: none !important; }'
+      document.head.appendChild(style)
+    }
+    if (document.head) inject()
+    else document.addEventListener('DOMContentLoaded', inject, { once: true })
   })
 }
 
@@ -186,12 +194,27 @@ test.describe('mobile (below md)', () => {
       const nav = document.querySelector('nav[aria-label="Campaign navigation"]')!
       return nav.getBoundingClientRect().top - log.getBoundingClientRect().bottom
     })
-    expect(gap, 'story log should reach close to the bottom nav, not leave a large empty band').toBeLessThan(160)
+    // Tight enough to actually bite: the bug this guards left a ~400px void, and the healthy
+    // value here is ~45px (the page's own bottom padding plus the nav reserve). 80px catches a
+    // moderate regression, not just a catastrophic one.
+    expect(gap, 'story log should reach close to the bottom nav, not leave a large empty band').toBeLessThan(80)
 
-    // The affordance takes you back, and the controls come with it.
+    // The affordance takes you back, and the controls come with it — asserted as a *settled*
+    // state, deliberately past the ~1.5s observer-suppression window in Play.tsx. Checking
+    // immediately after the click is a false green: a bug where the scroll landed short and the
+    // state then flipped back (options hidden again, affordance re-shown, clicking it just
+    // alternating forever) looked fine for the first second and only appeared afterwards.
     await scrollBack.click()
     await expect(input).toBeVisible()
     await expect(scrollBack).toBeHidden()
+
+    await page.waitForTimeout(2000)
+    await expect(input, 'controls must stay put once the scroll settles').toBeVisible()
+    await expect(scrollBack, 'affordance must not come back while at the bottom').toBeHidden()
+
+    // And it genuinely reached the bottom, rather than stopping short of it.
+    const distanceFromBottom = await viewport.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight)
+    expect(distanceFromBottom, 'should land at the bottom of the log').toBeLessThan(40)
   })
 })
 

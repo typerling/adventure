@@ -63,13 +63,15 @@ fallback): the Claude API, and a choice of several fully on-device models over W
   - **Responsive behavior is testable, and viewport is per-story.** `preview.tsx` defines two
     viewports named after this app's only layout breakpoint (Tailwind `md`, 768px) rather than
     after devices — `mobile` (390×844) and `desktop` (1200×900) — selected per story with
-    `parameters: { viewport: { defaultViewport: 'mobile' } }`. These are **real** viewport
-    resizes: `@storybook/addon-vitest` feeds the resolved size to Vitest browser-mode's
-    `page.viewport()`, so `md:` variants genuinely apply or don't, and a story can assert
-    mobile-only/desktop-only layout. Note this is *not* the same knob as
-    `vite.config.ts`'s `test.browser.instances[].viewport`, which the addon ignores — setting it
-    there has no effect (verified). Without a `defaultViewport` a story gets the addon's 1200×900
-    default.
+    `globals: { viewport: { value: 'mobile' } }`. These are **real** viewport resizes:
+    `@storybook/addon-vitest` feeds the resolved size to Vitest browser-mode's `page.viewport()`,
+    so `md:` variants genuinely apply or don't, and a story can assert mobile-only/desktop-only
+    layout. Two things not to confuse it with: `parameters.viewport.defaultViewport` was **removed
+    in Storybook 10** — the Storybook UI ignores it (logging a deprecation) and only the Vitest
+    addon still honours it as a fallback, so a story using it renders at the wrong width in the
+    browser while passing in CI; and `vite.config.ts`'s `test.browser.instances[].viewport` is
+    Vitest's own knob, which this addon overrides per story — setting it there does nothing
+    (verified). A story that sets neither gets the addon's 1200×900 default.
   - Anything hidden at the current viewport is hidden *for real*, including from the
     accessibility tree — `BottomNav` is `md:hidden`, so at the default desktop viewport
     `getByRole('link')` finds nothing even though the markup is right there in the DOM. That's
