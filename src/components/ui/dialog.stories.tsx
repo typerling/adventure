@@ -56,9 +56,6 @@ export const WithFooterActions: Story = {
   ),
 }
 
-// Regression coverage for the same bug play-dialog-responsive.spec.ts guards against at the e2e
-// level (an unprefixed max-w-2xl silently losing to the base sm:max-w-sm) — cheaper to catch here
-// since it needs no campaign/mock backend, just the Dialog itself.
 export const OpensAndCloses: Story = {
   render: () => (
     <Dialog>
@@ -85,5 +82,64 @@ export const OpensAndCloses: Story = {
 
     await userEvent.keyboard('{Escape}')
     await waitFor(() => expect(body.queryByRole('dialog')).not.toBeInTheDocument())
+  },
+}
+
+/** The turn dialog's real responsive class stack, as used in Play.tsx. */
+function TurnDialog() {
+  return (
+    <Dialog defaultOpen>
+      <DialogContent className="sm:max-w-xl md:max-w-2xl lg:max-w-4xl">
+        <DialogHeader>
+          <DialogTitle>Manual DM turn</DialogTitle>
+          <DialogDescription>Copy this prompt into claude.ai or chatgpt.com.</DialogDescription>
+        </DialogHeader>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+/**
+ * Component-level counterpart to tests/play-dialog-responsive.spec.ts, which guards a real bug:
+ * the dialog's own `max-w-2xl` (unprefixed) silently lost to the base component's `sm:max-w-sm`,
+ * because Tailwind orders responsive utilities after unprefixed ones — so on desktop the turn
+ * dialog was capped at ~384px rather than the ~672px the className implied. Fixed by giving each
+ * breakpoint its own explicit override.
+ *
+ * Worth having here as well as at e2e: this needs no campaign, no mocked Drive/Sheets backend and
+ * no turn-loop setup, just the Dialog — and it sets the viewport *before* the dialog opens rather
+ * than resizing an already-open one, which is what makes the e2e version of this timing-sensitive.
+ */
+export const NarrowOnMobile: Story = {
+  parameters: { viewport: { defaultViewport: 'mobile' } },
+  render: () => <TurnDialog />,
+  play: async ({ canvasElement }) => {
+    const body = within(canvasElement.ownerDocument.body)
+    const dialog = await waitFor(() => {
+      const el = body.getByRole('dialog')
+      expect(el).toBeVisible()
+      return el
+    })
+    const { width } = dialog.getBoundingClientRect()
+    // max-w-[calc(100%-2rem)] applies (no sm:/md:/lg: at 390px), so it's near-full-width with a
+    // 1rem gutter each side — never edge-to-edge, and never a fixed tiny box.
+    expect(width).toBeLessThan(390)
+    expect(width).toBeGreaterThan(300)
+  },
+}
+
+export const WiderOnDesktop: Story = {
+  parameters: { viewport: { defaultViewport: 'desktop' } },
+  render: () => <TurnDialog />,
+  play: async ({ canvasElement }) => {
+    const body = within(canvasElement.ownerDocument.body)
+    const dialog = await waitFor(() => {
+      const el = body.getByRole('dialog')
+      expect(el).toBeVisible()
+      return el
+    })
+    const { width } = dialog.getBoundingClientRect()
+    // Previously capped at ~384px (sm:max-w-sm) regardless of viewport — md:max-w-2xl now wins.
+    expect(width).toBeGreaterThan(600)
   },
 }

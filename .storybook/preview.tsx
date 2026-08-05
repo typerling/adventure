@@ -15,8 +15,36 @@ function WithTheme(Story: React.ComponentType, context: { globals: { theme?: str
   return <Story />
 }
 
+/**
+ * Named around this app's own layout breakpoint rather than specific devices: everything
+ * responsive here keys off Tailwind's `md` (768px) — `BottomNav` is `md:hidden`, the header's
+ * Codex/Settings icons are `hidden md:inline-flex`, etc. So the only distinction that matters is
+ * "below md" vs "above md", and these two sit safely either side of it.
+ *
+ * These are real viewport resizes, not CSS scaling: `@storybook/addon-vitest` passes the resolved
+ * width/height to Vitest browser-mode's `page.viewport()`, so `md:` variants and media queries
+ * genuinely apply (or don't) during `npm run test:stories` — which is what makes a story able to
+ * assert mobile-only/desktop-only behavior at all.
+ */
+const VIEWPORTS = {
+  mobile: {
+    name: 'Mobile (below md)',
+    styles: { width: '390px', height: '844px' },
+    type: 'mobile',
+  },
+  desktop: {
+    name: 'Desktop (above md)',
+    styles: { width: '1200px', height: '900px' },
+    type: 'desktop',
+  },
+} as const
+
 const preview: Preview = {
   parameters: {
+    viewport: {
+      options: VIEWPORTS,
+    },
+
     controls: {
       matchers: {
         color: /(background|color)$/i,

@@ -48,18 +48,26 @@ fallback): the Claude API, and a choice of several fully on-device models over W
   --project=storybook run`, configured in `vite.config.ts`'s `test.projects`) — not jsdom, so
   these exercise real layout/CSS/focus behavior the same way the Playwright e2e suite does, just
   scoped to one component instead of a full page. Run a single file with `npm run test:stories --
-  src/components/ui/dialog.stories.tsx`. Two non-obvious things learned writing these:
+  src/components/ui/dialog.stories.tsx`. Three non-obvious things learned writing these:
   - Radix's open/close animations (`data-open:animate-in ...`) start at `opacity: 0`, so a bare
     `expect(el).toBeVisible()` right after a `userEvent.click()` that opens a Dialog/DropdownMenu
     can catch the first animation frame and fail — wrap in `waitFor(() => expect(...).toBeVisible())`.
-  - This addon's browser instance is pinned to a desktop-sized viewport regardless of any
-    `viewport` config passed in `vite.config.ts`'s `test.browser.instances` (confirmed
-    empirically — it has no effect). `BottomNav` is `md:hidden`, so it's *actually*
-    `display: none` in this test environment, which drops it from the accessibility tree
-    entirely — `getByRole` finds nothing even though the markup is right there in the DOM. Its
-    stories query by `href` via the raw DOM (`canvasElement.querySelector('a[href="..."]')`)
-    instead of `getByRole`/`getByText` for exactly this reason; keep that pattern for any other
-    story that needs a component visible only past/under a specific breakpoint.
+  - **Responsive behavior is testable, and viewport is per-story.** `preview.tsx` defines two
+    viewports named after this app's only layout breakpoint (Tailwind `md`, 768px) rather than
+    after devices — `mobile` (390×844) and `desktop` (1200×900) — selected per story with
+    `parameters: { viewport: { defaultViewport: 'mobile' } }`. These are **real** viewport
+    resizes: `@storybook/addon-vitest` feeds the resolved size to Vitest browser-mode's
+    `page.viewport()`, so `md:` variants genuinely apply or don't, and a story can assert
+    mobile-only/desktop-only layout. Note this is *not* the same knob as
+    `vite.config.ts`'s `test.browser.instances[].viewport`, which the addon ignores — setting it
+    there has no effect (verified). Without a `defaultViewport` a story gets the addon's 1200×900
+    default.
+  - Anything hidden at the current viewport is hidden *for real*, including from the
+    accessibility tree — `BottomNav` is `md:hidden`, so at the default desktop viewport
+    `getByRole('link')` finds nothing even though the markup is right there in the DOM. That's
+    why its stories set the `mobile` viewport (and `HiddenAboveBreakpoint` overrides to `desktop`
+    to assert the `md:hidden` half). If a `getByRole` query mysteriously finds nothing, check the
+    component isn't `display: none` at the story's viewport before assuming a timing problem.
 
 Google Drive integration requires `VITE_GOOGLE_CLIENT_ID` in `.env` (copy from `.env.example`).
 Without it the app boots to an "unconfigured" screen instead of crashing — see
