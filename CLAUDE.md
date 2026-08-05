@@ -35,6 +35,31 @@ fallback): the Claude API, and a choice of several fully on-device models over W
   session is seeded into `localStorage` before each test, so no real Google account or network
   access is needed. Run a single file with `npx playwright test tests/new-campaign.spec.ts`, or
   `--headed`/`--debug` while writing new specs.
+- `npm run storybook` — Storybook dev server on port 6006, for viewing/developing
+  `src/components/**/*.stories.tsx` in isolation (every `src/components/ui/*` primitive, plus
+  `BottomNav`). `npm run build-storybook` produces a static `storybook-static/` build (not
+  deployed anywhere — dev/review tool only). Config lives in `.storybook/` (`main.ts`/
+  `preview.tsx`, the latter importing `src/index.css` so components render with the app's real
+  Tailwind theme/fonts, plus a toolbar light/dark toggle mirroring the `.dark`/`.light` classes
+  `src/index.css` already supports).
+- `npm run test:stories` — runs each story's `play` function (interaction tests written with
+  `storybook/test`'s `userEvent`/`expect`/`within`) via `@storybook/addon-vitest`, which executes
+  them in a real Chromium instance through Vitest's Playwright-provider browser mode (`vitest
+  --project=storybook run`, configured in `vite.config.ts`'s `test.projects`) — not jsdom, so
+  these exercise real layout/CSS/focus behavior the same way the Playwright e2e suite does, just
+  scoped to one component instead of a full page. Run a single file with `npm run test:stories --
+  src/components/ui/dialog.stories.tsx`. Two non-obvious things learned writing these:
+  - Radix's open/close animations (`data-open:animate-in ...`) start at `opacity: 0`, so a bare
+    `expect(el).toBeVisible()` right after a `userEvent.click()` that opens a Dialog/DropdownMenu
+    can catch the first animation frame and fail — wrap in `waitFor(() => expect(...).toBeVisible())`.
+  - This addon's browser instance is pinned to a desktop-sized viewport regardless of any
+    `viewport` config passed in `vite.config.ts`'s `test.browser.instances` (confirmed
+    empirically — it has no effect). `BottomNav` is `md:hidden`, so it's *actually*
+    `display: none` in this test environment, which drops it from the accessibility tree
+    entirely — `getByRole` finds nothing even though the markup is right there in the DOM. Its
+    stories query by `href` via the raw DOM (`canvasElement.querySelector('a[href="..."]')`)
+    instead of `getByRole`/`getByText` for exactly this reason; keep that pattern for any other
+    story that needs a component visible only past/under a specific breakpoint.
 
 Google Drive integration requires `VITE_GOOGLE_CLIENT_ID` in `.env` (copy from `.env.example`).
 Without it the app boots to an "unconfigured" screen instead of crashing — see
