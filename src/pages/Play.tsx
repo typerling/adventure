@@ -3,6 +3,7 @@ import { useParams, Link } from 'react-router-dom'
 import { toast } from 'sonner'
 import {
   ArrowUp,
+  ChevronDown,
   ChevronRight,
   CircleAlert,
   Compass,
@@ -40,6 +41,11 @@ import { generateClaudeReply } from '@/lib/ai/claudeProvider'
 import { describeLocalModelProgress, generateLocalReply } from '@/lib/ai/localModel'
 
 type DialogStage = 'closed' | 'prompt'
+
+/** How close to the bottom of the story log (in px) still counts as "at the bottom" — the
+ * options and free-text input only appear there, so a small slack avoids them flickering away
+ * from sub-pixel scroll rounding when the log exactly fills the viewport. */
+const AT_BOTTOM_THRESHOLD_PX = 32
 
 /** Options are arbitrary AI-generated strings with no inherent icon/color meaning — these just
  * cycle to give the choice list the same varied, illustrated-card look as a fixed icon per option
@@ -95,6 +101,12 @@ export function Play() {
   const spokenTurnRef = useRef<number | null>(null)
   const prevReadAloudRef = useRef(readAloud)
   const bottomRef = useRef<HTMLDivElement>(null)
+  const viewportRef = useRef<HTMLDivElement>(null)
+  /** Whether the story log is scrolled to its bottom — the options and free-text input are only
+   * relevant once the player has read up to the latest turn, so they're hidden until then (with
+   * a "scroll down to continue" affordance in their place) rather than sitting below text the
+   * player hasn't reached yet. */
+  const [isAtBottom, setIsAtBottom] = useState(true)
 
   const lastTurn = recentTurns.at(-1)
   const options = lastTurn?.optionsOffered ?? []
@@ -195,11 +207,48 @@ export function Play() {
     speakText(lastTurn.narrative, lastTurn.turn)
   }, [lastTurn, readAloud, ttsAvailable, settings, speakText])
 
+  /** While true, checkAtBottom's own onScroll-driven updates are ignored — set for a short window
+   * around a programmatic scrollIntoView(). That scroll is smooth (animated over several frames),
+   * and each intermediate frame fires its own 'scroll' event with a scrollTop nowhere near the
+   * destination yet; without suppressing those, isAtBottom would flicker false mid-animation and
+   * hide the options/input right after the player acts, exactly when they need to see the result. */
+  const suppressScrollChecksRef = useRef(false)
+  const suppressTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  /** Recomputes isAtBottom from the story log viewport's actual scroll position. Passed both to
+   * the ScrollArea's onScroll and called directly after programmatic scrolls settle. */
+  const checkAtBottom = useCallback(() => {
+    if (suppressScrollChecksRef.current) return
+    const el = viewportRef.current
+    if (!el) return
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    setIsAtBottom(distanceFromBottom < AT_BOTTOM_THRESHOLD_PX)
+  }, [])
+
+  const scrollToBottom = useCallback(() => {
+    // Optimistic: we're deliberately moving to the bottom, so treat it as already there rather
+    // than waiting for the animation to finish — see suppressScrollChecksRef above.
+    setIsAtBottom(true)
+    suppressScrollChecksRef.current = true
+    if (suppressTimeoutRef.current) clearTimeout(suppressTimeoutRef.current)
+    suppressTimeoutRef.current = setTimeout(() => {
+      suppressScrollChecksRef.current = false
+      checkAtBottom()
+    }, 700)
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  }, [checkAtBottom])
+
+  useEffect(() => {
+    return () => {
+      if (suppressTimeoutRef.current) clearTimeout(suppressTimeoutRef.current)
+    }
+  }, [])
+
   // Scrolls to the newest turn as soon as one is added — a chat-style "jump to the latest
   // message" so a freshly-generated/applied turn is never left scrolled out of view.
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [recentTurns.length])
+    scrollToBottom()
+  }, [recentTurns.length, scrollToBottom])
 
   useEffect(() => {
     return () => {
@@ -364,114 +413,138 @@ export function Play() {
           at its own edge, and text sitting exactly flush against that clip boundary triggers a
           software-rasterization glyph artifact in some renderers. A wrapper div inside the
           clipped viewport keeps glyphs safely away from the clip edge. */}
-      <ScrollArea className="h-[50vh]">
-        {recentTurns.length === 0 ? (
-          <p className="p-4 font-serif text-sm text-muted-foreground italic sm:p-5">
-            No story yet — describe your first action below to begin.
-          </p>
-        ) : (
-          <div className="flex flex-col gap-6 p-4 sm:p-5">
-            {recentTurns.map((t) => (
-              <div key={t.turn} className="flex flex-col gap-2">
-                <div className="flex items-center justify-between gap-2">
-                  <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                    Turn {t.turn} — you: {t.playerAction}
-                  </p>
-                  {ttsAvailable && (
-                    <Button
-                      size="icon-xs"
-                      variant="ghost"
-                      onClick={() => toggleTurnPlayback(t.turn, t.narrative)}
-                      title={playingTurn === t.turn ? 'Stop playback' : 'Play this turn aloud'}
-                      aria-label={playingTurn === t.turn ? 'Stop playback' : 'Play this turn aloud'}
-                    >
-                      {playingTurn === t.turn ? <Square className="size-3.5" /> : <Volume2 className="size-3.5" />}
-                    </Button>
-                  )}
+      <div className="relative">
+        <ScrollArea className="h-[50vh]" viewportRef={viewportRef} onViewportScroll={checkAtBottom}>
+          {recentTurns.length === 0 ? (
+            <p className="p-4 font-serif text-sm text-muted-foreground italic sm:p-5">
+              No story yet — describe your first action below to begin.
+            </p>
+          ) : (
+            <div className="flex flex-col gap-6 p-4 sm:p-5">
+              {recentTurns.map((t) => (
+                <div key={t.turn} className="flex flex-col gap-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                      Turn {t.turn} — you: {t.playerAction}
+                    </p>
+                    {ttsAvailable && (
+                      <Button
+                        size="icon-xs"
+                        variant="ghost"
+                        onClick={() => toggleTurnPlayback(t.turn, t.narrative)}
+                        title={playingTurn === t.turn ? 'Stop playback' : 'Play this turn aloud'}
+                        aria-label={playingTurn === t.turn ? 'Stop playback' : 'Play this turn aloud'}
+                      >
+                        {playingTurn === t.turn ? <Square className="size-3.5" /> : <Volume2 className="size-3.5" />}
+                      </Button>
+                    )}
+                  </div>
+                  <p className="font-serif text-base leading-relaxed whitespace-pre-wrap">{t.narrative}</p>
                 </div>
-                <p className="font-serif text-base leading-relaxed whitespace-pre-wrap">{t.narrative}</p>
-              </div>
-            ))}
-            <div ref={bottomRef} />
+              ))}
+              <div ref={bottomRef} />
+            </div>
+          )}
+        </ScrollArea>
+
+        {/* Options and the free-text input only make sense once the player has read up to the
+            latest turn — this affordance is what surfaces in their place while scrolled up
+            through earlier history, so it's never unclear how to get back to acting. */}
+        {!isAtBottom && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              className="pointer-events-auto animate-in fade-in shadow-md"
+              onClick={scrollToBottom}
+            >
+              <ChevronDown className="size-4" />
+              Scroll to continue
+            </Button>
           </div>
         )}
-      </ScrollArea>
+      </div>
 
       {voiceLoadMessage && <p className="text-xs text-muted-foreground">{voiceLoadMessage}</p>}
 
-      {options.length > 0 && (
-        <div className="flex flex-col gap-2.5">
-          {options.map((opt, i) => {
-            const Icon = OPTION_ICONS[i % OPTION_ICONS.length]
-            return (
+      {isAtBottom && (
+        <div className="flex animate-in fade-in flex-col gap-4 duration-200">
+          {options.length > 0 && (
+            <div className="flex flex-col gap-2.5">
+              {options.map((opt, i) => {
+                const Icon = OPTION_ICONS[i % OPTION_ICONS.length]
+                return (
+                  <button
+                    key={opt}
+                    type="button"
+                    onClick={() => startTurn(opt)}
+                    disabled={generating}
+                    className="group flex items-center gap-3 rounded-2xl border border-border/60 bg-card px-3.5 py-3 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md disabled:pointer-events-none disabled:opacity-50"
+                  >
+                    <span
+                      className={cn(
+                        'flex size-10 shrink-0 items-center justify-center rounded-xl',
+                        OPTION_COLORS[i % OPTION_COLORS.length],
+                      )}
+                    >
+                      <Icon className="size-5" />
+                    </span>
+                    <span className="min-w-0 flex-1 font-heading text-base leading-snug text-foreground">{opt}</span>
+                    <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+                  </button>
+                )
+              })}
+            </div>
+          )}
+
+          {isAutoMode && generating && stage === 'closed' && (
+            <div className="flex flex-col gap-1.5">
               <button
-                key={opt}
                 type="button"
-                onClick={() => startTurn(opt)}
-                disabled={generating}
-                className="group flex items-center gap-3 rounded-2xl border border-border/60 bg-card px-3.5 py-3 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md disabled:pointer-events-none disabled:opacity-50"
+                onClick={() => setStage('prompt')}
+                className="self-start text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
               >
-                <span
-                  className={cn(
-                    'flex size-10 shrink-0 items-center justify-center rounded-xl',
-                    OPTION_COLORS[i % OPTION_COLORS.length],
-                  )}
-                >
-                  <Icon className="size-5" />
-                </span>
-                <span className="min-w-0 flex-1 font-heading text-base leading-snug text-foreground">{opt}</span>
-                <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
+                {statusMessage || 'Generating your turn…'}
               </button>
-            )
-          })}
+              {downloadProgress !== null && <Progress value={downloadProgress} className="h-1 w-full" />}
+            </div>
+          )}
+
+          <div className="flex items-end gap-2 rounded-2xl border border-border/60 bg-card px-3 py-2 shadow-sm">
+            <Textarea
+              value={freeText}
+              onChange={(e) => setFreeText(e.target.value)}
+              placeholder={listening ? 'Listening…' : 'Say or do anything…'}
+              rows={1}
+              className="min-h-0 flex-1 resize-none border-0 bg-transparent px-0 py-1.5 shadow-none focus-visible:ring-0"
+            />
+            {sttAvailable && (
+              <Button
+                type="button"
+                variant={listening ? 'default' : 'ghost'}
+                size="icon"
+                className="rounded-full"
+                onClick={toggleListening}
+                title={listening ? 'Stop listening' : 'Speak your action'}
+                aria-label={listening ? 'Stop listening' : 'Speak your action'}
+              >
+                {listening ? <MicOff className="size-4" /> : <Mic className="size-4" />}
+              </Button>
+            )}
+            <Button
+              size="icon"
+              className="rounded-full"
+              onClick={() => startTurn(freeText)}
+              disabled={!freeText.trim() || generating}
+              title="Act"
+              aria-label="Act"
+            >
+              <ArrowUp className="size-4" />
+            </Button>
+          </div>
         </div>
       )}
-
-      {isAutoMode && generating && stage === 'closed' && (
-        <div className="flex flex-col gap-1.5">
-          <button
-            type="button"
-            onClick={() => setStage('prompt')}
-            className="self-start text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-          >
-            {statusMessage || 'Generating your turn…'}
-          </button>
-          {downloadProgress !== null && <Progress value={downloadProgress} className="h-1 w-full" />}
-        </div>
-      )}
-
-      <div className="flex items-end gap-2 rounded-2xl border border-border/60 bg-card px-3 py-2 shadow-sm">
-        <Textarea
-          value={freeText}
-          onChange={(e) => setFreeText(e.target.value)}
-          placeholder={listening ? 'Listening…' : 'Say or do anything…'}
-          rows={1}
-          className="min-h-0 flex-1 resize-none border-0 bg-transparent px-0 py-1.5 shadow-none focus-visible:ring-0"
-        />
-        {sttAvailable && (
-          <Button
-            type="button"
-            variant={listening ? 'default' : 'ghost'}
-            size="icon"
-            className="rounded-full"
-            onClick={toggleListening}
-            title={listening ? 'Stop listening' : 'Speak your action'}
-            aria-label={listening ? 'Stop listening' : 'Speak your action'}
-          >
-            {listening ? <MicOff className="size-4" /> : <Mic className="size-4" />}
-          </Button>
-        )}
-        <Button
-          size="icon"
-          className="rounded-full"
-          onClick={() => startTurn(freeText)}
-          disabled={!freeText.trim() || generating}
-          title="Act"
-          aria-label="Act"
-        >
-          <ArrowUp className="size-4" />
-        </Button>
-      </div>
 
       <Dialog open={stage !== 'closed'} onOpenChange={(open) => !open && requestCloseDialog()}>
         <DialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-xl md:max-w-2xl lg:max-w-4xl">
