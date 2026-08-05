@@ -42,11 +42,6 @@ import { describeLocalModelProgress, generateLocalReply } from '@/lib/ai/localMo
 
 type DialogStage = 'closed' | 'prompt'
 
-/** How close to the bottom of the story log (in px) still counts as "at the bottom" — the
- * options and free-text input only appear there, so a small slack avoids them flickering away
- * from sub-pixel scroll rounding when the log exactly fills the viewport. */
-const AT_BOTTOM_THRESHOLD_PX = 32
-
 /** Options are arbitrary AI-generated strings with no inherent icon/color meaning — these just
  * cycle to give the choice list the same varied, illustrated-card look as a fixed icon per option
  * would, without pretending to understand what each option is about. */
@@ -107,6 +102,12 @@ export function Play() {
    * a "scroll down to continue" affordance in their place) rather than sitting below text the
    * player hasn't reached yet. */
   const [isAtBottom, setIsAtBottom] = useState(true)
+  /** Whether the free-text box currently has focus — kept separate from isAtBottom so that
+   * scrolling the log away from the bottom (e.g. an incidental wheel/trackpad nudge) never yanks
+   * away an input the player is mid-composing in. Without this, the input row would hard-unmount
+   * under a focused textarea, silently dropping keyboard focus with no way to get it back short
+   * of scrolling back down and clicking in again. */
+  const [inputFocused, setInputFocused] = useState(false)
 
   const lastTurn = recentTurns.at(-1)
   const options = lastTurn?.optionsOffered ?? []
@@ -207,48 +208,33 @@ export function Play() {
     speakText(lastTurn.narrative, lastTurn.turn)
   }, [lastTurn, readAloud, ttsAvailable, settings, speakText])
 
-  /** While true, checkAtBottom's own onScroll-driven updates are ignored — set for a short window
-   * around a programmatic scrollIntoView(). That scroll is smooth (animated over several frames),
-   * and each intermediate frame fires its own 'scroll' event with a scrollTop nowhere near the
-   * destination yet; without suppressing those, isAtBottom would flicker false mid-animation and
-   * hide the options/input right after the player acts, exactly when they need to see the result. */
-  const suppressScrollChecksRef = useRef(false)
-  const suppressTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  /** Recomputes isAtBottom from the story log viewport's actual scroll position. Passed both to
-   * the ScrollArea's onScroll and called directly after programmatic scrolls settle. */
-  const checkAtBottom = useCallback(() => {
-    if (suppressScrollChecksRef.current) return
-    const el = viewportRef.current
-    if (!el) return
-    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-    setIsAtBottom(distanceFromBottom < AT_BOTTOM_THRESHOLD_PX)
-  }, [])
-
-  const scrollToBottom = useCallback(() => {
-    // Optimistic: we're deliberately moving to the bottom, so treat it as already there rather
-    // than waiting for the animation to finish — see suppressScrollChecksRef above.
-    setIsAtBottom(true)
-    suppressScrollChecksRef.current = true
-    if (suppressTimeoutRef.current) clearTimeout(suppressTimeoutRef.current)
-    suppressTimeoutRef.current = setTimeout(() => {
-      suppressScrollChecksRef.current = false
-      checkAtBottom()
-    }, 700)
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [checkAtBottom])
-
+  // Tracks whether the bottom-of-log sentinel is actually visible within the ScrollArea's
+  // viewport, rather than computing it by hand from scrollTop/scrollHeight on every 'scroll'
+  // event. An IntersectionObserver reports the *real* overlap at each moment, so — unlike a
+  // manual scroll-position check — it can't be fooled by reading stale geometry mid-animation
+  // during the smooth scrollIntoView() below; no suppression window needed. rootMargin gives the
+  // same "close enough" slack a pixel-distance check would, without hardcoding scroll math.
   useEffect(() => {
-    return () => {
-      if (suppressTimeoutRef.current) clearTimeout(suppressTimeoutRef.current)
-    }
-  }, [])
+    const root = viewportRef.current
+    const target = bottomRef.current
+    if (!root || !target) return
+    const observer = new IntersectionObserver(([entry]) => setIsAtBottom(entry.isIntersecting), {
+      root,
+      rootMargin: '0px 0px 32px 0px',
+    })
+    observer.observe(target)
+    return () => observer.disconnect()
+  }, [recentTurns.length])
+
+  function scrollToBottom() {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  }
 
   // Scrolls to the newest turn as soon as one is added — a chat-style "jump to the latest
   // message" so a freshly-generated/applied turn is never left scrolled out of view.
   useEffect(() => {
     scrollToBottom()
-  }, [recentTurns.length, scrollToBottom])
+  }, [recentTurns.length])
 
   useEffect(() => {
     return () => {
@@ -414,7 +400,7 @@ export function Play() {
           software-rasterization glyph artifact in some renderers. A wrapper div inside the
           clipped viewport keeps glyphs safely away from the clip edge. */}
       <div className="relative">
-        <ScrollArea className="h-[50vh]" viewportRef={viewportRef} onViewportScroll={checkAtBottom}>
+        <ScrollArea className="h-[50vh]" viewportRef={viewportRef}>
           {recentTurns.length === 0 ? (
             <p className="p-4 font-serif text-sm text-muted-foreground italic sm:p-5">
               No story yet — describe your first action below to begin.
@@ -468,7 +454,28 @@ export function Play() {
 
       {voiceLoadMessage && <p className="text-xs text-muted-foreground">{voiceLoadMessage}</p>}
 
-      {isAtBottom && (
+      {/* Generation status/progress is informational, not interactive — unlike the options and
+          input below, it stays visible regardless of scroll position (same treatment as
+          voiceLoadMessage above) so scrolling up to reread history never hides the only feedback
+          that a turn — possibly a multi-minute local-model download — is still in flight. */}
+      {isAutoMode && generating && stage === 'closed' && (
+        <div className="flex flex-col gap-1.5">
+          <button
+            type="button"
+            onClick={() => setStage('prompt')}
+            className="self-start text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+          >
+            {statusMessage || 'Generating your turn…'}
+          </button>
+          {downloadProgress !== null && <Progress value={downloadProgress} className="h-1 w-full" />}
+        </div>
+      )}
+
+      {/* Also shown while the input has focus or is actively recording, even if the log has since
+          scrolled away from the bottom (e.g. an incidental wheel nudge mid-typing) — hard-hiding
+          on scroll position alone would otherwise unmount a focused textarea or an in-progress
+          voice recording out from under the player with no way to get back to it. */}
+      {(isAtBottom || inputFocused || listening) && (
         <div className="flex animate-in fade-in flex-col gap-4 duration-200">
           {options.length > 0 && (
             <div className="flex flex-col gap-2.5">
@@ -498,23 +505,12 @@ export function Play() {
             </div>
           )}
 
-          {isAutoMode && generating && stage === 'closed' && (
-            <div className="flex flex-col gap-1.5">
-              <button
-                type="button"
-                onClick={() => setStage('prompt')}
-                className="self-start text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-              >
-                {statusMessage || 'Generating your turn…'}
-              </button>
-              {downloadProgress !== null && <Progress value={downloadProgress} className="h-1 w-full" />}
-            </div>
-          )}
-
           <div className="flex items-end gap-2 rounded-2xl border border-border/60 bg-card px-3 py-2 shadow-sm">
             <Textarea
               value={freeText}
               onChange={(e) => setFreeText(e.target.value)}
+              onFocus={() => setInputFocused(true)}
+              onBlur={() => setInputFocused(false)}
               placeholder={listening ? 'Listening…' : 'Say or do anything…'}
               rows={1}
               className="min-h-0 flex-1 resize-none border-0 bg-transparent px-0 py-1.5 shadow-none focus-visible:ring-0"
