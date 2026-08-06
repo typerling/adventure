@@ -366,6 +366,80 @@ test.describe("Kokoro voice picker", () => {
     expect(generateCalls.every((c) => c.voice === "am_adam")).toBe(true);
   });
 
+  test("removing the downloaded voice model resets the picker so reopening it reloads instead of reusing a stale list", async ({
+    page,
+  }) => {
+    // Flagged in PR #42's review: removeVoiceModel() reset the download-management card's own
+    // state but not the picker's kokoroVoicesLoadState, so after removal the picker still thought
+    // its previously-loaded list was current — reopening it skipped reloading entirely (see
+    // openKokoroVoicePicker's early-return for "loaded"/"loading"), silently pointing at a model
+    // no longer resident.
+    await installGoogleApiMock(page);
+    await installFakeKokoroModule(page);
+
+    await createRandomCampaign(page);
+    await setCampaignVoiceProviders(page, { tts: "huggingface-local" });
+    const campaignId = campaignIdFromUrl(page);
+
+    // Seed Cache Storage the same way the download-management test above does, so the "Voice
+    // model downloaded and ready" card (and its Remove button) shows without a real download.
+    await page.goto("/settings");
+    await page.evaluate(async () => {
+      const cache = await caches.open("transformers-cache");
+      await cache.put(
+        "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/onnx/model_q8.onnx",
+        new Response(new ArrayBuffer(8)),
+      );
+    });
+    await page.reload();
+    await expect(
+      page.getByText(
+        "Voice model downloaded and ready — playback starts instantly.",
+      ),
+    ).toBeVisible();
+
+    await page.goto(`/settings/${campaignId}`);
+
+    // Load the picker's voice list once (via the faked kokoro-js module).
+    await page.getByRole("button", { name: "Browse voices" }).click();
+    await expect(
+      page.getByRole("dialog", { name: "Choose a Kokoro voice" }),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Adam/ })).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as unknown as { __kokoroLoadCalls?: number }).__kokoroLoadCalls ?? 0,
+        ),
+      )
+      .toBe(1);
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+
+    // Remove the model via the separate download-management card further down the page.
+    await page
+      .getByRole("button", { name: "Remove downloaded voice model" })
+      .click();
+    await expect(
+      page.getByText("Voice model removed from this device."),
+    ).toBeVisible();
+
+    // Reopening the picker must reload (a fresh from_pretrained call), not silently reuse the
+    // list from the model instance that just got evicted.
+    await page.getByRole("button", { name: "Browse voices" }).click();
+    await expect(
+      page.getByRole("dialog", { name: "Choose a Kokoro voice" }),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Adam/ })).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as unknown as { __kokoroLoadCalls?: number }).__kokoroLoadCalls ?? 0,
+        ),
+      )
+      .toBe(2);
+  });
+
   test("Browse voices surfaces a clear error when the voice model fails to download", async ({
     page,
   }) => {

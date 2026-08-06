@@ -576,6 +576,13 @@ export function Settings() {
     try {
       await removeKokoroModel();
       setVoiceLoadState("unloaded");
+      // The voice picker's own list is now stale (it belonged to the model instance that just got
+      // evicted) — reset it back to idle so reopening "Browse voices" triggers a real reload
+      // (with visible progress) instead of silently reusing a list from a model no longer resident,
+      // which would otherwise make a Preview click kick off an undisclosed multi-hundred-MB
+      // re-download behind a bare spinner.
+      setKokoroVoicesLoadState("idle");
+      setKokoroVoices([]);
       toast.success("Voice model removed from this device.");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));

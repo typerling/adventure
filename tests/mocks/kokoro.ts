@@ -38,6 +38,7 @@ export async function installFakeKokoroModule(
     const VOICES = ${JSON.stringify(voices)}
     export class KokoroTTS {
       static async from_pretrained(modelId, options) {
+        window.__kokoroLoadCalls = (window.__kokoroLoadCalls || 0) + 1
         if (options && options.progress_callback) {
           options.progress_callback({ status: 'ready' })
         }
@@ -75,4 +76,12 @@ export async function installFakeKokoroModule(
       body: fakeModule,
     }),
   );
+  // Defense in depth: this intercept depends on Vite's current dev-dependency pre-bundling
+  // behavior (serving kokoro-js from a `/node_modules/.vite/deps/kokoro-js.js?v=...` URL) — if a
+  // future Vite upgrade changes that path/condition, the route above would simply stop matching.
+  // Without this, a silently-broken intercept wouldn't fail loudly: kokoroTts.ts would fall
+  // through to the real kokoro-js module and attempt a genuine ~300MB model download over the
+  // network, hanging/timing out rather than giving a clear "mock didn't intercept" failure.
+  // Aborting the real endpoints turns that into an immediate, obvious test failure instead.
+  await page.route(/huggingface\.co|hf\.co/, (route) => route.abort("failed"));
 }
