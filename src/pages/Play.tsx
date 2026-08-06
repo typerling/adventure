@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { toast } from 'sonner'
-import { ArrowUp, ChevronDown, CircleAlert, Loader2, Mic, MicOff, Square, Volume2 } from 'lucide-react'
+import { ArrowUp, CircleAlert, Loader2, Mic, MicOff, Square, Volume2 } from 'lucide-react'
 import { useCampaign } from '@/hooks/useCampaign'
 import { usePlayHeaderStore } from '@/store/playHeaderStore'
 import { DEFAULT_SETTINGS, type TtsProvider as TtsProviderKind } from '@/types/campaign'
@@ -9,7 +9,6 @@ import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
 import { Progress } from '@/components/ui/progress'
-import { ScrollArea } from '@/components/ui/scroll-area'
 import {
   Dialog,
   DialogContent,
@@ -25,14 +24,9 @@ import { describeKokoroProgress } from '@/lib/voice/kokoroTts'
 import { generateClaudeReply } from '@/lib/ai/claudeProvider'
 import { describeLocalModelProgress, generateLocalReply } from '@/lib/ai/localModel'
 import { buildSpokenScript, splitNarrativeIntoBlocks } from '@/lib/ai/turnBlocks'
-import { TurnContent } from '@/components/TurnContent'
+import { TurnPager, type TurnPagerPage } from '@/components/TurnPager'
 
 type DialogStage = 'closed' | 'prompt'
-
-/** How far past the bottom of the story log still counts as "at the bottom", in px. Shared by the
- * IntersectionObserver's rootMargin and the reconcile check that runs when suppression ends — the
- * two must agree or they'd disagree about the same scroll position. */
-const AT_BOTTOM_SLACK_PX = 32
 
 /** Turns a logged turn into its render/speak block sequence (see turnBlocks.ts). Options are only
  * included for the currently-live turn (`interactive`) — historical turns render/speak prose
@@ -97,30 +91,25 @@ export function Play() {
    * one place manus data survives long enough to actually be spoken. */
   const pendingSpokenOptionsRef = useRef<{ turn: number; options: TurnOption[] } | null>(null)
   const prevReadAloudRef = useRef(readAloud)
-  const bottomRef = useRef<HTMLDivElement>(null)
-  const viewportRef = useRef<HTMLDivElement>(null)
-  /** Whether the options/free-text input are shown — relevant only once the player has read up to
-   * the latest turn, so they're hidden while scrolled away (with a "scroll down to continue"
-   * affordance, and the log growing to reclaim the freed space, in their place) rather than
-   * sitting below text the player hasn't reached yet, or leaving that space blank.
-   *
-   * A one-way latch, not a live "currently at the bottom" reading: the IntersectionObserver below
-   * only ever turns it *off* (leaving the bottom); turning it back on only ever happens via an
-   * explicit scrollToBottom() call (the "scroll to continue" tap, or a new turn's auto-scroll).
-   * That's deliberate, not an oversight — the log's own height depends on this flag (see the
-   * ScrollArea wrapper below), so if reaching the bottom automatically flipped it back on, the
-   * resulting shrink could push the bottom back out of view, flipping it off again, regrowing the
-   * log, revealing the bottom again — an infinite resize loop. Requiring an explicit action to
-   * turn it back on breaks that cycle by construction. */
-  const [isAtBottom, setIsAtBottom] = useState(true)
-  /** Whether the free-text box currently has focus — kept separate from isAtBottom so that
-   * scrolling the log away from the bottom (e.g. an incidental wheel/trackpad nudge) never yanks
-   * away an input the player is mid-composing in. Without this, the input row would hard-unmount
-   * under a focused textarea, silently dropping keyboard focus with no way to get it back short
-   * of scrolling back down and clicking in again. */
+  /** The pager's current page index, reported by TurnPager's onCurrentIndexChange — the single
+   * source of truth for "where is the player looking," replacing the old scroll-position-derived
+   * isAtBottom. Starts `null` (meaning "assume the latest page" — see isOnLatestPage below) so
+   * the free-text input doesn't flash hidden for the one render before the pager reports in. */
+  const [currentPageIndex, setCurrentPageIndex] = useState<number | null>(null)
+  /** Whether the free-text box currently has focus — kept separate from page position so that an
+   * incidental page-position change (e.g. a new turn arriving mid-typing) never yanks away an
+   * input the player is mid-composing in. Without this, the input row would hard-unmount under a
+   * focused textarea, silently dropping keyboard focus with no way to get it back short of paging
+   * forward again and clicking in again. */
   const [inputFocused, setInputFocused] = useState(false)
 
   const lastTurn = recentTurns.at(-1)
+  /** True once the player is looking at the live/last turn — gates the free-text input the same
+   * way isAtBottom used to, just against page position instead of scroll position. Defaults to
+   * true (via the `null` check) until TurnPager reports its actual starting index. */
+  const isOnLatestPage =
+    recentTurns.length === 0 || currentPageIndex === null || currentPageIndex === recentTurns.length - 1
+  const handleCurrentPageIndexChange = useCallback((index: number) => setCurrentPageIndex(index), [])
 
   const sttAvailable = Boolean(settings) && isSttProviderAvailable(settings!.sttProvider)
   const ttsAvailable = Boolean(settings) && isTtsProviderAvailable(settings!.ttsProvider)
@@ -219,110 +208,21 @@ export function Play() {
     speakText(script, turn.turn)
   }
 
+  // Gated on isOnLatestPage, not just a new lastTurn existing — TurnPager auto-advances to the
+  // newest page on every new turn (see its own doc comment), but that happens via an async
+  // IntersectionObserver confirming the scroll actually landed, so a turn applied while the
+  // player is mid-history briefly has lastTurn.turn bumped before currentPageIndex catches up.
+  // Without this gate a turn could start narrating before the player has actually arrived at its
+  // page — this effect re-fires once isOnLatestPage flips true, which the auto-advance guarantees
+  // it eventually will.
   useEffect(() => {
-    if (!readAloud || !ttsAvailable || !lastTurn) return
+    if (!readAloud || !ttsAvailable || !lastTurn || !isOnLatestPage) return
     if (spokenTurnRef.current !== null && lastTurn.turn <= spokenTurnRef.current) return
     spokenTurnRef.current = lastTurn.turn
     const override =
       pendingSpokenOptionsRef.current?.turn === lastTurn.turn ? pendingSpokenOptionsRef.current.options : undefined
     speakText(buildSpokenScript(blocksForTurn(lastTurn, true, override)), lastTurn.turn)
-  }, [lastTurn, readAloud, ttsAvailable, settings, speakText])
-
-  /** While true, the observer below ignores what it sees — set for a short window around a
-   * programmatic scrollToBottom(). That scroll is smooth (animated over several frames), and the
-   * sentinel is genuinely out of view for the earlier frames of that animation, before it
-   * actually arrives — an accurate reading, just a premature one relative to our intent (we're
-   * already headed there). Ordinarily a premature "false" would self-correct once the animation
-   * settles at "true" — but isAtBottom is a one-way latch (see its doc comment) specifically to
-   * avoid a resize feedback loop, and a one-way latch can't self-correct: a premature false during
-   * our *own* auto-scroll would latch shut permanently, hiding the input right after a turn
-   * lands, exactly when the player needs it back. */
-  const suppressObserverRef = useRef(false)
-  const suppressTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-
-  /** Ends the suppression window and immediately reconciles against reality. The re-check is the
-   * important half: an IntersectionObserver only fires on *changes*, so anything it was told to
-   * ignore mid-window is not re-reported afterwards. Without this, a player who scrolls up during
-   * the post-turn auto-scroll would leave the options/input showing over text they haven't read,
-   * stuck that way until some later scroll happened to change the intersection state again. */
-  const endSuppression = useCallback(() => {
-    suppressObserverRef.current = false
-    const root = viewportRef.current
-    const target = bottomRef.current
-    if (!root || !target) return
-    // Same test the observer's rootMargin encodes, just evaluated once here rather than per frame.
-    const isSentinelInView =
-      target.getBoundingClientRect().top <= root.getBoundingClientRect().bottom + AT_BOTTOM_SLACK_PX
-    if (!isSentinelInView) setIsAtBottom(false)
-  }, [])
-
-  // Detects leaving the bottom of the log via the sentinel's real visibility within the
-  // ScrollArea's viewport, rather than computing it by hand from scrollTop/scrollHeight on every
-  // 'scroll' event — an IntersectionObserver reports the *actual* overlap at each moment, so it
-  // can't be fooled by reading stale geometry the way a plain scroll-math check can. rootMargin
-  // gives the same "close enough" slack a pixel-distance check would.
-  // One-way only (see isAtBottom's doc comment for why): never sets it back to true.
-  useEffect(() => {
-    const root = viewportRef.current
-    const target = bottomRef.current
-    if (!root || !target) return
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (suppressObserverRef.current) return
-        if (!entry.isIntersecting) setIsAtBottom(false)
-      },
-      { root, rootMargin: `0px 0px ${AT_BOTTOM_SLACK_PX}px 0px` },
-    )
-    observer.observe(target)
-    return () => observer.disconnect()
-    // Deliberately lastTurn?.turn, not recentTurns.length: useCampaign keeps only the most recent
-    // 6 turns (slice(-6)), so length plateaus once a session passes that many — turn *number*
-    // keeps climbing regardless, which is what should re-arm this on every actual new turn.
-  }, [lastTurn?.turn])
-
-  // Ends suppression when the scroll actually finishes rather than after a guessed duration —
-  // 'scrollend' fires once the browser's smooth-scroll animation settles, however far it had to
-  // travel (a long story log can need more than a token delay). The timeout in scrollToBottom
-  // remains a genuine fallback: 'scrollend' never fires when nothing moved at all (already at the
-  // bottom), and measurement showed it can also fail to fire for a user scroll that happens
-  // *during* the programmatic one — in that case the timeout is what ends the window, so the
-  // options can linger over unread text for up to its duration rather than clearing immediately.
-  useEffect(() => {
-    const el = viewportRef.current
-    if (!el) return
-    el.addEventListener('scrollend', endSuppression)
-    return () => el.removeEventListener('scrollend', endSuppression)
-  }, [endSuppression])
-
-  useEffect(() => {
-    return () => {
-      if (suppressTimeoutRef.current) clearTimeout(suppressTimeoutRef.current)
-    }
-  }, [])
-
-  const scrollToBottom = useCallback(() => {
-    setIsAtBottom(true)
-    suppressObserverRef.current = true
-    if (suppressTimeoutRef.current) clearTimeout(suppressTimeoutRef.current)
-    suppressTimeoutRef.current = setTimeout(endSuppression, 1500)
-    // Deferred a frame rather than scrolled straight away, because setIsAtBottom(true) above
-    // *shrinks* the log (the taller scrolled-away height collapses back to h-[50svh]) and React
-    // hasn't committed that yet. A synchronous scrollIntoView would aim at the pre-shrink layout
-    // and stop a few hundred px short of the real bottom — which then made endSuppression measure
-    // "not at the bottom", latch closed again, regrow the log, and leave "Scroll to continue"
-    // showing while the player was already at the bottom. Clicking it just alternated between the
-    // two states forever.
-    requestAnimationFrame(() => {
-      bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-    })
-  }, [endSuppression])
-
-  // Scrolls to the newest turn as soon as one is added — a chat-style "jump to the latest
-  // message" so a freshly-generated/applied turn is never left scrolled out of view. See the
-  // observer effect above for why lastTurn?.turn, not recentTurns.length.
-  useEffect(() => {
-    scrollToBottom()
-  }, [lastTurn?.turn, scrollToBottom])
+  }, [lastTurn, readAloud, ttsAvailable, settings, speakText, isOnLatestPage])
 
   useEffect(() => {
     return () => {
@@ -479,6 +379,34 @@ export function Play() {
     )
   }
 
+  // One TurnPager page per logged turn — the interactive options are still exactly what rendered
+  // per-turn in the old stacked log, just handed to TurnPager as one page's content instead of
+  // one <div> among many in a single scroll. turnLabel is plain text now, not rendered JSX: the
+  // pager's own shared top bar (not each page) shows it, for whichever page is current, alongside
+  // its back/forward/jump-to-page controls. The per-turn play/stop button stays per-page via
+  // `actions` rather than following "current page" — every turn's button needs to exist
+  // regardless of which page is current (see TurnPagerPage's own doc comment for why).
+  const pages: TurnPagerPage[] = recentTurns.map((t) => {
+    const isLastTurn = t.turn === lastTurn?.turn
+    return {
+      turn: t.turn,
+      turnLabel: `Turn ${t.turn} — you: ${t.playerAction}`,
+      actions: ttsAvailable && (
+        <Button
+          size="icon-xs"
+          variant="ghost"
+          onClick={() => toggleTurnPlayback(t)}
+          title={playingTurn === t.turn ? 'Stop playback' : 'Play this turn aloud'}
+          aria-label={playingTurn === t.turn ? 'Stop playback' : 'Play this turn aloud'}
+        >
+          {playingTurn === t.turn ? <Square className="size-3.5" /> : <Volume2 className="size-3.5" />}
+        </Button>
+      ),
+      blocks: blocksForTurn(t, isLastTurn),
+      onSelectOption: isLastTurn ? startTurn : undefined,
+    }
+  })
+
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-4 px-4 py-6 sm:px-6 sm:py-8">
       {campaign.meta.difficulty !== 'Standard' && (
@@ -487,121 +415,20 @@ export function Play() {
         </div>
       )}
 
-      {/* Padding lives on the inner content, not on ScrollArea itself — Radix's Viewport clips
-          at its own edge, and text sitting exactly flush against that clip boundary triggers a
-          software-rasterization glyph artifact in some renderers. A wrapper div inside the
-          clipped viewport keeps glyphs safely away from the clip edge.
-
-          The log is a *fixed* height in both states, reclaiming most of the vertical space
-          something else would otherwise leave blank below it. Deliberately an explicit bound
-          (calc against the viewport), not flex-1/min-h — a flex-grow child of an auto/min-height-
-          only flex container has no fixed budget to distribute, and different browsers resolve
-          that ambiguity by sizing the child to its full *content* height instead of the visible
-          viewport (confirmed empirically: the log's clientHeight grew to match its entire
-          scrollHeight, thousands of pixels tall). That also would have kept the bottom sentinel
-          permanently visible, which — combined with isAtBottom's one-way latch — meant "Scroll to
-          continue" never went away again. An explicit calc() height has no such ambiguity to
-          resolve. Approximate, not exact: the point is reclaiming most of the freed area, not
-          filling to the pixel, and undershooting is deliberately safer than overshooting into an
-          unwanted extra scrollbar.
-
-          Both states use the *same* max(50svh, calc(100svh - Nrem)) shape, just with a different
-          reserve — they used to differ more (a flat 50svh at rest vs. this formula once
-          away/hidden), back when the options below the log were the only thing living in that
-          reserved space. Since #25 moved options *into* the log itself (inline with the
-          narrative, not a separate block underneath), a turn with several options routinely
-          exceeds a flat 50svh, and reusing the smaller fixed height left the log scrolling
-          internally to show its own tail *and* left a large dead gap between the input row and
-          the bottom of the viewport — nothing below the log grew to reclaim the space the
-          separate options block used to occupy. Measured empirically (390×844 viewport): the
-          content above the log plus the input row and its surrounding gap take up ~10rem
-          (scroll-area top offset + gap-4 + the input row's own height + a little bottom breathing
-          room) at rest, versus ~7rem when options/input are hidden away from the bottom (no input
-          row to leave room for then).
-
-          Both heights are in `svh`, not a mix of `vh` and `svh`: on iOS `vh` tracks the *large*
-          viewport (toolbars hidden) while `svh` tracks the small one, so mixing them would measure
-          the two states against different boxes and make the "grown" height not actually the
-          bigger of the two while the toolbars are showing. The max() guards the same thing for
-          short viewports generally — below roughly 350px (at rest) or 210px (away) of height, the
-          calc() term goes *smaller* than 50svh, so without the guard the log would shrink instead
-          of growing on a short/landscape phone (the tests' fixed 844px viewport does not hit
-          this). */}
-      <div className="relative">
-        <ScrollArea
-          className={isAtBottom ? 'h-[max(50svh,calc(100svh-10rem))]' : 'h-[max(50svh,calc(100svh-7rem))]'}
-          viewportRef={viewportRef}
-        >
-          {recentTurns.length === 0 ? (
-            <p className="p-4 font-serif text-sm text-muted-foreground italic sm:p-5">
-              No story yet — describe your first action below to begin.
-            </p>
-          ) : (
-            <div className="flex flex-col gap-6 p-4 sm:p-5">
-              {recentTurns.map((t) => {
-                const isLastTurn = t.turn === lastTurn?.turn
-                return (
-                  <div key={t.turn} className="flex flex-col gap-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                        Turn {t.turn} — you: {t.playerAction}
-                      </p>
-                      {ttsAvailable && (
-                        <Button
-                          size="icon-xs"
-                          variant="ghost"
-                          onClick={() => toggleTurnPlayback(t)}
-                          title={playingTurn === t.turn ? 'Stop playback' : 'Play this turn aloud'}
-                          aria-label={playingTurn === t.turn ? 'Stop playback' : 'Play this turn aloud'}
-                        >
-                          {playingTurn === t.turn ? <Square className="size-3.5" /> : <Volume2 className="size-3.5" />}
-                        </Button>
-                      )}
-                    </div>
-                    {/* Options render inline with the narrative — at the point the AI marked with
-                        {{options}}, or appended at the end as a fallback — only for the live
-                        turn; historical turns render prose only (see TurnContent.tsx). Scrolling
-                        away from the bottom of the log naturally scrolls the live turn's options
-                        out of view too, so no extra gating is needed here beyond what already
-                        hides the free-text input below. */}
-                    <TurnContent
-                      blocks={blocksForTurn(t, isLastTurn)}
-                      onSelectOption={isLastTurn ? startTurn : undefined}
-                      disabled={generating}
-                    />
-                  </div>
-                )
-              })}
-              <div ref={bottomRef} />
-            </div>
-          )}
-        </ScrollArea>
-
-        {/* The free-text input only makes sense once the player has read up to the latest turn —
-            this affordance is what surfaces in its place while scrolled up through earlier
-            history, so it's never unclear how to get back to acting. */}
-        {!isAtBottom && (
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-2">
-            <Button
-              type="button"
-              size="sm"
-              variant="secondary"
-              className="pointer-events-auto animate-in fade-in shadow-md"
-              onClick={scrollToBottom}
-            >
-              <ChevronDown className="size-4" />
-              Scroll to continue
-            </Button>
-          </div>
-        )}
-      </div>
+      {recentTurns.length === 0 ? (
+        <p className="p-4 font-serif text-sm text-muted-foreground italic sm:p-5">
+          No story yet — describe your first action below to begin.
+        </p>
+      ) : (
+        <TurnPager pages={pages} disabled={generating} onCurrentIndexChange={handleCurrentPageIndexChange} />
+      )}
 
       {voiceLoadMessage && <p className="text-xs text-muted-foreground">{voiceLoadMessage}</p>}
 
       {/* Generation status/progress is informational, not interactive — unlike the options and
-          input below, it stays visible regardless of scroll position (same treatment as
-          voiceLoadMessage above) so scrolling up to reread history never hides the only feedback
-          that a turn — possibly a multi-minute local-model download — is still in flight. */}
+          input below, it stays visible regardless of which page the player is on (same treatment
+          as voiceLoadMessage above) so paging back to reread history never hides the only
+          feedback that a turn — possibly a multi-minute local-model download — is still in flight. */}
       {isAutoMode && generating && stage === 'closed' && (
         <div className="flex flex-col gap-1.5">
           <button
@@ -615,11 +442,11 @@ export function Play() {
         </div>
       )}
 
-      {/* Also shown while the input has focus or is actively recording, even if the log has since
-          scrolled away from the bottom (e.g. an incidental wheel nudge mid-typing) — hard-hiding
-          on scroll position alone would otherwise unmount a focused textarea or an in-progress
-          voice recording out from under the player with no way to get back to it. */}
-      {(isAtBottom || inputFocused || listening) && (
+      {/* Also shown while the input has focus or is actively recording, even if a new turn has
+          since paged the player away from the latest page (e.g. it arrived mid-typing) —
+          hard-hiding on page position alone would otherwise unmount a focused textarea or an
+          in-progress voice recording out from under the player with no way to get back to it. */}
+      {(isOnLatestPage || inputFocused || listening) && (
         <div className="flex animate-in fade-in flex-col gap-4 duration-200">
           <div className="flex items-end gap-2 rounded-2xl border border-border/60 bg-card px-3 py-2 shadow-sm">
             <Textarea
