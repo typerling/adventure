@@ -138,7 +138,9 @@ test.describe('ElevenLabs voice provider', () => {
     await installGoogleApiMock(page)
     const elevenLabs = await installElevenLabsApiMock(page, { transcript: 'Search the altar for clues' })
     await installFakeMediaRecorder(page, { supported: true })
-    await installFakeAudioPlayback(page)
+    // Not the auto-ending fake — the #39 Media Session assertion below needs a stable window where
+    // playback is still genuinely "playing" rather than racing its own near-instant completion.
+    await installControllableAudioPlayback(page)
 
     await createRandomCampaign(page)
     await setCampaignVoiceProviders(page, { stt: 'elevenlabs', tts: 'elevenlabs' })
@@ -168,6 +170,12 @@ test.describe('ElevenLabs voice provider', () => {
       'Dust rises as your fingers find a hidden latch. Your options: Look around. Move on.',
     )
     expect(elevenLabs.ttsRequests[0].voiceId).toBeTruthy()
+
+    // #39: the OS-level Media Session wiring is provider-agnostic (driven from Play.tsx's single
+    // speakText, not per-provider) — confirm it actually engages for ElevenLabs too, not just the
+    // browser provider covered in depth by media-session.spec.ts.
+    expect(await page.evaluate(() => navigator.mediaSession.metadata?.title)).toBe('Turn 1')
+    expect(await page.evaluate(() => navigator.mediaSession.playbackState)).toBe('playing')
   })
 
   test('a turn\'s play button toggles to stop, and starting another turn stops the first', async ({ page }) => {

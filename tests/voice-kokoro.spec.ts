@@ -366,6 +366,34 @@ test.describe("Kokoro voice picker", () => {
     expect(generateCalls.every((c) => c.voice === "am_adam")).toBe(true);
   });
 
+  test("starting playback drives the OS Media Session (#39)", async ({
+    page,
+  }) => {
+    // #39: the Media Session wiring is provider-agnostic (driven from Play.tsx's single
+    // speakText, not per-provider) — confirm it actually engages for Kokoro too, not just the
+    // browser provider covered in depth by media-session.spec.ts. Not the auto-ending audio
+    // fake — this needs a stable window where playback is still genuinely "playing".
+    await installGoogleApiMock(page);
+    await installFakeKokoroModule(page);
+    await installControllableAudioPlayback(page);
+
+    await createRandomCampaign(page);
+    await setCampaignVoiceProviders(page, { tts: "huggingface-local" });
+
+    await submitFreeTextTurn(page, "listen", "A low hum fills the chamber.");
+    await expect(page.getByText("A low hum fills the chamber.")).toBeVisible();
+
+    await page.getByRole("button", { name: "Play this turn aloud" }).click();
+    await expect(page.getByRole("button", { name: "Stop playback" })).toBeVisible();
+
+    expect(
+      await page.evaluate(() => navigator.mediaSession.metadata?.title),
+    ).toBe("Turn 1");
+    expect(
+      await page.evaluate(() => navigator.mediaSession.playbackState),
+    ).toBe("playing");
+  });
+
   test("removing the downloaded voice model resets the picker so reopening it reloads instead of reusing a stale list", async ({
     page,
   }) => {
