@@ -222,10 +222,13 @@ export function TurnPager({ pages, disabled, onCurrentIndexChange, className }: 
               {currentIndex + 1}/{pages.length}
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end">
+          {/* Overrides the shadcn default of matching the trigger's own width (fine for a normal
+              menu, but this trigger is just "3/3" — the menu needs to fit each turn's label
+              instead), sized to content up to the viewport rather than truncated. */}
+          <DropdownMenuContent align="end" className="w-auto max-w-[min(28rem,90vw)] min-w-48">
             {pages.map((page, i) => (
-              <DropdownMenuItem key={page.turn} className="max-w-[min(20rem,80vw)]" onClick={() => goToIndex(i)}>
-                <span className="truncate">{page.turnLabel}</span>
+              <DropdownMenuItem key={page.turn} onClick={() => goToIndex(i)}>
+                <span className="whitespace-normal">{page.turnLabel}</span>
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>
