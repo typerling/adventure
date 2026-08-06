@@ -3,13 +3,9 @@ import { expect, fn, userEvent, waitFor, within } from 'storybook/test'
 import { TurnPager, type TurnPagerPage } from './TurnPager'
 import { splitNarrativeIntoBlocks } from '@/lib/ai/turnBlocks'
 
-/** A small header line matching Play.tsx's real per-page header — "Turn N — you: <action>". */
-function pageHeader(turn: number, action: string) {
-  return (
-    <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-      Turn {turn} — you: {action}
-    </p>
-  )
+/** Matches Play.tsx's real turnLabel text — "Turn N — you: <action>". */
+function turnLabel(turn: number, action: string): string {
+  return `Turn ${turn} — you: ${action}`
 }
 
 const HISTORY_NARRATIVES: Record<number, { action: string; narrative: string }> = {
@@ -32,19 +28,19 @@ function buildPages(onSelectOption: (label: string) => void): TurnPagerPage[] {
   return [
     {
       turn: 1,
-      header: pageHeader(1, HISTORY_NARRATIVES[1].action),
+      turnLabel: turnLabel(1, HISTORY_NARRATIVES[1].action),
       blocks: splitNarrativeIntoBlocks(HISTORY_NARRATIVES[1].narrative, []),
       // No onSelectOption — historical turns are read-only, matching TurnContent's existing
       // behavior and how Play.tsx only ever wires it up for the live/last turn.
     },
     {
       turn: 2,
-      header: pageHeader(2, HISTORY_NARRATIVES[2].action),
+      turnLabel: turnLabel(2, HISTORY_NARRATIVES[2].action),
       blocks: splitNarrativeIntoBlocks(HISTORY_NARRATIVES[2].narrative, []),
     },
     {
       turn: 3,
-      header: pageHeader(3, 'search the altar for clues'),
+      turnLabel: turnLabel(3, 'search the altar for clues'),
       blocks: splitNarrativeIntoBlocks(LIVE_NARRATIVE, [
         { label: 'Search the altar for more clues' },
         { label: 'Ask about the key' },
@@ -72,9 +68,10 @@ type Story = StoryObj<typeof meta>
 
 const livePageOnSelectOption = fn()
 
-/** TurnPager starts on the newest (live) page — turn 3 of 3 — with its options interactive, the
- * "input-relevant state" a Next-page-doesn't-exist boundary and an active onSelectOption both
- * demonstrate. Mirrors what a player lands on immediately after acting. */
+/** TurnPager starts on the newest (live) page — turn 3 of 3 — with its options interactive. Next
+ * is hidden outright here (not just disabled) since there's nothing yet to page forward to; Back
+ * is enabled since there's history behind it. Mirrors what a player lands on immediately after
+ * acting. */
 export const LivePageMobile: Story = {
   args: {
     pages: buildPages(livePageOnSelectOption),
@@ -83,9 +80,8 @@ export const LivePageMobile: Story = {
     const canvas = within(canvasElement)
     await waitFor(() => expect(canvas.getByText(/sunken chapel/)).toBeVisible())
 
-    const next = canvas.getByRole('button', { name: 'Next turn' })
     const prev = canvas.getByRole('button', { name: 'Previous turn' })
-    await waitFor(() => expect(next).toBeDisabled())
+    await waitFor(() => expect(canvas.queryByRole('button', { name: 'Next turn' })).not.toBeInTheDocument())
     expect(prev).toBeEnabled()
 
     const option = canvas.getByRole('button', { name: 'Search the altar for more clues' })
@@ -110,12 +106,13 @@ export const FirstPageMobile: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     const prev = canvas.getByRole('button', { name: 'Previous turn' })
-    const next = canvas.getByRole('button', { name: 'Next turn' })
-    // Starts on the live (last) page — page back twice to reach the first.
+    // Starts on the live (last) page, where Next is hidden outright — page back twice to reach
+    // the first, only querying for Next once it legitimately exists again.
     await userEvent.click(prev)
     await userEvent.click(prev)
 
     await waitFor(() => expect(prev).toBeDisabled())
+    const next = canvas.getByRole('button', { name: 'Next turn' })
     await waitFor(() => expect(next).toBeEnabled())
 
     // Every page stays mounted in the DOM at once (that's what makes the horizontal scroll-snap
@@ -142,8 +139,8 @@ export const MiddlePageMobile: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     const prev = canvas.getByRole('button', { name: 'Previous turn' })
-    const next = canvas.getByRole('button', { name: 'Next turn' })
-    // Starts on the live (last) page — page back once to reach the middle one.
+    // Starts on the live (last) page, where Next is hidden outright — page back once to reach
+    // the middle one.
     await userEvent.click(prev)
 
     // Waiting on the group's own reported position, not just text visibility — every page is
@@ -152,13 +149,49 @@ export const MiddlePageMobile: Story = {
     // confirm the navigation landed.
     await waitFor(() => expect(canvas.getByRole('group')).toHaveAttribute('data-current-index', '1'))
     expect(prev).toBeEnabled()
+    const next = canvas.getByRole('button', { name: 'Next turn' })
     expect(next).toBeEnabled()
     const middlePage = within(canvas.getByTestId('turn-page-2'))
-    await expect(middlePage.getByText(/rust-colored coat/)).toBeVisible()
+    await expect(middlePage.getByText(/Not many strangers make it this far south/)).toBeVisible()
   },
 }
 
 export const MiddlePageDesktop: Story = {
   ...MiddlePageMobile,
+  globals: { viewport: { value: 'desktop' } },
+}
+
+/** Clicking the page-number control opens a dropdown listing every turn; picking one jumps
+ * straight there without paging through the ones in between. */
+export const JumpToPageMobile: Story = {
+  args: {
+    pages: buildPages(fn()),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    // Starts on the live page (turn 3) — its jump-to-page trigger reads "3/3".
+    const trigger = canvas.getByRole('button', { name: /Jump to a turn — currently turn 3 of 3/ })
+    await waitFor(() => expect(trigger).toBeVisible())
+    await userEvent.click(trigger)
+
+    // The dropdown content is portaled to document.body (Radix convention, same as Header's
+    // hamburger menu) rather than staying inside canvasElement.
+    const body = within(canvasElement.ownerDocument.body)
+    const menuItem = await waitFor(() => {
+      const el = body.getByText(/push open the tavern door/)
+      expect(el).toBeVisible()
+      return el
+    })
+    await userEvent.click(menuItem)
+
+    // Jumped straight to turn 1 — not by stepping through turn 2 first.
+    await waitFor(() => expect(canvas.getByRole('group')).toHaveAttribute('data-current-index', '0'))
+    const firstPage = within(canvas.getByTestId('turn-page-1'))
+    await expect(firstPage.getByText(/tavern door creaks shut/)).toBeVisible()
+  },
+}
+
+export const JumpToPageDesktop: Story = {
+  ...JumpToPageMobile,
   globals: { viewport: { value: 'desktop' } },
 }

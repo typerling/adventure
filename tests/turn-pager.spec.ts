@@ -87,9 +87,10 @@ test.describe('turn pager', () => {
     const next = page.getByRole('button', { name: 'Next turn' })
     const input = page.getByPlaceholder('Say or do anything…')
 
-    // Starts on the live (3rd) page.
+    // Starts on the live (3rd) page. Next is hidden outright here (not just disabled) — nothing
+    // exists yet to page forward to.
     await waitForCurrentPage(page, 2)
-    await expect(next).toBeDisabled()
+    await expect(next).toHaveCount(0)
 
     await prev.click()
     await waitForCurrentPage(page, 1)
@@ -107,11 +108,12 @@ test.describe('turn pager', () => {
     await expect(page.getByText('The path forks north of the camp.')).toBeVisible()
     await expect(input).toBeHidden()
 
-    // Paging forward returns to the live page — input and options come back.
+    // Paging forward returns to the live page — input and options come back, and Next disappears
+    // again now that there's nothing beyond the live page to page forward to.
     await next.click()
     await next.click()
     await waitForCurrentPage(page, 2)
-    await expect(next).toBeDisabled()
+    await expect(next).toHaveCount(0)
     await expect(page.getByText('The stream leads to a quiet clearing.')).toBeVisible()
     await expect(input).toBeVisible()
     await expect(turnPage(page, 3).getByRole('button', { name: 'Look around' })).toBeVisible()
@@ -204,5 +206,31 @@ test.describe('turn pager', () => {
     await waitForCurrentPage(page, 1)
     await expect(page.getByText('Shelves of forgotten ledgers line the walls.')).toBeVisible()
     await expect(page.getByPlaceholder('Say or do anything…')).toBeVisible()
+  })
+
+  test('the page-number control opens a dropdown that jumps straight to a chosen turn', async ({ page }) => {
+    await hideToasts(page) // three turns apply back-to-back below with no pause between them
+    await installGoogleApiMock(page)
+    await createRandomCampaign(page)
+
+    await submitFreeTextTurn(page, 'go north', 'The path forks north of the camp.')
+    await expect(page.getByRole('dialog')).toBeHidden()
+    await submitFreeTextTurn(page, 'go east', 'A stream cuts across the eastern trail.')
+    await expect(page.getByRole('dialog')).toBeHidden()
+    await submitFreeTextTurn(page, 'follow the stream', 'The stream leads to a quiet clearing.')
+    await expect(page.getByRole('dialog')).toBeHidden()
+    await waitForCurrentPage(page, 2)
+
+    await page.getByRole('button', { name: /Jump to a turn — currently turn 3 of 3/ }).click()
+    const menu = page.getByRole('menu')
+    await expect(menu).toBeVisible()
+    // The dropdown lists turnLabel ("Turn N — you: <action>"), not narrative text.
+    await menu.getByText('Turn 1 — you: go north').click()
+
+    // Landed directly on turn 1 — not by stepping through turn 2 on the way, and the input/
+    // options correctly reflect it's no longer the live page.
+    await waitForCurrentPage(page, 0)
+    await expect(page.getByText('The path forks north of the camp.')).toBeVisible()
+    await expect(page.getByPlaceholder('Say or do anything…')).toBeHidden()
   })
 })

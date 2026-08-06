@@ -1,16 +1,29 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { TurnContent } from '@/components/TurnContent'
 import type { TurnBlock } from '@/types/turn'
 
 export interface TurnPagerPage {
   /** The turn number — doubles as this page's stable React key. */
   turn: number
-  /** Rendered above this page's TurnContent — Play.tsx's "Turn N — you: ..." line plus its
-   * per-turn play/stop button. Kept as a slot rather than baked in here, since what a turn's
-   * header looks like is Play.tsx's concern, not this component's. */
-  header?: ReactNode
+  /** Play.tsx's "Turn N — you: ..." line. Plain text, not a rendered slot — the shared top bar
+   * (not each page) owns showing this, for whichever page is current, alongside the pager's own
+   * back/forward/jump-to controls. Also doubles as the label for that turn's entry in the
+   * jump-to-page dropdown. */
+  turnLabel: string
+  /** Rendered per-page (not in the shared top bar) — Play.tsx's per-turn play/stop TTS button.
+   * Deliberately stays with its own page rather than following "current page" the way turnLabel
+   * does: every page's button needs to exist at once regardless of which is current, since a
+   * player can start one historical turn's playback and then start another's (see
+   * voice-elevenlabs.spec.ts's "starting another turn stops the first" coverage). */
+  actions?: ReactNode
   blocks: TurnBlock[]
   /** Present only for the live/last turn — historical pages render read-only, matching
    * TurnContent's existing behavior (see TurnContent.tsx's BLOCK_RENDERERS). */
@@ -173,9 +186,64 @@ export function TurnPager({ pages, disabled, onCurrentIndexChange, className }: 
 
   const isFirstPage = currentIndex <= 0
   const isLastPage = currentIndex >= pages.length - 1
+  const current = pages[currentIndex]
 
   return (
     <div className={className}>
+      {/* One shared bar, not one per page — reflects whichever page is current. Back is disabled
+          (not hidden) at the first page, since there's still a reason to see "you can't go back
+          further"; forward is hidden outright at the last/live page, since there's nothing there
+          yet to page forward *to* (a disabled button implying otherwise would be misleading, not
+          just inactive). Ghost-styled, not outlined — nav chrome, not a primary action. */}
+      <div className="mb-2 flex items-center gap-1">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          onClick={goPrev}
+          disabled={isFirstPage}
+          title="Previous turn"
+          aria-label="Previous turn"
+        >
+          <ChevronLeft className="size-4" />
+        </Button>
+        <p className="min-w-0 flex-1 truncate text-xs font-medium tracking-wide text-muted-foreground uppercase">
+          {current.turnLabel}
+        </p>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="shrink-0 tabular-nums"
+              aria-label={`Jump to a turn — currently turn ${currentIndex + 1} of ${pages.length}`}
+            >
+              {currentIndex + 1}/{pages.length}
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            {pages.map((page, i) => (
+              <DropdownMenuItem key={page.turn} className="max-w-[min(20rem,80vw)]" onClick={() => goToIndex(i)}>
+                <span className="truncate">{page.turnLabel}</span>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
+        {!isLastPage && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            onClick={goNext}
+            title="Next turn"
+            aria-label="Next turn"
+          >
+            <ChevronRight className="size-4" />
+          </Button>
+        )}
+      </div>
+
       <div
         ref={containerRef}
         data-testid="turn-pager"
@@ -194,39 +262,11 @@ export function TurnPager({ pages, disabled, onCurrentIndexChange, className }: 
             className="max-h-[70svh] w-full shrink-0 snap-start overflow-y-auto"
           >
             <div className="flex flex-col gap-2 p-4 sm:p-5">
-              {page.header}
+              {page.actions && <div className="flex justify-end">{page.actions}</div>}
               <TurnContent blocks={page.blocks} onSelectOption={page.onSelectOption} disabled={disabled} />
             </div>
           </div>
         ))}
-      </div>
-
-      <div className="mt-2 flex items-center justify-between gap-2">
-        <Button
-          type="button"
-          variant="outline"
-          size="icon-sm"
-          onClick={goPrev}
-          disabled={isFirstPage}
-          title="Previous turn"
-          aria-label="Previous turn"
-        >
-          <ChevronLeft className="size-4" />
-        </Button>
-        <p className="text-xs text-muted-foreground">
-          Turn {currentIndex + 1} of {pages.length}
-        </p>
-        <Button
-          type="button"
-          variant="outline"
-          size="icon-sm"
-          onClick={goNext}
-          disabled={isLastPage}
-          title="Next turn"
-          aria-label="Next turn"
-        >
-          <ChevronRight className="size-4" />
-        </Button>
       </div>
     </div>
   )

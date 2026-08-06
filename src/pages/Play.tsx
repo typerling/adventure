@@ -379,30 +379,28 @@ export function Play() {
     )
   }
 
-  // One TurnPager page per logged turn — the header line (with its per-turn play/stop button)
-  // and interactive options are still exactly what rendered per-turn in the old stacked log, just
-  // handed to TurnPager as one page's content instead of one <div> among many in a single scroll.
+  // One TurnPager page per logged turn — the interactive options are still exactly what rendered
+  // per-turn in the old stacked log, just handed to TurnPager as one page's content instead of
+  // one <div> among many in a single scroll. turnLabel is plain text now, not rendered JSX: the
+  // pager's own shared top bar (not each page) shows it, for whichever page is current, alongside
+  // its back/forward/jump-to-page controls. The per-turn play/stop button stays per-page via
+  // `actions` rather than following "current page" — every turn's button needs to exist
+  // regardless of which page is current (see TurnPagerPage's own doc comment for why).
   const pages: TurnPagerPage[] = recentTurns.map((t) => {
     const isLastTurn = t.turn === lastTurn?.turn
     return {
       turn: t.turn,
-      header: (
-        <div className="flex items-center justify-between gap-2">
-          <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-            Turn {t.turn} — you: {t.playerAction}
-          </p>
-          {ttsAvailable && (
-            <Button
-              size="icon-xs"
-              variant="ghost"
-              onClick={() => toggleTurnPlayback(t)}
-              title={playingTurn === t.turn ? 'Stop playback' : 'Play this turn aloud'}
-              aria-label={playingTurn === t.turn ? 'Stop playback' : 'Play this turn aloud'}
-            >
-              {playingTurn === t.turn ? <Square className="size-3.5" /> : <Volume2 className="size-3.5" />}
-            </Button>
-          )}
-        </div>
+      turnLabel: `Turn ${t.turn} — you: ${t.playerAction}`,
+      actions: ttsAvailable && (
+        <Button
+          size="icon-xs"
+          variant="ghost"
+          onClick={() => toggleTurnPlayback(t)}
+          title={playingTurn === t.turn ? 'Stop playback' : 'Play this turn aloud'}
+          aria-label={playingTurn === t.turn ? 'Stop playback' : 'Play this turn aloud'}
+        >
+          {playingTurn === t.turn ? <Square className="size-3.5" /> : <Volume2 className="size-3.5" />}
+        </Button>
       ),
       blocks: blocksForTurn(t, isLastTurn),
       onSelectOption: isLastTurn ? startTurn : undefined,
