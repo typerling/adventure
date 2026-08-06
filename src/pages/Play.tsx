@@ -499,12 +499,18 @@ export function Play() {
           viewport (toolbars hidden) while `svh` tracks the small one, so mixing them would measure
           the two states against different boxes and make the "grown" height not actually the
           bigger of the two while the toolbars are showing. The max() guards the same thing for
-          short viewports generally — below roughly 350px of height, `100svh - 11rem` is *smaller*
+          short viewports generally — below roughly 350px of height, `100svh - 7rem` is *smaller*
           than `50svh`, so without it the log would shrink on scrolling away instead of growing
-          (landscape phones hit this; the tests' fixed 844px viewport does not). */}
+          (landscape phones hit this; the tests' fixed 844px viewport does not).
+
+          The `7rem` reserve is just the header plus this page's own top/bottom padding — it used
+          to be `11rem` to additionally cover the fixed `BottomNav` and the bottom-padding reserve
+          `App.tsx` set aside for it (see issue #21); now that both are gone, nothing sits below
+          the log any more, so the smaller reserve is the one that actually reaches close to the
+          bottom of the viewport instead of leaving the old nav's-worth of dead space behind. */}
       <div className="relative">
         <ScrollArea
-          className={isAtBottom ? 'h-[50svh]' : 'h-[max(50svh,calc(100svh-11rem))]'}
+          className={isAtBottom ? 'h-[50svh]' : 'h-[max(50svh,calc(100svh-7rem))]'}
           viewportRef={viewportRef}
         >
           {recentTurns.length === 0 ? (

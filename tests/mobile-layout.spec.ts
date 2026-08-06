@@ -4,13 +4,17 @@ import { createRandomCampaign } from './helpers'
 
 /**
  * Page-level responsive coverage for the three campaign screens. The component-level counterpart
- * lives in Storybook (`npm run test:stories` — see BottomNav/Dialog stories); this file covers
- * what only shows up once a whole page is assembled inside the app shell: that the fixed
- * BottomNav and the header's icon links stay complementary, that neither overlaps page content,
- * and that nothing overflows a phone-width viewport.
+ * lives in Storybook (`npm run test:stories` — see Header.stories.tsx); this file covers what
+ * only shows up once a whole page is assembled inside the app shell: that the hamburger menu
+ * actually works once wired to real routes, that it doesn't overlap page content, and that
+ * nothing overflows a phone-width viewport.
  *
  * Everything here goes through the same fake Drive/Sheets backend as the rest of the suite
  * (tests/mocks/googleApi.ts), so no real Google account or network is involved.
+ *
+ * As of the hamburger-menu rewrite (see issue #21), there is a single nav pattern at every
+ * width — no more `BottomNav`/header-icon split to assert as complementary. The menu itself is
+ * exercised at both MOBILE and DESKTOP below, since it's meant to behave identically at either.
  */
 
 const MOBILE = { width: 390, height: 844 } // below Tailwind's `md` (768px)
@@ -55,73 +59,143 @@ async function currentCampaignId(page: Page): Promise<string> {
   return match[1]
 }
 
+async function openMenu(page: Page) {
+  await page.getByRole('banner').getByRole('button', { name: 'Menu' }).click()
+}
+
+/**
+ * `createRandomCampaign` only waits for the URL to reach `/play/:id`, not for `Play.tsx`'s own
+ * `usePlayHeaderStore().setContext` effect to have committed — so a test that opens the header
+ * menu immediately afterwards can race the header from "no campaign" (Settings-only) to "campaign
+ * open" (Codex/Settings/Back to campaigns) state, intermittently seeing the sparse menu. Waiting
+ * for a Play-only element sidesteps the race, matching the pattern other specs already use (e.g.
+ * tests/drive-cache.spec.ts) before touching campaign-aware header state.
+ */
+async function waitForCampaignHeaderReady(page: Page): Promise<void> {
+  await expect(page.getByPlaceholder('Say or do anything…')).toBeVisible()
+}
+
+for (const [viewportLabel, viewport] of [
+  ['mobile', MOBILE],
+  ['desktop', DESKTOP],
+] as const) {
+  test.describe(`hamburger menu (${viewportLabel})`, () => {
+    test.use({ viewport })
+
+    test('is sparse (Settings only) when no campaign is open', async ({ page }) => {
+      await installGoogleApiMock(page)
+      await hideToasts(page)
+      await page.goto('/')
+
+      const trigger = page.getByRole('banner').getByRole('button', { name: 'Menu' })
+      await expect(trigger).toBeVisible()
+      await openMenu(page)
+
+      await expect(page.getByRole('menuitem', { name: 'Settings' })).toBeVisible()
+      await expect(page.getByRole('menuitem', { name: 'Codex' })).toHaveCount(0)
+      await expect(page.getByRole('menuitem', { name: 'Back to campaigns' })).toHaveCount(0)
+
+      await page.getByRole('menuitem', { name: 'Settings' }).click()
+      await expect(page).toHaveURL(/\/settings$/)
+    })
+
+    test('has Codex, Settings, and Back to campaigns when a campaign is open', async ({ page }) => {
+      await installGoogleApiMock(page)
+      await hideToasts(page)
+      await createRandomCampaign(page)
+      const campaignId = await currentCampaignId(page)
+
+      for (const [label, path] of campaignRoutes(campaignId)) {
+        await page.goto(path)
+        await openMenu(page)
+
+        const codex = page.getByRole('menuitem', { name: 'Codex' })
+        const settings = page.getByRole('menuitem', { name: 'Settings' })
+        const back = page.getByRole('menuitem', { name: 'Back to campaigns' })
+        await expect(codex, `${label}: Codex item`).toBeVisible()
+        await expect(settings, `${label}: Settings item`).toBeVisible()
+        await expect(back, `${label}: Back to campaigns item`).toBeVisible()
+
+        // Close it back out (Escape) so the next iteration starts from a known state.
+        await page.keyboard.press('Escape')
+        await expect(codex).toBeHidden()
+      }
+    })
+
+    test('navigates to Codex and closes on selection', async ({ page }) => {
+      await installGoogleApiMock(page)
+      await hideToasts(page)
+      await createRandomCampaign(page)
+      await waitForCampaignHeaderReady(page)
+
+      await openMenu(page)
+      await page.getByRole('menuitem', { name: 'Codex' }).click()
+
+      await expect(page).toHaveURL(/\/codex\/.+/)
+      await expect(page.getByRole('menu')).toHaveCount(0)
+    })
+
+    test('Back to campaigns returns to the Dashboard', async ({ page }) => {
+      await installGoogleApiMock(page)
+      await hideToasts(page)
+      await createRandomCampaign(page)
+      await waitForCampaignHeaderReady(page)
+
+      await openMenu(page)
+      await page.getByRole('menuitem', { name: 'Back to campaigns' }).click()
+
+      await expect(page).toHaveURL(/\/$/)
+    })
+
+    test('closes when clicking outside', async ({ page }) => {
+      await installGoogleApiMock(page)
+      await hideToasts(page)
+      await createRandomCampaign(page)
+      await waitForCampaignHeaderReady(page)
+
+      await openMenu(page)
+      await expect(page.getByRole('menu')).toBeVisible()
+
+      // Click somewhere on the page that isn't the menu or its trigger.
+      await page.mouse.click(viewport.width / 2, viewport.height - 10)
+      await expect(page.getByRole('menu')).toHaveCount(0)
+    })
+
+    test('is keyboard operable', async ({ page }) => {
+      await installGoogleApiMock(page)
+      await hideToasts(page)
+      await createRandomCampaign(page)
+      await waitForCampaignHeaderReady(page)
+
+      const trigger = page.getByRole('banner').getByRole('button', { name: 'Menu' })
+      await trigger.focus()
+      await page.keyboard.press('Enter')
+      await expect(page.getByRole('menu')).toBeVisible()
+
+      // Arrow down moves the roving highlight onto an item; Enter activates whatever's
+      // highlighted. Which item ends up highlighted after one ArrowDown is a Radix internal
+      // (opening via Enter can auto-highlight the first item, making the first explicit ArrowDown
+      // land on the second) and isn't stable enough under a loaded test run to assert exactly —
+      // the point of this test is that keyboard navigation reaches *some* item and activates it,
+      // landing on one of the menu's known destinations, not which item specifically.
+      await page.keyboard.press('ArrowDown')
+      await expect(page.locator('[data-slot="dropdown-menu-item"][data-highlighted]')).toBeVisible()
+
+      await page.keyboard.press('Enter')
+
+      await expect(page.getByRole('menu')).toHaveCount(0)
+      await expect(page).toHaveURL(/\/(codex|settings)\/[^/]+$|\/$/)
+    })
+  })
+}
+
 test.describe('mobile (below md)', () => {
   test.use({ viewport: MOBILE })
 
   /**
-   * BottomNav is `md:hidden` and the header's Codex/Settings icons are `hidden md:inline-flex` —
-   * deliberately complementary, so campaign navigation is reachable exactly once at any width.
-   * Get one of the two conditions wrong and you either lose navigation entirely on phones or show
-   * it twice. Asserted with visibility (not DOM presence): both sets of links exist in the DOM at
-   * every width, and only CSS decides which is live.
-   */
-  test('campaign navigation lives in the bottom nav, not the header', async ({ page }) => {
-    await installGoogleApiMock(page)
-    await hideToasts(page)
-    await createRandomCampaign(page)
-    const campaignId = await currentCampaignId(page)
-
-    for (const [label, path] of campaignRoutes(campaignId)) {
-      await page.goto(path)
-
-      const nav = page.getByRole('navigation', { name: 'Campaign navigation' })
-      await expect(nav, `${label}: bottom nav should be visible on mobile`).toBeVisible()
-      await expect(nav.getByRole('link', { name: 'Adventure' })).toBeVisible()
-      await expect(nav.getByRole('link', { name: 'Codex' })).toBeVisible()
-      await expect(nav.getByRole('link', { name: 'Settings' })).toBeVisible()
-
-      // The header keeps only the campaign title + turn/read-aloud controls at this width.
-      const header = page.getByRole('banner')
-      await expect(header.getByRole('link', { name: 'Codex' })).toBeHidden()
-      await expect(header.getByRole('link', { name: 'Settings' })).toBeHidden()
-    }
-  })
-
-  /**
-   * BottomNav is `position: fixed`, so without the app shell's `pb-16` reserve it would sit on top
-   * of whatever the page ends with — on Play that's the free-text input row and the Act button,
-   * i.e. the controls the whole screen exists for.
-   */
-  test('the fixed bottom nav never covers the end of a page', async ({ page }) => {
-    await installGoogleApiMock(page)
-    await hideToasts(page)
-    await createRandomCampaign(page)
-    const campaignId = await currentCampaignId(page)
-
-    for (const [label, path] of campaignRoutes(campaignId)) {
-      await page.goto(path)
-      await expect(page.getByRole('navigation', { name: 'Campaign navigation' })).toBeVisible()
-
-      const overlap = await page.evaluate(() => {
-        const nav = document.querySelector('nav[aria-label="Campaign navigation"]')!
-        const content = document.querySelector('[data-testid="app-content"]')!
-        const navHeight = nav.getBoundingClientRect().height
-        const reserved = parseFloat(getComputedStyle(content).paddingBottom)
-        return { navHeight, reserved }
-      })
-
-      expect(overlap.navHeight, `${label}: bottom nav should have real height on mobile`).toBeGreaterThan(0)
-      expect(
-        overlap.reserved,
-        `${label}: content must reserve at least the nav's height (${overlap.navHeight}px) below it`,
-      ).toBeGreaterThanOrEqual(overlap.navHeight)
-    }
-  })
-
-  /**
-   * Horizontal overflow is the classic phone-layout bug — one fixed-width child or an un-wrapped
-   * long string and the whole page scrolls sideways. Checked per page since each composes
-   * different content (Play's turn log, Codex's 8-tab strip, Settings' cards).
+   * No page-level layout reserve exists any more (there's nothing fixed-position at the bottom
+   * of the screen since BottomNav was removed) — this is the horizontal-overflow half of that
+   * same "phone-width layout stays sane" coverage.
    */
   test('no page scrolls sideways at phone width', async ({ page }) => {
     await installGoogleApiMock(page)
@@ -131,7 +205,7 @@ test.describe('mobile (below md)', () => {
 
     for (const [label, path] of campaignRoutes(campaignId)) {
       await page.goto(path)
-      await expect(page.getByRole('navigation', { name: 'Campaign navigation' })).toBeVisible()
+      await expect(page.getByRole('banner').getByRole('button', { name: 'Menu' })).toBeVisible()
 
       const { scrollWidth, clientWidth } = await page.evaluate(() => ({
         scrollWidth: document.documentElement.scrollWidth,
@@ -185,19 +259,21 @@ test.describe('mobile (below md)', () => {
     const scrollBack = page.getByRole('button', { name: 'Scroll to continue' })
     await expect(scrollBack).toBeVisible()
 
-    // ...and the log grows into the freed space rather than leaving a blank void above the nav.
+    // ...and the log grows into the freed space rather than leaving a blank void at the bottom of
+    // the page.
     const logHeightScrolledAway = await viewport.evaluate((el) => el.getBoundingClientRect().height)
     expect(logHeightScrolledAway).toBeGreaterThan(logHeightAtBottom)
 
     const gap = await page.evaluate(() => {
       const log = document.querySelector('[data-slot="scroll-area-viewport"]')!
-      const nav = document.querySelector('nav[aria-label="Campaign navigation"]')!
-      return nav.getBoundingClientRect().top - log.getBoundingClientRect().bottom
+      return window.innerHeight - log.getBoundingClientRect().bottom
     })
     // Tight enough to actually bite: the bug this guards left a ~400px void, and the healthy
-    // value here is ~45px (the page's own bottom padding plus the nav reserve). 80px catches a
-    // moderate regression, not just a catastrophic one.
-    expect(gap, 'story log should reach close to the bottom nav, not leave a large empty band').toBeLessThan(80)
+    // value here is small (just the page's own bottom padding, now that nothing bottom-anchored
+    // reserves extra space). 80px catches a moderate regression, not just a catastrophic one.
+    expect(gap, 'story log should reach close to the bottom of the viewport, not leave a large empty band').toBeLessThan(
+      80,
+    )
 
     // The affordance takes you back, and the controls come with it — asserted as a *settled*
     // state, deliberately past the ~1.5s observer-suppression window in Play.tsx. Checking
@@ -215,42 +291,5 @@ test.describe('mobile (below md)', () => {
     // And it genuinely reached the bottom, rather than stopping short of it.
     const distanceFromBottom = await viewport.evaluate((el) => el.scrollHeight - el.scrollTop - el.clientHeight)
     expect(distanceFromBottom, 'should land at the bottom of the log').toBeLessThan(40)
-  })
-})
-
-test.describe('desktop (above md)', () => {
-  test.use({ viewport: DESKTOP })
-
-  /** The other half of the complementary-navigation contract asserted on mobile above. */
-  test('campaign navigation lives in the header, not a bottom nav', async ({ page }) => {
-    await installGoogleApiMock(page)
-    await hideToasts(page)
-    await createRandomCampaign(page)
-    const campaignId = await currentCampaignId(page)
-
-    for (const [label, path] of campaignRoutes(campaignId)) {
-      await page.goto(path)
-
-      const header = page.getByRole('banner')
-      await expect(header.getByRole('link', { name: 'Codex' })).toBeVisible()
-      await expect(header.getByRole('link', { name: 'Settings' })).toBeVisible()
-
-      await expect(
-        page.getByRole('navigation', { name: 'Campaign navigation' }),
-        `${label}: bottom nav should be hidden above md`,
-      ).toBeHidden()
-    }
-  })
-
-  /** `md:pb-0` — the mobile-only reserve must not leave dead space on desktop. */
-  test('no bottom-nav space is reserved', async ({ page }) => {
-    await installGoogleApiMock(page)
-    await hideToasts(page)
-    await createRandomCampaign(page)
-
-    const reserved = await page.evaluate(() =>
-      parseFloat(getComputedStyle(document.querySelector('[data-testid="app-content"]')!).paddingBottom),
-    )
-    expect(reserved).toBe(0)
   })
 })

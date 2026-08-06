@@ -17,8 +17,7 @@ function WithTheme(Story: React.ComponentType, context: { globals: { theme?: str
 
 /**
  * Named around this app's own layout breakpoint rather than specific devices: everything
- * responsive here keys off Tailwind's `md` (768px) — `BottomNav` is `md:hidden`, the header's
- * Codex/Settings icons are `hidden md:inline-flex`, etc. So the only distinction that matters is
+ * responsive here keys off Tailwind's `md` (768px). So the only distinction that matters is
  * "below md" vs "above md", and these two sit safely either side of it.
  *
  * These are real viewport resizes, not CSS scaling: `@storybook/addon-vitest` passes the resolved

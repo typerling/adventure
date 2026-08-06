@@ -36,16 +36,16 @@ fallback): the Claude API, and a choice of several fully on-device models over W
   access is needed. Run a single file with `npx playwright test tests/new-campaign.spec.ts`, or
   `--headed`/`--debug` while writing new specs. `tests/mobile-layout.spec.ts` holds the
   **page-level** responsive coverage (component-level lives in Storybook, below): it drives
-  Play/Codex/Settings at 390×844 and 1280×900 via `test.use({ viewport })`, asserting the two
-  halves of one contract — `BottomNav` (`md:hidden`) and the header's Codex/Settings icons
-  (`hidden md:inline-flex`) are complementary, so campaign navigation is reachable exactly once at
-  any width — plus that the app shell's `pb-16 md:pb-0` actually reserves the fixed nav's height
-  (`[data-testid="app-content"]`), and that no page scrolls sideways at phone width. It hides the
-  Sonner toast layer via `addInitScript`, because toasts pin to the bottom of the viewport and on
-  a phone-width screen genuinely sit over Play's input row and intercept clicks meant for it.
+  Play/Codex/Settings at 390×844 and 1280×900 via `test.use({ viewport })`, asserting the single
+  hamburger-menu nav pattern (`src/components/Header.tsx`) works identically at both widths — the
+  trigger opens a real menu with the right items for whether a campaign is open, selecting an item
+  navigates and closes the menu, and it closes on outside click/Escape too — plus that no page
+  scrolls sideways at phone width. It hides the Sonner toast layer via `addInitScript`, because
+  toasts pin to the bottom of the viewport and on a phone-width screen genuinely sit over Play's
+  input row and intercept clicks meant for it.
 - `npm run storybook` — Storybook dev server on port 6006, for viewing/developing
   `src/components/**/*.stories.tsx` in isolation (every `src/components/ui/*` primitive, plus
-  `BottomNav`). `npm run build-storybook` produces a static `storybook-static/` build (not
+  `Header`). `npm run build-storybook` produces a static `storybook-static/` build (not
   deployed anywhere — dev/review tool only). Config lives in `.storybook/` (`main.ts`/
   `preview.tsx`, the latter importing `src/index.css` so components render with the app's real
   Tailwind theme/fonts, plus a toolbar light/dark toggle mirroring the `.dark`/`.light` classes
@@ -73,11 +73,12 @@ fallback): the Claude API, and a choice of several fully on-device models over W
     Vitest's own knob, which this addon overrides per story — setting it there does nothing
     (verified). A story that sets neither gets the addon's 1200×900 default.
   - Anything hidden at the current viewport is hidden *for real*, including from the
-    accessibility tree — `BottomNav` is `md:hidden`, so at the default desktop viewport
-    `getByRole('link')` finds nothing even though the markup is right there in the DOM. That's
-    why its stories set the `mobile` viewport (and `HiddenAboveBreakpoint` overrides to `desktop`
-    to assert the `md:hidden` half). If a `getByRole` query mysteriously finds nothing, check the
-    component isn't `display: none` at the story's viewport before assuming a timing problem.
+    accessibility tree — a Radix `DropdownMenuContent` isn't just visually hidden while closed,
+    it's unmounted, so a story that opens `Header`'s hamburger menu without first setting a
+    viewport it can actually see and click within will find no `menuitem`s at all. If a
+    `getByRole` query mysteriously finds nothing, check the component isn't `display: none` (or,
+    for Radix content, simply not open yet) at the story's viewport before assuming a timing
+    problem.
 
 Google Drive integration requires `VITE_GOOGLE_CLIENT_ID` in `.env` (copy from `.env.example`).
 Without it the app boots to an "unconfigured" screen instead of crashing — see

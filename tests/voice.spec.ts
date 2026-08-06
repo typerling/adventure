@@ -121,7 +121,8 @@ test.describe('browser voice (STT/TTS)', () => {
 
     await expect(page.getByRole('button', { name: 'Read new turns aloud' })).toBeVisible()
 
-    await page.getByRole('link', { name: 'Codex' }).click()
+    await page.getByRole('banner').getByRole('button', { name: 'Menu' }).click()
+    await page.getByRole('menuitem', { name: 'Codex' }).click()
     await expect(page).toHaveURL(/\/codex\/.+/)
     await expect(page.getByRole('button', { name: 'Read new turns aloud' })).toHaveCount(0)
 

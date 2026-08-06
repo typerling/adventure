@@ -1,132 +1,18 @@
-import { useState } from 'react'
-import { BrowserRouter, Link, Route, Routes } from 'react-router-dom'
-import { BookOpen, MapPin, Settings as SettingsIcon, Volume2, VolumeX } from 'lucide-react'
+import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import { Toaster } from '@/components/ui/sonner'
-import { Button } from '@/components/ui/button'
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { AuthGate } from '@/components/AuthGate'
-import { BottomNav } from '@/components/BottomNav'
+import { Header } from '@/components/Header'
 import { Dashboard } from '@/pages/Dashboard'
 import { NewCampaign } from '@/pages/NewCampaign'
 import { Play } from '@/pages/Play'
 import { Codex } from '@/pages/Codex'
 import { Settings } from '@/pages/Settings'
-import { usePlayHeaderStore } from '@/store/playHeaderStore'
-import { cn } from '@/lib/utils'
-
-function Header() {
-  const context = usePlayHeaderStore((s) => s.context)
-  const readAloud = usePlayHeaderStore((s) => s.readAloud)
-  const toggleReadAloud = usePlayHeaderStore((s) => s.toggleReadAloud)
-  const [turnInfoOpen, setTurnInfoOpen] = useState(false)
-
-  return (
-    <header className="border-b border-border/70 bg-card/60">
-      <div className="mx-auto flex max-w-3xl items-center justify-between gap-2 px-4 py-3 sm:px-6">
-        <div className="flex min-w-0 items-center gap-1.5 truncate">
-          {context ? (
-            <>
-              {/* Logo-only once a campaign name is showing — "Adventure - <name>" rarely both fit
-                  next to each other, and the campaign name is the more useful thing to keep. */}
-              <Link to="/" className="shrink-0" title="Adventure" aria-label="Adventure">
-                <img src={`${import.meta.env.BASE_URL}favicon-32.png`} alt="" className="size-7 rounded-md" />
-              </Link>
-              <Link
-                to={`/play/${context.campaignId}`}
-                title="Back to play"
-                className="truncate font-heading text-lg text-foreground hover:text-primary"
-              >
-                {context.campaignName}
-              </Link>
-            </>
-          ) : (
-            <Link to="/" className="flex shrink-0 items-center gap-1.5 font-heading text-lg font-medium text-foreground">
-              <img src={`${import.meta.env.BASE_URL}favicon-32.png`} alt="" className="size-7 rounded-md" />
-              Adventure
-            </Link>
-          )}
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {context?.turnLabel && (
-            <Button
-              size="icon-sm"
-              variant="outline"
-              onClick={() => setTurnInfoOpen(true)}
-              title={context.turnLabel}
-              aria-label={context.turnLabel}
-            >
-              <MapPin className="size-4" />
-            </Button>
-          )}
-          {context?.showReadAloudToggle && (
-            <Button
-              size="icon-sm"
-              variant={readAloud ? 'default' : 'outline'}
-              onClick={toggleReadAloud}
-              aria-pressed={readAloud}
-              title={readAloud ? 'Stop reading turns aloud' : 'Read new turns aloud'}
-              aria-label={readAloud ? 'Stop reading turns aloud' : 'Read new turns aloud'}
-            >
-              {readAloud ? <Volume2 className="size-4" /> : <VolumeX className="size-4" />}
-            </Button>
-          )}
-          {/* Codex/Settings links are redundant with BottomNav once a campaign context exists,
-              so they only need to reappear once the viewport is wide enough that BottomNav hides
-              itself (md:hidden there, so md:inline-flex here mirrors it back). */}
-          {context && (
-            <Button size="icon-sm" variant="outline" className="hidden md:inline-flex" asChild>
-              <Link to={`/codex/${context.campaignId}`} title="Codex" aria-label="Codex">
-                <BookOpen className="size-4" />
-              </Link>
-            </Button>
-          )}
-          <Button
-            size="icon-sm"
-            variant="outline"
-            className={cn(context && 'hidden md:inline-flex')}
-            asChild
-          >
-            <Link
-              to={context ? `/settings/${context.campaignId}` : '/settings'}
-              title="Settings"
-              aria-label="Settings"
-            >
-              <SettingsIcon className="size-4" />
-            </Link>
-          </Button>
-        </div>
-      </div>
-
-      {context?.turnLabel && (
-        <Dialog open={turnInfoOpen} onOpenChange={setTurnInfoOpen}>
-          <DialogContent className="sm:max-w-sm">
-            <DialogHeader>
-              <DialogTitle>Where you are</DialogTitle>
-              <DialogDescription>{context.turnLabel}</DialogDescription>
-            </DialogHeader>
-          </DialogContent>
-        </Dialog>
-      )}
-    </header>
-  )
-}
 
 function AppShell() {
-  const context = usePlayHeaderStore((s) => s.context)
   return (
     <div className="min-h-svh">
       <Header />
-      {/* Bottom padding reserves space for the fixed BottomNav so it can't overlap the end of a
-          page's content — only while a campaign context exists (that's the only time BottomNav
-          renders at all), and only below `md` (where BottomNav itself is hidden). The safe-area
-          inset is part of the reserve because it's part of the nav's height: BottomNav pads itself
-          by `env(safe-area-inset-bottom)`, so on a notched phone it is taller than 4rem and a flat
-          `pb-16` would leave the end of the page underneath it. That inset is 0 in headless
-          Chromium, so no test can catch this — hence spelling it out here. */}
-      <div
-        data-testid="app-content"
-        className={cn(context && 'pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-0')}
-      >
+      <div data-testid="app-content">
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/new" element={<NewCampaign />} />
@@ -136,7 +22,6 @@ function AppShell() {
           <Route path="/settings/:campaignId" element={<Settings />} />
         </Routes>
       </div>
-      <BottomNav />
     </div>
   )
 }
