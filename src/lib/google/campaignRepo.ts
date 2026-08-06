@@ -1,5 +1,6 @@
 import { ensureFolder, ensureTextFile, getTextFile, listChildren, updateTextFile } from './driveApi'
-import { createSpreadsheet, batchGetTabs, appendRows } from './sheetsApi'
+import { createSpreadsheet, batchGetTabs, addMissingTabs, appendRows } from './sheetsApi'
+import { GoogleApiError } from './http'
 import { TAB_HEADERS, rowCodecs, decodeTab } from './sheetSchema'
 import { parseFrontmatter, stringifyFrontmatter } from '@/lib/markdown/frontmatter'
 import { SHEET_TABS } from '@/types/sheets'
@@ -223,9 +224,37 @@ export async function writeRollingSummary(folderId: string, text: string): Promi
   await updateTextFile(file.id, text)
 }
 
+/** Sheets' batchGet fails the *entire* request if even one referenced tab doesn't exist in the
+ * spreadsheet — "Unable to parse range: '<tab>'!A1:ZZ" is the specific 400 that produces. That
+ * happens for any campaign whose spreadsheet predates a tab SHEET_TABS has since grown to include
+ * (e.g. NPCAttributes, added when NPC profiles shipped) — not a data problem, just a schema one,
+ * so it's worth healing automatically rather than leaving the campaign permanently unopenable. */
+function isMissingTabError(err: unknown): boolean {
+  if (!(err instanceof GoogleApiError) || err.status !== 400) return false
+  const body = err.body
+  const message =
+    body && typeof body === 'object' && 'error' in body && body.error && typeof body.error === 'object'
+      ? (body.error as { message?: unknown }).message
+      : undefined
+  return typeof message === 'string' && message.includes('Unable to parse range')
+}
+
 /** Full read of every sheet tab in one batch call, decoded into typed rows. */
 export async function loadSheetSnapshot(spreadsheetId: string) {
-  const raw = await batchGetTabs(spreadsheetId, [...SHEET_TABS])
+  let raw: Awaited<ReturnType<typeof batchGetTabs>>
+  try {
+    raw = await batchGetTabs(spreadsheetId, [...SHEET_TABS])
+  } catch (err) {
+    if (!isMissingTabError(err)) throw err
+    // Add whatever's missing (with its header row, same as a fresh campaign gets) and retry once
+    // — if this campaign's spreadsheet is otherwise fine, it's usable again from here on, not
+    // just for this one load.
+    await addMissingTabs(
+      spreadsheetId,
+      SHEET_TABS.map((title) => ({ title, headers: TAB_HEADERS[title] })),
+    )
+    raw = await batchGetTabs(spreadsheetId, [...SHEET_TABS])
+  }
   return {
     Character: decodeTab<CharacterRow>('Character', raw.Character),
     Inventory: decodeTab<InventoryItem>('Inventory', raw.Inventory),
