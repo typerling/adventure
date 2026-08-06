@@ -352,9 +352,9 @@ export function Play() {
     provider.start()
   }
 
-  function startTurn(action: string) {
+  async function startTurn(action: string) {
     if (generating) return
-    const built = buildPromptForAction(action)
+    const built = await buildPromptForAction(action)
     if (!built) return
     pendingActionRef.current = action
     setPrompt(built)

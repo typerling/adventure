@@ -92,6 +92,21 @@ AI Adventure/
           <slug>.md              # one file per long-form lore entry (a location history, a
                                  #   faction writeup, ...) — linked from the Lore sheet tab by
                                  #   filename; short entries just live in the sheet, no file.
+                                 #   (Currently a dead stub: the Lore tab's detail_file column
+                                 #   exists but nothing reads/writes an actual file here yet —
+                                 #   see the npcs/ folder below for the real version of this
+                                 #   mechanism, built for NPCs.)
+        npcs/
+          <slug>.md               # one file per NPC with enough history to need it — append-only,
+                                 #   turn-numbered entries written deterministically by the app
+                                 #   whenever a turn's state_delta carries new notable NPC detail
+                                 #   (npc_updates[].notes_add), not a separate AI call. Linked from
+                                 #   the NPCs sheet tab's detail_file column. Only pulled into a
+                                 #   turn's prompt when the player's action names that NPC (a
+                                 #   simple case-insensitive substring check, the same trick
+                                 #   NovelAI/AI Dungeon's "World Info" uses) — every NPC's short
+                                 #   `notes` column is sent every turn regardless, cheap since the
+                                 #   whole snapshot already is.
       story/
         log/
           0001.md ... NNNN.md    # raw transcript, chunked ~50 turns per file (keeps files small
@@ -101,18 +116,41 @@ AI Adventure/
                                  #   prose, overwritten in place
           checkpoints/            # archived rolling.md snapshots at re-summarization points
       "<campaign-name> — Data" (Google Sheet, one file, one tab per entity type):
-        Character    # single-row-ish key/value: name, description, stats (free columns),
-                      #   level/XP if used, status effects (comma list)
-        Inventory    # id, name, qty, description, tags, acquired_turn, active(bool)
-        Skills       # id, name, rank/level, description
-        NPCs         # id, name, description, relationship, status, last_seen_turn
-        Monsters     # id, name, description, threat_notes, status, last_encountered_turn
-        Timeline     # turn, title, summary, tags
-        Quests       # id, title, status, description, updated_turn
-        Map          # id, name, type, state(discovered/rumored/unexplored), connects_to,
-                      #   description, x, y (coords optional — layout can also be force-directed)
-        Lore         # id, type, name, summary, tags, discovered(bool), detail_file (optional,
-                      #   points at world/lore/<slug>.md for the long version)
+        Character      # single-row-ish key/value: name, description, stats (free columns),
+                        #   level/XP if used, status effects (comma list) — the AI also maintains
+                        #   evolving descriptive keys here (Personality, Current goal, Notable
+                        #   relationships, ...) the same way it maintains numeric stats, so the
+                        #   player's own profile keeps evolving from play, not just campaign setup.
+        Inventory      # id, name, qty, description, tags, acquired_turn, active(bool)
+        Skills         # id, name, rank/level, description
+        NPCs           # id, name, description, relationship, status, last_seen_turn, voice,
+                        #   secrets, notes, detail_file.
+                        #   voice: a spoken-style descriptor ("gravelly, clipped sentences") —
+                        #     reserved for real TTS voice-switching in a later ticket, not wired
+                        #     to playback yet.
+                        #   secrets: GM-only ground truth — never rendered anywhere the player can
+                        #     see (Play narrative/options, Codex); exists purely so future turns
+                        #     don't contradict a fact the player hasn't discovered yet.
+                        #   notes: a condensed running summary, rewritten in place on each update
+                        #     — same pattern as story/summary/rolling.md, scoped per-NPC.
+                        #   detail_file: optional pointer at world/npcs/<slug>.md, once one exists.
+                        #   All four, plus NPCAttributes below, are populated only for NPCs with
+                        #   real interaction this turn (dialogue, an ongoing role in the scene) —
+                        #   a background character mentioned in passing stays name+description
+                        #   only, per the Lazy-GM principle of not over-investing in throwaway
+                        #   characters (see §5's NPC profile-depth gate).
+        NPCAttributes  # npcId, key, value — free-form genre-specific facts about one NPC (a clan
+                        #   allegiance in fantasy, cybernetic augments in a heist story, an alibi
+                        #   in a mystery), same open-ended key/value shape as Character, just
+                        #   scoped per-NPC so new fact types never need a schema migration.
+        Monsters       # id, name, description, threat_notes, status, last_encountered_turn
+        Timeline       # turn, title, summary, tags
+        Quests         # id, title, status, description, updated_turn
+        Map            # id, name, type, state(discovered/rumored/unexplored), connects_to,
+                        #   description, x, y (coords optional — layout can also be force-directed)
+        Lore           # id, type, name, summary, tags, discovered(bool), detail_file (optional,
+                        #   points at world/lore/<slug>.md for the long version — see the dead-stub
+                        #   note on world/lore/ above)
 ```
 
 Every screen maps 1:1 to either one Markdown file or one Sheets tab (Inventory panel ↔
@@ -146,6 +184,13 @@ contract so the app can parse it. **Two-part output:**
     "status_add": ["Poisoned"],
     "status_remove": [],
     "new_npcs": [{"name": "Old Maren", "description": "..."}],
+    "npc_updates": [{
+      "name": "Old Maren",
+      "voice": "gravelly, clipped sentences",
+      "secrets": "she sold the key to the cult, not the other way around",
+      "attributes": {"Occupation": "chapel caretaker"},
+      "notes_add": "Admitted she's been paid to keep strangers out of the crypt."
+    }],
     "new_locations": [{"name": "The Sunken Chapel", "connects_to": "Market Square"}],
     "events": [{"title": "Found the Rusted Key", "summary": "..."}]
   },
@@ -173,15 +218,45 @@ contract so the app can parse it. **Two-part output:**
   suggested. This block-splitting is a pure render-time transform, not a persisted shape:
   `story/log/*.md` keeps storing the raw narrative string and plain option label strings, exactly
   as before this existed.
+- **`npc_updates`/`new_npcs` also carry optional profile fields** — `voice`, `secrets`,
+  `attributes` (a free-form key/value map), and `notes_add` (new detail worth recording
+  permanently) — informed by tabletop-GM and LLM-agent-memory practice (see the research cited in
+  [issue #30](https://github.com/typerling/adventure/issues/30)'s scoping discussion: Mike Shea's
+  *Lazy GM*, Justin Alexander's *Universal NPC Roleplaying Template*, Stanford/Google's
+  *Generative Agents*, and MemGPT's small-bounded-blocks-always-in-context pattern). The AI only
+  populates these for an NPC with real interaction this turn (dialogue, an ongoing role in the
+  scene) — a background character mentioned in passing stays name+description only, matching the
+  Lazy-GM principle of not over-investing in throwaway characters. `secrets` is GM-only ground
+  truth (a hidden motive, a lie told) that must never appear in the *narrative*, *options*, or
+  Codex — it exists so future turns don't contradict a fact the player hasn't discovered yet, and
+  reaching the model on later turns is the whole point, so it's included in the prompt like any
+  other documented state. That means it's visible in manual mode's copy/paste textarea (the whole
+  built prompt is shown there so you can inspect/paste it — nothing in it can be hidden from
+  whoever's relaying it by hand); that's a pre-existing property of manual mode, not a leak this
+  introduces. `notes_add` does double duty: the app deterministically (no
+  extra AI call) overwrites that NPC's condensed `notes` column with it *and* appends it as a
+  turn-numbered entry to `world/npcs/<slug>.md` (creating the file on first use) — same
+  summary-plus-detail-file pattern as `LoreEntry`'s `summary`/`detail_file` (see §4), applied for
+  real here. The player's own `Character` profile evolves the same way: the contract instructs
+  the model to set evolving descriptive keys (`Personality`, `Current goal`, `Notable
+  relationships`, ...) via the existing `stat_changes` mechanism (which already sets a
+  non-numeric key directly rather than as a delta), so the player's profile keeps developing from
+  play instead of staying frozen at campaign setup — no schema change needed for this half.
 - The **system prompt** sent every turn (built by the app, shown in full in manual mode so
   you can inspect/edit it before pasting) includes: DM persona + tone, the difficulty rules
   (§7), the world/character setup from `campaign.md`, a fresh `batchGet` snapshot of the
-  Character/Inventory/NPCs/Monsters/Map/Quests tabs, the rolling summary from `rolling.md`,
-  the last ~6 raw turns, and a fixed instruction block requiring the `state` JSON contract and
-  telling the model to **only** report changes that are consistent with the supplied state (no
-  inventing items you already have, no NPCs dying twice, etc.) — this is the "review against
-  documented information" the brief asked for, folded into generation rather than a separate
-  pass, since a separate AI review pass would double the copy/paste burden in manual mode.
+  Character/Inventory/NPCs/NPCAttributes/Monsters/Map/Quests tabs (every known NPC's condensed
+  `notes`, `secrets`, and attributes included unconditionally — cheap, the whole snapshot is
+  already loaded), the rolling summary from `rolling.md`, the last ~6 raw turns, and a fixed
+  instruction block requiring the `state` JSON contract and telling the model to **only** report
+  changes that are consistent with the supplied state (no inventing items you already have, no
+  NPCs dying twice, etc.) — this is the "review against documented information" the brief asked
+  for, folded into generation rather than a separate pass, since a separate AI review pass would
+  double the copy/paste burden in manual mode. If the player's action text names a known NPC
+  who has a `detail_file` on record, that NPC's full history is pulled in too, under a "Recalled
+  history" section — a simple case-insensitive substring match against the action text, the same
+  trick NovelAI/AI Dungeon's "World Info" system uses (no embeddings, no new retrieval
+  infrastructure).
 - **Deterministic validation always runs client-side** before any `state_delta` is written back
   to the sheet: can't remove an item not currently held, can't set HP below the ruleset's
   floor, can't revive a `dead` NPC without an explicit resurrection tag, etc. A failed

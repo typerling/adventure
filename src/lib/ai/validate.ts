@@ -41,8 +41,23 @@ export function validateStateDelta(delta: StateDelta, snapshot: SheetSnapshot): 
   for (const update of delta.npc_updates ?? []) {
     const existing = snapshot.NPCs.find((n) => n.name.trim().toLowerCase() === update.name.trim().toLowerCase())
     if (!existing) {
+      // Profile fields (voice/secrets/attributes/notes_add) attached to an update that names an
+      // undocumented NPC get the same "isn't documented yet" warning as any other npc_updates
+      // entry — called out by name here since silently discarding a whole profile write would be
+      // a worse surprise than the existing generic message.
+      const hasProfileFields =
+        update.voice !== undefined ||
+        update.secrets !== undefined ||
+        update.attributes !== undefined ||
+        update.notes_add !== undefined
       issues.push(
-        issue('warning', 'npc_updates', `Updates NPC "${update.name}", who isn't documented yet.`),
+        issue(
+          'warning',
+          'npc_updates',
+          hasProfileFields
+            ? `Attaches profile detail (voice/secrets/attributes/notes) to NPC "${update.name}", who isn't documented yet.`
+            : `Updates NPC "${update.name}", who isn't documented yet.`,
+        ),
       )
     } else if (existing.status === 'dead' && update.status && update.status !== 'dead') {
       issues.push(

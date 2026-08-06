@@ -4,6 +4,7 @@ import type {
   InventoryItem,
   Skill,
   Npc,
+  NpcAttribute,
   Monster,
   TimelineEvent,
   Quest,
@@ -20,7 +21,11 @@ export const TAB_HEADERS: Record<(typeof SHEET_TABS)[number], string[]> = {
   Character: ['key', 'value'],
   Inventory: ['id', 'name', 'qty', 'description', 'tags', 'acquiredTurn', 'active'],
   Skills: ['id', 'name', 'rank', 'description'],
-  NPCs: ['id', 'name', 'description', 'relationship', 'status', 'lastSeenTurn'],
+  NPCs: [
+    'id', 'name', 'description', 'relationship', 'status', 'lastSeenTurn',
+    'voice', 'secrets', 'notes', 'detailFile',
+  ],
+  NPCAttributes: ['npcId', 'key', 'value'],
   Monsters: ['id', 'name', 'description', 'threatNotes', 'status', 'lastEncounteredTurn'],
   Timeline: ['turn', 'title', 'summary', 'tags'],
   Quests: ['id', 'title', 'status', 'description', 'updatedTurn'],
@@ -59,7 +64,10 @@ export const rowCodecs = {
     }),
   },
   NPCs: {
-    toRow: (r: Npc): Row => [r.id, r.name, r.description, r.relationship, r.status, r.lastSeenTurn],
+    toRow: (r: Npc): Row => [
+      r.id, r.name, r.description, r.relationship, r.status, r.lastSeenTurn,
+      r.voice, r.secrets, r.notes, r.detailFile ?? '',
+    ],
     fromRow: (c: Row): Npc => ({
       id: str(c[0]) || newId(),
       name: str(c[1]),
@@ -67,7 +75,15 @@ export const rowCodecs = {
       relationship: str(c[3]),
       status: (str(c[4]) || 'unknown') as Npc['status'],
       lastSeenTurn: num(c[5]),
+      voice: str(c[6]),
+      secrets: str(c[7]),
+      notes: str(c[8]),
+      detailFile: str(c[9]) || undefined,
     }),
+  },
+  NPCAttributes: {
+    toRow: (r: NpcAttribute): Row => [r.npcId, r.key, r.value],
+    fromRow: (c: Row): NpcAttribute => ({ npcId: str(c[0]), key: str(c[1]), value: str(c[2]) }),
   },
   Monsters: {
     toRow: (r: Monster): Row => [

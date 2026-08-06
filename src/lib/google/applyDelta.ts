@@ -1,8 +1,9 @@
 import { appendRows, updateRow } from './sheetsApi'
 import { rowCodecs } from './sheetSchema'
+import { appendNpcDetail } from './npcDetailFile'
 import type { SheetSnapshot } from '@/lib/ai/promptBuilder'
 import type { StateDelta } from '@/types/turn'
-import type { CharacterRow, InventoryItem, MapNode, Monster, Npc, Quest } from '@/types/sheets'
+import type { CharacterRow, InventoryItem, MapNode, Monster, Npc, NpcAttribute, Quest } from '@/types/sheets'
 
 function rowNumberOf<T>(rows: T[], predicate: (r: T) => boolean): number | null {
   const idx = rows.findIndex(predicate)
@@ -13,12 +14,15 @@ const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().t
 const newId = () => crypto.randomUUID().slice(0, 8)
 
 /** Applies an already-validated StateDelta as a batch of Sheets writes. Mutates the passed
- * snapshot in place so callers can re-render immediately without another round trip. */
+ * snapshot in place so callers can re-render immediately without another round trip.
+ * `campaignFolderId` is needed only for NPC `notes_add` — appending to that NPC's
+ * world/npcs/<slug>.md detail file (see npcDetailFile.ts). */
 export async function applyStateDelta(
   spreadsheetId: string,
   delta: StateDelta,
   snapshot: SheetSnapshot,
   turnNumber: number,
+  campaignFolderId: string,
 ): Promise<void> {
   // Inventory removals — decrement qty, or deactivate the row rather than deleting it (keeps history).
   for (const removal of delta.inventory_remove ?? []) {
@@ -68,7 +72,10 @@ export async function applyStateDelta(
     })
   }
 
-  // NPCs — update existing (by name) or append new.
+  // NPCs — update existing (by name) or append new. Profile fields (voice/secrets/attributes/
+  // notes_add) are optional per the AI's own profile-depth judgment (see contract.ts's
+  // "real interaction" gate) — a background NPC mentioned in passing carries none of them and
+  // stays name+description only, exactly like before this ticket.
   for (const update of delta.npc_updates ?? []) {
     const rowNum = rowNumberOf(snapshot.NPCs, (n) => sameName(n.name, update.name))
     if (rowNum === null) {
@@ -79,34 +86,61 @@ export async function applyStateDelta(
         relationship: update.relationship ?? '',
         status: update.status ?? 'unknown',
         lastSeenTurn: turnNumber,
+        voice: update.voice ?? '',
+        secrets: update.secrets ?? '',
+        notes: update.notes_add ?? '',
+        detailFile: undefined,
+      }
+      if (update.notes_add) {
+        created.detailFile = await appendNpcDetail(campaignFolderId, created, turnNumber, update.notes_add)
       }
       await appendRows(spreadsheetId, 'NPCs', [rowCodecs.NPCs.toRow(created)])
       snapshot.NPCs.push(created)
+      await upsertNpcAttributes(spreadsheetId, snapshot, created.id, update.attributes)
       continue
     }
     const existing = snapshot.NPCs[rowNum - 2]
+    let detailFile = existing.detailFile
+    if (update.notes_add) {
+      detailFile = await appendNpcDetail(campaignFolderId, existing, turnNumber, update.notes_add)
+    }
     const merged: Npc = {
       ...existing,
       status: update.status ?? existing.status,
       relationship: update.relationship ?? existing.relationship,
       lastSeenTurn: turnNumber,
+      voice: update.voice ?? existing.voice,
+      secrets: update.secrets ?? existing.secrets,
+      // "notes" is a condensed running summary rewritten in place on each update, same pattern
+      // as the campaign-wide rolling summary — notes_add doubles as both the fresh condensed
+      // value here and the permanent entry appended to the detail file above.
+      notes: update.notes_add ?? existing.notes,
+      detailFile,
     }
     snapshot.NPCs[rowNum - 2] = merged
     await updateRow(spreadsheetId, 'NPCs', rowNum, rowCodecs.NPCs.toRow(merged))
+    await upsertNpcAttributes(spreadsheetId, snapshot, merged.id, update.attributes)
   }
-  const newNpcs: Npc[] = (delta.new_npcs ?? [])
-    .filter((n) => n.name?.trim() && !snapshot.NPCs.some((existing) => sameName(existing.name, n.name)))
-    .map((n) => ({
+  for (const n of delta.new_npcs ?? []) {
+    if (!n.name?.trim() || snapshot.NPCs.some((existing) => sameName(existing.name, n.name))) continue
+    const created: Npc = {
       id: newId(),
       name: n.name,
       description: n.description ?? '',
       relationship: '',
       status: n.status ?? 'alive',
       lastSeenTurn: turnNumber,
-    }))
-  if (newNpcs.length) {
-    await appendRows(spreadsheetId, 'NPCs', newNpcs.map(rowCodecs.NPCs.toRow))
-    snapshot.NPCs.push(...newNpcs)
+      voice: n.voice ?? '',
+      secrets: n.secrets ?? '',
+      notes: n.notes_add ?? '',
+      detailFile: undefined,
+    }
+    if (n.notes_add) {
+      created.detailFile = await appendNpcDetail(campaignFolderId, created, turnNumber, n.notes_add)
+    }
+    await appendRows(spreadsheetId, 'NPCs', [rowCodecs.NPCs.toRow(created)])
+    snapshot.NPCs.push(created)
+    await upsertNpcAttributes(spreadsheetId, snapshot, created.id, n.attributes)
   }
 
   // Monsters.
@@ -191,6 +225,33 @@ export async function applyStateDelta(
   if (newLore.length) {
     await appendRows(spreadsheetId, 'Lore', newLore.map(rowCodecs.Lore.toRow))
     snapshot.Lore.push(...newLore)
+  }
+}
+
+/** Writes an NPC's free-form attributes (a clan allegiance, cybernetic augments, ...) into the
+ * NPCAttributes tab — appends a new (npcId, key) row, or updates the existing one's value in
+ * place. Same upsert-by-key shape as upsertCharacterStat, just scoped per-NPC. */
+async function upsertNpcAttributes(
+  spreadsheetId: string,
+  snapshot: SheetSnapshot,
+  npcId: string,
+  attributes: Record<string, string> | undefined,
+): Promise<void> {
+  for (const [key, value] of Object.entries(attributes ?? {})) {
+    const rowNum = rowNumberOf(
+      snapshot.NPCAttributes,
+      (a) => a.npcId === npcId && sameName(a.key, key),
+    )
+    if (rowNum === null) {
+      const created: NpcAttribute = { npcId, key, value }
+      await appendRows(spreadsheetId, 'NPCAttributes', [rowCodecs.NPCAttributes.toRow(created)])
+      snapshot.NPCAttributes.push(created)
+      continue
+    }
+    const existing = snapshot.NPCAttributes[rowNum - 2]
+    const updated: NpcAttribute = { npcId, key: existing.key, value }
+    snapshot.NPCAttributes[rowNum - 2] = updated
+    await updateRow(spreadsheetId, 'NPCAttributes', rowNum, rowCodecs.NPCAttributes.toRow(updated))
   }
 }
 

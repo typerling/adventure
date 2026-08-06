@@ -41,6 +41,28 @@ export interface Npc {
   relationship: string
   status: EntityStatus
   lastSeenTurn: number
+  /** A voice descriptor (e.g. "gravelly, clipped sentences") — reserved for actual TTS
+   * voice-switching in a later ticket (#36); not wired to playback yet. */
+  voice: string
+  /** GM-only ground truth the AI shouldn't contradict — must never appear in any player-facing
+   * render (Play narrative/options, Codex). Only ever fed back into future prompts. */
+  secrets: string
+  /** A condensed running summary of this NPC, rewritten in place on each update — the same
+   * pattern the campaign-wide rolling summary uses, just scoped per-NPC. */
+  notes: string
+  /** Points at world/npcs/<slug>.md for the append-only long-form history, once one exists.
+   * Same optional-pointer pattern as LoreEntry.detailFile. */
+  detailFile?: string
+}
+
+/** Free-form key/value fact about one NPC (a clan allegiance, cybernetic augments, an alibi —
+ * whatever the genre calls for) — same shape as the Character tab's key/value list, just scoped
+ * per-NPC via npcId. This is what keeps NPC facts genuinely open-ended without a schema
+ * migration every time a new genre needs a new kind of fact. */
+export interface NpcAttribute {
+  npcId: string
+  key: string
+  value: string
 }
 
 export interface Monster {
@@ -97,6 +119,7 @@ export const SHEET_TABS = [
   'Inventory',
   'Skills',
   'NPCs',
+  'NPCAttributes',
   'Monsters',
   'Timeline',
   'Quests',

@@ -9,7 +9,8 @@ import {
 } from '@/lib/google/campaignRepo'
 import { appendTurnToLog, readRecentTurns } from '@/lib/google/storyLog'
 import { applyStateDelta } from '@/lib/google/applyDelta'
-import { buildTurnPrompt, type SheetSnapshot } from '@/lib/ai/promptBuilder'
+import { getNpcDetailContent } from '@/lib/google/npcDetailFile'
+import { buildTurnPrompt, findMentionedNpcs, type NpcDetailLookup, type SheetSnapshot } from '@/lib/ai/promptBuilder'
 import { parseTurnReply } from '@/lib/ai/parseReply'
 import { validateStateDelta } from '@/lib/ai/validate'
 import { getCachedCampaign, setCachedCampaign, type CachedCampaignData } from './campaignCache'
@@ -117,8 +118,24 @@ export function useCampaign(folderId: string | undefined) {
   }, [folderId, refresh])
 
   const buildPromptForAction = useCallback(
-    (playerAction: string): string | null => {
-      if (!data.campaign || !data.snapshot) return null
+    async (playerAction: string): Promise<string | null> => {
+      if (!data.campaign || !data.snapshot || !folderId) return null
+
+      // Only pull a detail-file's content into the prompt when the player's action actually
+      // names that NPC (see findMentionedNpcs) — cheap for the common case (no match, no Drive
+      // read at all), and best-effort: a missing/unreadable file shouldn't block the turn.
+      const mentioned = findMentionedNpcs(data.snapshot.NPCs, playerAction)
+      const npcDetails: NpcDetailLookup = {}
+      await Promise.all(
+        mentioned.map(async (npc) => {
+          try {
+            npcDetails[npc.name] = await getNpcDetailContent(folderId, npc.detailFile!)
+          } catch {
+            // Best-effort — leave this NPC out of npcDetails rather than failing the whole turn.
+          }
+        }),
+      )
+
       return buildTurnPrompt({
         campaign: data.campaign,
         snapshot: data.snapshot,
@@ -126,9 +143,10 @@ export function useCampaign(folderId: string | undefined) {
         recentTurns: data.recentTurns,
         playerAction,
         turnNumber: data.campaign.meta.currentTurn + 1,
+        npcDetails,
       })
     },
-    [data],
+    [data, folderId],
   )
 
   const submitReply = useCallback(
@@ -147,7 +165,7 @@ export function useCampaign(folderId: string | undefined) {
       const snapshotCopy: SheetSnapshot = structuredClone(data.snapshot)
 
       try {
-        await applyStateDelta(data.spreadsheetId, parsed.reply.state_delta, snapshotCopy, nextTurn)
+        await applyStateDelta(data.spreadsheetId, parsed.reply.state_delta, snapshotCopy, nextTurn, folderId)
 
         await appendTurnToLog(folderId, {
           turn: nextTurn,
