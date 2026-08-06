@@ -224,7 +224,6 @@ export async function writeRollingSummary(folderId: string, text: string): Promi
   await updateTextFile(file.id, text)
 }
 
-/** Full read of every sheet tab in one batch call, decoded into typed rows. */
 /** Sheets' batchGet fails the *entire* request if even one referenced tab doesn't exist in the
  * spreadsheet — "Unable to parse range: '<tab>'!A1:ZZ" is the specific 400 that produces. That
  * happens for any campaign whose spreadsheet predates a tab SHEET_TABS has since grown to include
@@ -240,6 +239,7 @@ function isMissingTabError(err: unknown): boolean {
   return typeof message === 'string' && message.includes('Unable to parse range')
 }
 
+/** Full read of every sheet tab in one batch call, decoded into typed rows. */
 export async function loadSheetSnapshot(spreadsheetId: string) {
   let raw: Awaited<ReturnType<typeof batchGetTabs>>
   try {

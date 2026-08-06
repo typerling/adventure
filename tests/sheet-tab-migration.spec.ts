@@ -36,14 +36,32 @@ test('a campaign whose spreadsheet predates a newer tab is healed automatically 
   // left over from the first load) still works.
   await page.reload()
   await expect(page.getByPlaceholder('Say or do anything…')).toBeVisible()
+
+  // The healed tab actually has a real header row, not just an empty sheet with the right name —
+  // proves the atomic addSheet+updateCells write in addMissingTabs genuinely wrote the header,
+  // not just created the tab (see that function's doc comment on why this is one atomic call).
+  const healed = store.get(spreadsheet.id)?.spreadsheet?.sheets.NPCAttributes
+  expect(healed?.rows[0]).toBeTruthy()
+  expect(healed?.rows[0].length).toBeGreaterThan(0)
 })
 
 test('a spreadsheet already missing nothing loads with no extra requests needed', async ({ page }) => {
   // Sanity check the common case isn't affected: a fully up-to-date spreadsheet loads in one
-  // batchGet, same as before this fix — addMissingTabs is never reached.
+  // batchGet, same as before this fix — addMissingTabs (and its metadata-GET existence check) is
+  // never reached.
   await installGoogleApiMock(page)
   await createRandomCampaign(page)
   await expect(page.getByPlaceholder('Say or do anything…')).toBeVisible()
+
+  let metadataGetCount = 0
+  page.on('request', (req) => {
+    // The bare spreadsheet-metadata GET addMissingTabs uses — no :suffix, unlike batchGet/
+    // batchUpdate — so this only counts the request that function would make, not every request.
+    if (/\/v4\/spreadsheets\/[^/:]+$/.test(new URL(req.url()).pathname) && req.method() === 'GET') {
+      metadataGetCount++
+    }
+  })
   await page.reload()
   await expect(page.getByPlaceholder('Say or do anything…')).toBeVisible()
+  expect(metadataGetCount).toBe(0)
 })

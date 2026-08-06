@@ -76,31 +76,68 @@ export async function createSpreadsheet(
  * setup a freshly created campaign gets — a no-op if every tab already exists. Exists because
  * SHEET_TABS has grown over time (e.g. NPCAttributes, added when NPC profiles shipped), so an
  * older campaign's actual spreadsheet can predate a tab the app now always expects to be there.
- * See loadSheetSnapshot's retry-on-missing-tab handling, the caller of this. */
+ * See loadSheetSnapshot's retry-on-missing-tab handling, the caller of this.
+ *
+ * Unlike createSpreadsheet's writeTabHeaders (two sequential calls, fine there since a failure
+ * mid-setup just abandons a still-empty brand-new spreadsheet), this runs against a *live*
+ * spreadsheet that may already hold real data in its other tabs. addSheet and its header-row
+ * values/formatting are therefore issued as a *single* batchUpdate — Sheets applies a batchUpdate
+ * atomically, so there's no network-observable state where a healed tab exists with no header:
+ * a lost header row would otherwise mean the first real data row later appended to that tab gets
+ * silently treated as the header and dropped by decodeTab's `rows.slice(1)`, forever, with no
+ * error anywhere. This does mean picking each new tab's sheetId ourselves up front (Sheets lets
+ * addSheet specify one instead of auto-assigning) rather than reading it back from an addSheet
+ * reply, since the header-writing requests in the same batch need to reference it immediately.
+ *
+ * Known narrow gap, not fixed here: if the same spreadsheet is healed from two tabs/sessions at
+ * once, both compute the same "missing" set from one read each and could race to add the same
+ * title — Google rejects an explicit duplicate title rather than silently deduping, so the losing
+ * call surfaces a confusing error on that one load instead of a silent heal. Self-recovers on the
+ * next reload (the tab the winner created is now present), not data-corrupting — just a rough
+ * edge, considered acceptable for how rarely two sessions would race the very first load of a
+ * newly-outdated campaign.
+ */
 export async function addMissingTabs(
   spreadsheetId: string,
   tabs: { title: string; headers: string[] }[],
 ): Promise<void> {
-  const meta = await googleFetch<{ sheets: { properties: { title: string } }[] }>(
-    `${SHEETS_BASE}/${spreadsheetId}?fields=sheets.properties.title`,
+  const meta = await googleFetch<{ sheets: { properties: { sheetId: number; title: string } }[] }>(
+    `${SHEETS_BASE}/${spreadsheetId}?fields=sheets.properties(sheetId,title)`,
   )
-  const existing = new Set(meta.sheets.map((s) => s.properties.title))
-  const missing = tabs.filter((t) => !existing.has(t.title))
+  const existingTitles = new Set(meta.sheets.map((s) => s.properties.title))
+  const missing = tabs.filter((t) => !existingTitles.has(t.title))
   if (missing.length === 0) return
 
-  const res = await googleFetch<{
-    replies: { addSheet: { properties: { sheetId: number; title: string } } }[]
-  }>(`${SHEETS_BASE}/${spreadsheetId}:batchUpdate`, {
+  let nextSheetId = Math.max(0, ...meta.sheets.map((s) => s.properties.sheetId)) + 1
+  const sheetIds: Record<string, number> = {}
+  for (const t of missing) sheetIds[t.title] = nextSheetId++
+
+  const requests = missing.flatMap((t) => {
+    const sheetId = sheetIds[t.title]
+    return [
+      { addSheet: { properties: { sheetId, title: t.title } } },
+      {
+        updateCells: {
+          range: { sheetId, startRowIndex: 0, endRowIndex: 1, startColumnIndex: 0, endColumnIndex: t.headers.length },
+          rows: [
+            {
+              values: t.headers.map((h) => ({
+                userEnteredValue: { stringValue: h },
+                userEnteredFormat: { textFormat: { bold: true } },
+              })),
+            },
+          ],
+          fields: 'userEnteredValue,userEnteredFormat.textFormat.bold',
+        },
+      },
+    ]
+  })
+
+  await googleFetch(`${SHEETS_BASE}/${spreadsheetId}:batchUpdate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      requests: missing.map((t) => ({ addSheet: { properties: { title: t.title } } })),
-    }),
+    body: JSON.stringify({ requests }),
   })
-  const sheetIds: Record<string, number> = {}
-  for (const r of res.replies) sheetIds[r.addSheet.properties.title] = r.addSheet.properties.sheetId
-
-  await writeTabHeaders(spreadsheetId, missing, sheetIds)
 }
 
 /** Reads every tab in one round trip. Returns raw rows (row 0 is the header row) per tab title. */
