@@ -148,3 +148,29 @@ export async function getRecordedToasts(page: Page): Promise<string[]> {
       [],
   );
 }
+
+/**
+ * Hides Sonner toasts for the rest of the test, from page load onward. Call before navigating
+ * (it installs an init script — see the `document.head` guard below, needed because init scripts
+ * run before the document exists, so touching `document.documentElement` directly throws and
+ * Playwright silently swallows that).
+ *
+ * Needed because headless Chromium never fires Sonner's auto-dismiss timer, so a toast a test
+ * doesn't care about can sit on screen indefinitely — on a phone-width viewport that's directly
+ * over Play's input row, and even at desktop-ish heights the story log (h-[max(50svh,calc(100svh-
+ * 10rem))] when at the bottom of a turn, see Play.tsx) can leave little enough room below it that
+ * a lingering toast intercepts clicks on the Act button. Use this when a test has no reason to
+ * assert anything about toast content; see the mid-test `addStyleTag` variant in
+ * voice-elevenlabs.spec.ts for a test that needs a toast visible *first*, then out of the way.
+ */
+export async function hideToasts(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const inject = () => {
+      const style = document.createElement("style");
+      style.textContent = "[data-sonner-toaster] { display: none !important; }";
+      document.head.appendChild(style);
+    };
+    if (document.head) inject();
+    else document.addEventListener("DOMContentLoaded", inject, { once: true });
+  });
+}

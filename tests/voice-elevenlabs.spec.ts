@@ -204,6 +204,15 @@ test.describe('ElevenLabs voice provider', () => {
     // Wait for the first turn to fully settle (dialog closed, toast shown) before starting the
     // next one — otherwise the second Act click can race the first dialog's close animation.
     await expect(page.getByText('Turn applied.')).toBeVisible()
+    // Headless Chromium never fires Sonner's auto-dismiss timer (see mobile-layout.spec.ts's
+    // hideToasts), so the toast just asserted above would otherwise still be sitting on screen —
+    // and now that the story log fills the available height more tightly (#25's inline options
+    // review follow-up), it physically overlaps the Act button, intercepting the next click. A
+    // real browser would have auto-dismissed it well before a player could act again. CSS-hide
+    // rather than removing the node: Sonner still owns and mutates that subtree (it renders the
+    // *next* toast into the same tree), and ripping a node out from under React's reconciler
+    // crashes it — confirmed the hard way, this used to be `el.remove()`.
+    await page.addStyleTag({ content: '[data-sonner-toaster] { display: none !important; }' })
     await submitFreeTextTurn(page, 'open the chest', 'Inside: a folded letter, sealed with wax.')
 
     const playButtons = page.getByRole('button', { name: 'Play this turn aloud' })

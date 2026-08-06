@@ -492,35 +492,44 @@ export function Play() {
           software-rasterization glyph artifact in some renderers. A wrapper div inside the
           clipped viewport keeps glyphs safely away from the clip edge.
 
-          The log grows to a taller *fixed* height while the options/input are hidden, reclaiming
-          most of the vertical space they'd otherwise leave blank below a lone "Scroll to
-          continue" button. Deliberately an explicit bound (calc against the viewport), not
-          flex-1/min-h — a flex-grow child of an auto/min-height-only flex container has no fixed
-          budget to distribute, and different browsers resolve that ambiguity by sizing the child
-          to its full *content* height instead of the visible viewport (confirmed empirically: the
-          log's clientHeight grew to match its entire scrollHeight, thousands of pixels tall). That
-          also would have kept the bottom sentinel permanently visible, which — combined with
-          isAtBottom's one-way latch — meant "Scroll to continue" never went away again. An
-          explicit calc() height has no such ambiguity to resolve. Approximate, not exact: the
-          point is reclaiming most of the freed area, not filling to the pixel, and undershooting
-          is deliberately safer than overshooting into an unwanted extra scrollbar.
+          The log is a *fixed* height in both states, reclaiming most of the vertical space
+          something else would otherwise leave blank below it. Deliberately an explicit bound
+          (calc against the viewport), not flex-1/min-h — a flex-grow child of an auto/min-height-
+          only flex container has no fixed budget to distribute, and different browsers resolve
+          that ambiguity by sizing the child to its full *content* height instead of the visible
+          viewport (confirmed empirically: the log's clientHeight grew to match its entire
+          scrollHeight, thousands of pixels tall). That also would have kept the bottom sentinel
+          permanently visible, which — combined with isAtBottom's one-way latch — meant "Scroll to
+          continue" never went away again. An explicit calc() height has no such ambiguity to
+          resolve. Approximate, not exact: the point is reclaiming most of the freed area, not
+          filling to the pixel, and undershooting is deliberately safer than overshooting into an
+          unwanted extra scrollbar.
+
+          Both states use the *same* max(50svh, calc(100svh - Nrem)) shape, just with a different
+          reserve — they used to differ more (a flat 50svh at rest vs. this formula once
+          away/hidden), back when the options below the log were the only thing living in that
+          reserved space. Since #25 moved options *into* the log itself (inline with the
+          narrative, not a separate block underneath), a turn with several options routinely
+          exceeds a flat 50svh, and reusing the smaller fixed height left the log scrolling
+          internally to show its own tail *and* left a large dead gap between the input row and
+          the bottom of the viewport — nothing below the log grew to reclaim the space the
+          separate options block used to occupy. Measured empirically (390×844 viewport): the
+          content above the log plus the input row and its surrounding gap take up ~10rem
+          (scroll-area top offset + gap-4 + the input row's own height + a little bottom breathing
+          room) at rest, versus ~7rem when options/input are hidden away from the bottom (no input
+          row to leave room for then).
 
           Both heights are in `svh`, not a mix of `vh` and `svh`: on iOS `vh` tracks the *large*
           viewport (toolbars hidden) while `svh` tracks the small one, so mixing them would measure
           the two states against different boxes and make the "grown" height not actually the
           bigger of the two while the toolbars are showing. The max() guards the same thing for
-          short viewports generally — below roughly 350px of height, `100svh - 7rem` is *smaller*
-          than `50svh`, so without it the log would shrink on scrolling away instead of growing
-          (landscape phones hit this; the tests' fixed 844px viewport does not).
-
-          The `7rem` reserve is just the header plus this page's own top/bottom padding — it used
-          to be `11rem` to additionally cover the fixed `BottomNav` and the bottom-padding reserve
-          `App.tsx` set aside for it (see issue #21); now that both are gone, nothing sits below
-          the log any more, so the smaller reserve is the one that actually reaches close to the
-          bottom of the viewport instead of leaving the old nav's-worth of dead space behind. */}
+          short viewports generally — below roughly 350px (at rest) or 210px (away) of height, the
+          calc() term goes *smaller* than 50svh, so without the guard the log would shrink instead
+          of growing on a short/landscape phone (the tests' fixed 844px viewport does not hit
+          this). */}
       <div className="relative">
         <ScrollArea
-          className={isAtBottom ? 'h-[50svh]' : 'h-[max(50svh,calc(100svh-7rem))]'}
+          className={isAtBottom ? 'h-[max(50svh,calc(100svh-10rem))]' : 'h-[max(50svh,calc(100svh-7rem))]'}
           viewportRef={viewportRef}
         >
           {recentTurns.length === 0 ? (

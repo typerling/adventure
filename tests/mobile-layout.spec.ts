@@ -1,6 +1,6 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect } from '@playwright/test'
 import { installGoogleApiMock } from './mocks/googleApi'
-import { createRandomCampaign } from './helpers'
+import { createRandomCampaign, hideToasts } from './helpers'
 
 /**
  * Page-level responsive coverage for the three campaign screens. The component-level counterpart
@@ -20,29 +20,9 @@ import { createRandomCampaign } from './helpers'
 const MOBILE = { width: 390, height: 844 } // below Tailwind's `md` (768px)
 const DESKTOP = { width: 1280, height: 900 } // above it
 
-/**
- * Sonner renders toasts pinned to the bottom of the viewport, which at phone width sits directly
- * over the Play screen's input row — so a toast left over from campaign creation intercepts
- * clicks meant for the page underneath. Headless Chromium never fires Sonner's auto-dismiss
- * timer, so waiting it out isn't an option either; the overlap is permanent here.
- *
- * These are layout assertions, so the toast layer is hidden rather than worked around. Note the
- * `document.head` guard: init scripts run before the document exists, so touching
- * `document.documentElement` directly throws — and Playwright swallows that, leaving a helper
- * that silently does nothing (which is exactly what this used to do, until a 1-in-8 flake on the
- * click below gave it away).
- */
-async function hideToasts(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    const inject = () => {
-      const style = document.createElement('style')
-      style.textContent = '[data-sonner-toaster] { display: none !important; }'
-      document.head.appendChild(style)
-    }
-    if (document.head) inject()
-    else document.addEventListener('DOMContentLoaded', inject, { once: true })
-  })
-}
+// hideToasts is shared via ./helpers now — see its doc comment there for why this is needed
+// (headless Chromium never fires Sonner's auto-dismiss timer) and for the mid-test variant a
+// test needing a toast visible first, then out of the way, uses instead.
 
 /** Play/Codex/Settings for the campaign currently open, as `[label, path]` pairs. */
 function campaignRoutes(campaignId: string): [string, string][] {

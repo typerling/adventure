@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test'
 import type { Page } from '@playwright/test'
 import { installGoogleApiMock } from './mocks/googleApi'
 import { installClaudeApiMock, defaultValidReply } from './mocks/claude'
-import { createRandomCampaign, setCampaignAiMode } from './helpers'
+import { createRandomCampaign, hideToasts, setCampaignAiMode } from './helpers'
 
 const KEY_STORAGE = 'adventure:claude-api-key'
 
@@ -101,6 +101,14 @@ test.describe('Claude direct API mode', () => {
     await setCampaignAiMode(page, 'api')
     const campaignId = campaignIdFromUrl(page)
     await saveClaudeKey(page, campaignId, 'sk-ant-test-12345')
+    // setCampaignAiMode/saveClaudeKey above each wait on their own "saved" toast as a sync point,
+    // so toasts can't be hidden any earlier than this — but from here on, two turns apply
+    // back-to-back with no dialog/pause between them (auto mode skips the manual-paste dialog
+    // entirely), and headless Chromium never auto-dismisses the first turn's "Turn applied."
+    // toast, so it can still be sitting over the Act button when the loop clicks it again. Nothing
+    // below needs to see a toast, so just hide them from this navigation on rather than timing
+    // around it.
+    await hideToasts(page)
     await page.goto(`/play/${campaignId}`)
 
     for (const [i, action] of ['look around', 'open the door'].entries()) {
