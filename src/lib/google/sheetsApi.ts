@@ -11,6 +11,41 @@ interface CreateSpreadsheetResponse {
   sheets: { properties: { sheetId: number; title: string } }[]
 }
 
+/** Writes each tab's header row (bolded) as its first row — shared by createSpreadsheet (every
+ * tab, on a brand-new spreadsheet) and addMissingTabs (just the newly-added ones, on an existing
+ * spreadsheet that predates them). */
+async function writeTabHeaders(
+  spreadsheetId: string,
+  tabs: { title: string; headers: string[] }[],
+  sheetIds: Record<string, number>,
+): Promise<void> {
+  await googleFetch(`${SHEETS_BASE}/${spreadsheetId}/values:batchUpdate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      valueInputOption: 'RAW',
+      data: tabs.map((t) => ({
+        range: `'${t.title}'!A1`,
+        values: [t.headers],
+      })),
+    }),
+  })
+
+  await googleFetch(`${SHEETS_BASE}/${spreadsheetId}:batchUpdate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      requests: tabs.map((t) => ({
+        repeatCell: {
+          range: { sheetId: sheetIds[t.title], startRowIndex: 0, endRowIndex: 1 },
+          cell: { userEnteredFormat: { textFormat: { bold: true } } },
+          fields: 'userEnteredFormat.textFormat.bold',
+        },
+      })),
+    }),
+  })
+}
+
 /** Creates a spreadsheet with one tab per entry, moves it into folderId, and writes each tab's
  * header row (bolded) as the first row. Returns the spreadsheet id and per-tab sheetId map. */
 export async function createSpreadsheet(
@@ -32,33 +67,40 @@ export async function createSpreadsheet(
   const sheetIds: Record<string, number> = {}
   for (const s of created.sheets) sheetIds[s.properties.title] = s.properties.sheetId
 
-  await googleFetch(`${SHEETS_BASE}/${created.spreadsheetId}/values:batchUpdate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      valueInputOption: 'RAW',
-      data: tabs.map((t) => ({
-        range: `'${t.title}'!A1`,
-        values: [t.headers],
-      })),
-    }),
-  })
-
-  await googleFetch(`${SHEETS_BASE}/${created.spreadsheetId}:batchUpdate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      requests: tabs.map((t) => ({
-        repeatCell: {
-          range: { sheetId: sheetIds[t.title], startRowIndex: 0, endRowIndex: 1 },
-          cell: { userEnteredFormat: { textFormat: { bold: true } } },
-          fields: 'userEnteredFormat.textFormat.bold',
-        },
-      })),
-    }),
-  })
+  await writeTabHeaders(created.spreadsheetId, tabs, sheetIds)
 
   return { spreadsheetId: created.spreadsheetId, sheetIds }
+}
+
+/** Adds whichever of `tabs` aren't already present in the spreadsheet, with the same header-row
+ * setup a freshly created campaign gets — a no-op if every tab already exists. Exists because
+ * SHEET_TABS has grown over time (e.g. NPCAttributes, added when NPC profiles shipped), so an
+ * older campaign's actual spreadsheet can predate a tab the app now always expects to be there.
+ * See loadSheetSnapshot's retry-on-missing-tab handling, the caller of this. */
+export async function addMissingTabs(
+  spreadsheetId: string,
+  tabs: { title: string; headers: string[] }[],
+): Promise<void> {
+  const meta = await googleFetch<{ sheets: { properties: { title: string } }[] }>(
+    `${SHEETS_BASE}/${spreadsheetId}?fields=sheets.properties.title`,
+  )
+  const existing = new Set(meta.sheets.map((s) => s.properties.title))
+  const missing = tabs.filter((t) => !existing.has(t.title))
+  if (missing.length === 0) return
+
+  const res = await googleFetch<{
+    replies: { addSheet: { properties: { sheetId: number; title: string } } }[]
+  }>(`${SHEETS_BASE}/${spreadsheetId}:batchUpdate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      requests: missing.map((t) => ({ addSheet: { properties: { title: t.title } } })),
+    }),
+  })
+  const sheetIds: Record<string, number> = {}
+  for (const r of res.replies) sheetIds[r.addSheet.properties.title] = r.addSheet.properties.sheetId
+
+  await writeTabHeaders(spreadsheetId, missing, sheetIds)
 }
 
 /** Reads every tab in one round trip. Returns raw rows (row 0 is the header row) per tab title. */

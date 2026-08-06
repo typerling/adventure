@@ -119,6 +119,15 @@ export class FakeDriveStore {
     this.files.set(file.id, file)
     return file
   }
+
+  /** Deletes one tab from an existing fake spreadsheet — lets a test simulate an older campaign
+   * whose spreadsheet predates a tab SHEET_TABS has since grown to include (see
+   * campaignRepo.ts's loadSheetSnapshot / addMissingTabs). */
+  removeSheetTab(spreadsheetId: string, tabTitle: string): void {
+    const file = this.files.get(spreadsheetId)
+    if (!file?.spreadsheet) throw new Error(`removeSheetTab: unknown spreadsheet ${spreadsheetId}`)
+    delete file.spreadsheet.sheets[tabTitle]
+  }
 }
 
 function toDriveFileJson(file: FakeFile) {
@@ -261,17 +270,53 @@ async function handleGoogleRequest(route: Route, store: FakeDriveStore): Promise
         return
       }
 
+      if (pathname === `/v4/spreadsheets/${spreadsheetIdMatch[1]}` && method === 'GET') {
+        // Metadata fetch (addMissingTabs' existence check) — only the fields this app ever
+        // requests (?fields=sheets.properties.title) are populated.
+        await fulfillJson(route, {
+          sheets: Object.entries(sheets).map(([title, s]) => ({ properties: { sheetId: s.sheetId, title } })),
+        })
+        return
+      }
+
       if (pathname === `/v4/spreadsheets/${spreadsheetIdMatch[1]}:batchUpdate` && method === 'POST') {
-        // Cell-formatting requests (bold header row) — cosmetic only, nothing to apply.
-        await fulfillJson(route, { spreadsheetId: spreadsheetIdMatch[1], replies: [] })
+        const body = request.postDataJSON() as {
+          requests: ({ addSheet?: { properties: { title: string } } } & Record<string, unknown>)[]
+        }
+        // addSheet requests actually create a tab (addMissingTabs relies on the real sheetId back
+        // in the reply); repeatCell (bold header row) is cosmetic only, nothing to apply.
+        const replies = body.requests.map((r) => {
+          if (!r.addSheet) return {}
+          const title = r.addSheet.properties.title
+          const sheetId = Object.values(sheets).reduce((max, s) => Math.max(max, s.sheetId), 0) + 1
+          sheets[title] = { sheetId, rows: [] }
+          return { addSheet: { properties: { sheetId, title } } }
+        })
+        await fulfillJson(route, { spreadsheetId: spreadsheetIdMatch[1], replies })
         return
       }
 
       if (pathname.endsWith('/values:batchGet') && method === 'GET') {
         const ranges = url.searchParams.getAll('ranges')
+        // Real Sheets API fails the *entire* batchGet if even one referenced tab doesn't exist —
+        // "Unable to parse range: '<title>'!A1:ZZ" — rather than treating it as empty. Matching
+        // that here is what makes campaignRepo.ts's missing-tab recovery path testable at all.
+        for (const r of ranges) {
+          const title = parseSheetTitle(decodeURIComponent(r))
+          if (!sheets[title]) {
+            await route.fulfill({
+              status: 400,
+              contentType: 'application/json',
+              body: JSON.stringify({
+                error: { code: 400, message: `Unable to parse range: '${title}'!A1:ZZ`, status: 'INVALID_ARGUMENT' },
+              }),
+            })
+            return
+          }
+        }
         const valueRanges = ranges.map((r) => {
           const sheet = sheets[parseSheetTitle(decodeURIComponent(r))]
-          return { values: sheet ? sheet.rows : [] }
+          return { values: sheet.rows }
         })
         await fulfillJson(route, { valueRanges })
         return
