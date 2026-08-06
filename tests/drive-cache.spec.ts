@@ -28,7 +28,8 @@ test('revisiting a campaign this session reuses cached Drive/Sheets data instead
     if (req.url().includes('sheets.googleapis.com') && req.url().includes(':batchGet')) sheetsBatchGets++
   })
 
-  await page.getByRole('link', { name: 'Codex' }).click()
+  await page.getByRole('banner').getByRole('button', { name: 'Menu' }).click()
+  await page.getByRole('menuitem', { name: 'Codex' }).click()
   await expect(page.getByRole('tab', { name: 'Inventory' })).toBeVisible()
 
   // The campaign name in the top-bar header doubles as "back to play" (title attribute, stable
@@ -36,7 +37,8 @@ test('revisiting a campaign this session reuses cached Drive/Sheets data instead
   await page.getByTitle('Back to play').click()
   await expect(page.getByPlaceholder('Say or do anything…')).toBeVisible()
 
-  await page.getByRole('link', { name: 'Settings' }).click()
+  await page.getByRole('banner').getByRole('button', { name: 'Menu' }).click()
+  await page.getByRole('menuitem', { name: 'Settings' }).click()
   await expect(page.getByText('AI mode', { exact: true })).toBeVisible()
 
   await page.getByRole('link', { name: 'Back' }).click()

@@ -15,8 +15,9 @@ test.describe('reaching a campaign\'s own Settings', () => {
     await installGoogleApiMock(page)
     await createRandomCampaign(page)
 
-    await expect(page.getByRole('link', { name: 'Codex' })).toBeVisible()
-    await page.getByRole('link', { name: 'Settings' }).click()
+    await page.getByRole('banner').getByRole('button', { name: 'Menu' }).click()
+    await expect(page.getByRole('menuitem', { name: 'Codex' })).toBeVisible()
+    await page.getByRole('menuitem', { name: 'Settings' }).click()
 
     await expect(page).toHaveURL(/\/settings\/.+/)
     await expect(page.getByText('This campaign', { exact: true })).toBeVisible()
@@ -39,8 +40,8 @@ test.describe('reaching a campaign\'s own Settings', () => {
 /**
  * Play/Codex/Settings used to each carry their own Codex/Settings/"Back to play" links, separate
  * from (and inconsistent with) the top-bar header's own single global Settings link. They now all
- * share one header (src/store/playHeaderStore.ts): exactly one Settings link and one Codex link,
- * both campaign-aware, plus the campaign name shown as "Adventure - <name>".
+ * share one header (src/store/playHeaderStore.ts): a single hamburger menu holding Codex/Settings/
+ * "Back to campaigns", campaign-aware, plus the campaign name shown as "Adventure - <name>".
  */
 test.describe('the top-bar header merges campaign navigation', () => {
   test('shows just "Adventure" with no campaign chrome when no campaign is open', async ({ page }) => {
@@ -49,13 +50,16 @@ test.describe('the top-bar header merges campaign navigation', () => {
 
     await expect(page.getByRole('link', { name: 'Adventure' })).toBeVisible()
     await expect(page.getByTitle('Back to play')).toHaveCount(0)
-    await expect(page.getByRole('link', { name: 'Codex' })).toHaveCount(0)
-    await expect(page.getByRole('link', { name: 'Settings' })).toHaveCount(1)
-    await page.getByRole('link', { name: 'Settings' }).click()
+
+    await page.getByRole('banner').getByRole('button', { name: 'Menu' }).click()
+    await expect(page.getByRole('menuitem', { name: 'Codex' })).toHaveCount(0)
+    await expect(page.getByRole('menuitem', { name: 'Back to campaigns' })).toHaveCount(0)
+    await expect(page.getByRole('menuitem', { name: 'Settings' })).toHaveCount(1)
+    await page.getByRole('menuitem', { name: 'Settings' }).click()
     await expect(page).toHaveURL(/\/settings$/)
   })
 
-  test('shows the campaign name and exactly one Codex/Settings link on Play, Codex, and Settings', async ({
+  test('shows the campaign name and exactly one Codex/Settings menu item on Play, Codex, and Settings', async ({
     page,
   }) => {
     await installGoogleApiMock(page)
@@ -64,20 +68,28 @@ test.describe('the top-bar header merges campaign navigation', () => {
     const campaignLink = page.getByTitle('Back to play')
     await expect(campaignLink).toBeVisible()
     const campaignName = await campaignLink.textContent()
-    await expect(page.getByRole('link', { name: 'Codex' })).toHaveCount(1)
-    await expect(page.getByRole('link', { name: 'Settings' })).toHaveCount(1)
 
-    await page.getByRole('link', { name: 'Codex' }).click()
+    const menuButton = page.getByRole('banner').getByRole('button', { name: 'Menu' })
+
+    await menuButton.click()
+    await expect(page.getByRole('menuitem', { name: 'Codex' })).toHaveCount(1)
+    await expect(page.getByRole('menuitem', { name: 'Settings' })).toHaveCount(1)
+    await page.getByRole('menuitem', { name: 'Codex' }).click()
+
     await expect(page).toHaveURL(/\/codex\/.+/)
     await expect(page.getByTitle('Back to play')).toHaveText(campaignName ?? '')
-    await expect(page.getByRole('link', { name: 'Codex' })).toHaveCount(1)
-    await expect(page.getByRole('link', { name: 'Settings' })).toHaveCount(1)
 
-    await page.getByRole('link', { name: 'Settings' }).click()
+    await menuButton.click()
+    await expect(page.getByRole('menuitem', { name: 'Codex' })).toHaveCount(1)
+    await expect(page.getByRole('menuitem', { name: 'Settings' })).toHaveCount(1)
+    await page.getByRole('menuitem', { name: 'Settings' }).click()
+
     await expect(page).toHaveURL(/\/settings\/.+/)
     await expect(page.getByTitle('Back to play')).toHaveText(campaignName ?? '')
-    await expect(page.getByRole('link', { name: 'Codex' })).toHaveCount(1)
-    await expect(page.getByRole('link', { name: 'Settings' })).toHaveCount(1)
+
+    await menuButton.click()
+    await expect(page.getByRole('menuitem', { name: 'Codex' })).toHaveCount(1)
+    await expect(page.getByRole('menuitem', { name: 'Settings' })).toHaveCount(1)
   })
 
   test('the turn/location icon button opens a dialog, not a toast', async ({ page }) => {

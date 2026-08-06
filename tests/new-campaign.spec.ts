@@ -55,7 +55,8 @@ test.describe('new campaign flow', () => {
     await expect(page.getByText('No story yet — describe your first action below to begin.')).toBeVisible()
 
     // --- Data round-tripped through the mocked Sheets backend shows up in the Codex ---
-    await page.getByRole('link', { name: 'Codex' }).click()
+    await page.getByRole('banner').getByRole('button', { name: 'Menu' }).click()
+    await page.getByRole('menuitem', { name: 'Codex' }).click()
     await expect(page).toHaveURL(/\/codex\/.+/)
     await expect(page.getByText('Elowen')).toBeVisible()
 
