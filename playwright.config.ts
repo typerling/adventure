@@ -12,6 +12,11 @@ export default defineConfig({
   use: {
     baseURL: BASE_URL,
     trace: 'on-first-retry',
+    // The coi-serviceworker (src/lib/coiServiceWorker.ts) would otherwise register in every test
+    // that loads the app, racing with — and potentially shadowing — the page.route()-based Drive/
+    // Sheets/GIS mocks every other spec depends on (tests/mocks/googleApi.ts). Blocked by default;
+    // tests/coi-service-worker.spec.ts overrides this per-file to actually exercise the worker.
+    serviceWorkers: 'block',
   },
   projects: [
     {

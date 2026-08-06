@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { GOOGLE_CLIENT_ID, GOOGLE_SCOPES, isGoogleConfigured } from './config'
 import { GIS_SCRIPT_SRC, loadScript } from './loadScript'
+import { disableCrossOriginIsolationAndReload } from '@/lib/coiServiceWorker'
 
 type AuthStatus = 'unconfigured' | 'restoring' | 'signed-out' | 'signing-in' | 'signed-in' | 'error'
 
@@ -87,6 +88,29 @@ async function ensureTokenClient(): Promise<TokenClient> {
   return tokenClient
 }
 
+/**
+ * True when a GIS popup token request failed because `Cross-Origin-Opener-Policy: same-origin`
+ * (enabled by src/lib/coiServiceWorker.ts, for Kokoro's threaded WASM - see that file and
+ * coi-serviceworker.js's doc comments) severed `window.opener` for the popup accounts.google.com
+ * opens. Confirmed by reading GIS's own unminified source, not assumed: both interactive sign-in
+ * and background silent refresh open a popup that relays its result back via
+ * `window.opener.postMessage(...)`, which throws/no-ops once `opener` is null - and confirmed
+ * empirically in real Chromium with a synthetic two-origin popup+postMessage test that COOP:
+ * same-origin does exactly this. GIS's own "popup closed before finishing" detection (unaffected
+ * by COOP - it only reads `.closed` on *our* reference to the popup, never the popup's own
+ * `opener`) then reports `'popup_closed'`, indistinguishable from the user actually closing it,
+ * even though the popup completed the flow just fine server-side.
+ *
+ * Every call site below treats this one error id as "the isolation shim needs to step out of the
+ * way" rather than a normal auth failure - it isn't safe to just retry, since every popup this
+ * session opens while still isolated would fail the same way, including the *next* automatic
+ * silent refresh roughly an hour from now (this app's access tokens are short-lived - see
+ * SESSION_STORAGE_KEY's comment below).
+ */
+function isPopupSeveredByIsolation(res: TokenResponse): boolean {
+  return res.error === 'popup_closed' && window.crossOriginIsolated === true
+}
+
 /** Serialized queue tail. GIS allows only one outstanding request per client, and its callback is
  * fixed at creation (above), so overlapping callers would each overwrite `currentTokenHandler` —
  * every handler but the last would then never be invoked and its promise would never settle. */
@@ -134,6 +158,14 @@ export const useGoogleAuth = create<AuthState>((set, get) => ({
       // for an explicit "Sign in" click) but doesn't re-ask for consent the user already granted.
       // Forcing 'consent' here meant every returning sign-in replayed the full consent screen.
       const res = await requestToken()
+      if (isPopupSeveredByIsolation(res)) {
+        set({
+          status: 'error',
+          errorMessage: 'One moment — reloading to finish signing in…',
+        })
+        await disableCrossOriginIsolationAndReload() // navigates away; nothing after this runs
+        return
+      }
       if (res.error) throw new Error(res.error_description ?? res.error)
       set({
         status: 'signed-in',
@@ -171,6 +203,14 @@ export const useGoogleAuth = create<AuthState>((set, get) => ({
     const refresh = (async () => {
       // Silent refresh (no consent prompt) — piggybacks on Google's own cookie session.
       const res = await requestToken({ prompt: '' })
+      if (isPopupSeveredByIsolation(res)) {
+        // Don't report this as a normal expired session: it isn't one, and "sign in again" would
+        // just fail the same way while still isolated. Step out of isolation and reload instead —
+        // see isPopupSeveredByIsolation's doc comment.
+        set({ status: 'signed-out', accessToken: null, expiresAt: null })
+        await disableCrossOriginIsolationAndReload() // navigates away; nothing after this runs
+        throw new Error('Reloading to restore your session…')
+      }
       if (res.error) {
         set({ status: 'signed-out', accessToken: null, expiresAt: null })
         throw new Error('Session expired — please sign in again.')
@@ -209,6 +249,13 @@ useGoogleAuth.subscribe((state, prevState) => {
 if (isGoogleConfigured && !restoredSession) {
   requestToken({ prompt: '' })
     .then((res) => {
+      // See isPopupSeveredByIsolation's doc comment - this is the same recovery as
+      // getValidAccessToken's silent refresh, just for the very first load's reauth attempt.
+      if (isPopupSeveredByIsolation(res)) {
+        useGoogleAuth.setState({ status: 'signed-out' })
+        void disableCrossOriginIsolationAndReload()
+        return
+      }
       if (res.error) {
         useGoogleAuth.setState({ status: 'signed-out' })
         return

@@ -63,7 +63,12 @@ one Sheets batch call plus one Drive file read — never an open-ended search.
   management; **Sheets API v4** (`spreadsheets`) for all tabular reads/writes.
 - **Zustand** (or plain context) for in-memory session state; Drive/Sheets are the source of
   truth, local state is a cache with optimistic writes reconciled against API responses.
-- **PWA** (manifest + service worker) — installable on a phone, mic access works over HTTPS.
+- **PWA** (manifest, `public/manifest.webmanifest`) — installable on a phone, mic access works
+  over HTTPS. The one service worker this app registers (`public/coi-serviceworker.js`, wired up
+  via `src/lib/coiServiceWorker.ts`) exists for a narrower reason than offline support: it
+  cross-origin-isolates the deployed GitHub Pages site so ONNX Runtime Web's WASM backend can run
+  Kokoro TTS multi-threaded — see CLAUDE.md's Voice section. Offline/install support, if added
+  later, should extend that same worker's fetch handler rather than register a second one.
 - No build-time dependency on any AI vendor SDK in Phase 1 (manual bridge needs none). Phase 2
   adds a thin `fetch`-based client per provider, called directly from the browser with a
   user-supplied key stored only in `localStorage`.
