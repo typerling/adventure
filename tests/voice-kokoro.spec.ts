@@ -4,7 +4,7 @@ import {
   installControllableAudioPlayback,
   installFakeAudioPlayback,
 } from "./mocks/elevenLabs";
-import { installFakeKokoroModule } from "./mocks/kokoro";
+import { getKokoroWorker, installFakeKokoroModule } from "./mocks/kokoro";
 import {
   createRandomCampaign,
   setCampaignVoiceProviders,
@@ -193,15 +193,19 @@ test.describe("Kokoro voice picker", () => {
     await expect(page.locator("#kokoroVoiceId")).toHaveValue("");
 
     // Preview generates a clip on-device (via the faked KokoroTTS.generate) and plays it —
-    // recorded onto window.__kokoroGenerateCalls so this can assert the exact voice used.
+    // recorded onto the worker's own self.__kokoroGenerateCalls so this can assert the exact
+    // voice used.
     await page.getByRole("button", { name: "Preview Adam" }).click();
     await expect(
       page.getByRole("button", { name: "Stop preview of Adam" }),
     ).toBeVisible();
-    const generateCalls = await page.evaluate(
+    // KokoroTTS.generate() runs inside kokoroTts.worker.ts (#44) — a separate realm from the page,
+    // so this call is recorded onto the worker's own `self`, not `window`.
+    const worker = await getKokoroWorker(page);
+    const generateCalls = await worker.evaluate(
       () =>
         (
-          window as unknown as {
+          self as unknown as {
             __kokoroGenerateCalls?: { text: string; voice: string }[];
           }
         ).__kokoroGenerateCalls ?? [],
@@ -260,9 +264,21 @@ test.describe("Kokoro voice picker", () => {
     const campaignId = campaignIdFromUrl(page);
     await page.goto(`/settings/${campaignId}`);
 
-    // Gate the fake model's generate() so the preview call hangs until explicitly released.
-    await page.evaluate(() => {
-      const w = window as unknown as {
+    await page.getByRole("button", { name: "Browse voices" }).click();
+    await expect(
+      page.getByRole("dialog", { name: "Choose a Kokoro voice" }),
+    ).toBeVisible();
+    // Wait for the voice list itself, not just the dialog — confirms kokoroTts.worker.ts (#44) has
+    // actually spawned and finished its 'load'/'listVoices' round trip, so the gate installed next
+    // is in place before the "Preview Adam" click below can race it.
+    await expect(page.getByRole("button", { name: /^Adam/ })).toBeVisible();
+
+    // Gate the fake model's generate() so the preview call hangs until explicitly released. Set on
+    // the worker's own `self` via Worker.evaluate() — not page.evaluate() — since KokoroTTS.generate()
+    // now runs inside kokoroTts.worker.ts (#44), a separate realm from the page.
+    const worker = await getKokoroWorker(page);
+    await worker.evaluate(() => {
+      const w = self as unknown as {
         __kokoroGeneratePause?: Promise<void>;
         __releaseKokoroGenerate?: () => void;
       };
@@ -271,18 +287,13 @@ test.describe("Kokoro voice picker", () => {
       });
     });
 
-    await page.getByRole("button", { name: "Browse voices" }).click();
-    await expect(
-      page.getByRole("dialog", { name: "Choose a Kokoro voice" }),
-    ).toBeVisible();
-
     await page.getByRole("button", { name: "Preview Adam" }).click();
     // The call is recorded as soon as it starts, even though the fake is holding it open.
     await expect
       .poll(() =>
-        page.evaluate(
+        worker.evaluate(
           () =>
-            (window as unknown as { __kokoroGenerateCalls?: unknown[] })
+            (self as unknown as { __kokoroGenerateCalls?: unknown[] })
               .__kokoroGenerateCalls?.length ?? 0,
         ),
       )
@@ -293,9 +304,9 @@ test.describe("Kokoro voice picker", () => {
     await expect(page.getByRole("dialog")).toHaveCount(0);
 
     // Now let the delayed generate() resolve.
-    await page.evaluate(() =>
+    await worker.evaluate(() =>
       (
-        window as unknown as { __releaseKokoroGenerate?: () => void }
+        self as unknown as { __releaseKokoroGenerate?: () => void }
       ).__releaseKokoroGenerate?.(),
     );
     await page.waitForTimeout(300);
@@ -342,22 +353,24 @@ test.describe("Kokoro voice picker", () => {
       page.getByText("A low hum fills the chamber."),
     ).toBeVisible();
 
+    // KokoroTTS.generate() runs inside kokoroTts.worker.ts (#44) — a separate realm from the page.
+    const worker = await getKokoroWorker(page);
     await expect
       .poll(() =>
-        page.evaluate(
+        worker.evaluate(
           () =>
             (
-              window as unknown as {
+              self as unknown as {
                 __kokoroGenerateCalls?: { text: string; voice: string }[];
               }
             ).__kokoroGenerateCalls?.length ?? 0,
         ),
       )
       .toBeGreaterThan(0);
-    const generateCalls = await page.evaluate(
+    const generateCalls = await worker.evaluate(
       () =>
         (
-          window as unknown as {
+          self as unknown as {
             __kokoroGenerateCalls?: { text: string; voice: string }[];
           }
         ).__kokoroGenerateCalls ?? [],
@@ -392,6 +405,97 @@ test.describe("Kokoro voice picker", () => {
     expect(
       await page.evaluate(() => navigator.mediaSession.playbackState),
     ).toBe("playing");
+  });
+
+  test("starting a second turn's playback while the first is still pre-generating stops the first from generating further chunks", async ({
+    page,
+  }) => {
+    // Flagged in PR #48's review: kokoroTts.worker.ts dispatched every 'speak' request
+    // immediately with no queue, so clicking a different turn's play button while an earlier
+    // turn's (now much longer, since #44) pre-generation was still running could run two
+    // generations against the shared model at once, and a superseded turn kept generating chunks
+    // nothing would ever play. Turn 1 here has 3 sentences (3 chunks); gating generate() lets this
+    // supersede it after only its first chunk is in flight.
+    await installGoogleApiMock(page);
+    await installFakeKokoroModule(page);
+    await installControllableAudioPlayback(page);
+
+    await createRandomCampaign(page);
+    await setCampaignVoiceProviders(page, { tts: "huggingface-local" });
+
+    await submitFreeTextTurn(
+      page,
+      "look around",
+      "The first room is cold. The second room is silent. The third room is sealed shut.",
+    );
+    await expect(page.getByText("Turn applied.")).toBeVisible();
+    await page.addStyleTag({ content: "[data-sonner-toaster] { display: none !important; }" });
+    await submitFreeTextTurn(page, "move on", "A short hallway leads onward.");
+    await expect(page.getByText("A short hallway leads onward.")).toBeVisible();
+
+    const playButtons = page.getByRole("button", { name: "Play this turn aloud" });
+    // Nothing has used Kokoro yet in this test, so the worker doesn't exist until this click
+    // triggers it — start waiting for it *before* clicking (not after), so the 'worker' event
+    // (which fires the instant the Worker object is constructed, well before its script has even
+    // loaded) can't be missed by a click that resolves first.
+    const [worker] = await Promise.all([getKokoroWorker(page), playButtons.first().click()]); // turn 1
+
+    // The worker script (fetched over the intercepted route) still has to load and execute
+    // KokoroTTS.from_pretrained() before the first generate() call — gate it now, ahead of that.
+    await worker.evaluate(() => {
+      const w = self as unknown as {
+        __kokoroGeneratePause?: Promise<void>;
+        __releaseKokoroGenerate?: () => void;
+      };
+      w.__kokoroGeneratePause = new Promise<void>((resolve) => {
+        w.__releaseKokoroGenerate = resolve;
+      });
+    });
+
+    // turn 1 (3 chunks) — its first chunk's generate() hangs on the gate just installed.
+    await expect
+      .poll(() =>
+        worker.evaluate(
+          () =>
+            (self as unknown as { __kokoroGenerateCalls?: unknown[] }).__kokoroGenerateCalls
+              ?.length ?? 0,
+        ),
+      )
+      .toBe(1);
+
+    // Start turn 2 while turn 1's job is still queued/paused on its first chunk.
+    await playButtons.first().click(); // now the only remaining button — turn 2's
+
+    // Release the gate — turn 1's paused first-chunk generate() resolves, its staleness check
+    // (now superseded by turn 2) makes it bail without generating chunks 2/3; the queue then runs
+    // turn 2's job fresh.
+    await worker.evaluate(() =>
+      (self as unknown as { __releaseKokoroGenerate?: () => void }).__releaseKokoroGenerate?.(),
+    );
+
+    // Turn 2 actually completes and plays — not stuck behind turn 1's abandoned job.
+    await expect(page.getByRole("button", { name: "Stop playback" })).toHaveCount(1);
+    await expect
+      .poll(async () =>
+        page.evaluate(() => navigator.mediaSession.metadata?.title),
+      )
+      .toBe("Turn 2");
+
+    const generateCalls = await worker.evaluate(
+      () =>
+        (self as unknown as { __kokoroGenerateCalls?: { text: string }[] }).__kokoroGenerateCalls ??
+        [],
+    );
+    // Only turn 1's first chunk was ever generated — the second and third sentences never were.
+    // Without the fix, the superseded job would have kept generating all 3 (they were only ever
+    // discarded on the *main thread* via playToken, never stopped at the source), so this would
+    // include "second room"/"third room" calls too.
+    const turn1Calls = generateCalls.filter((c) => /room is (cold|silent)|sealed shut/.test(c.text));
+    expect(turn1Calls).toHaveLength(1);
+    expect(turn1Calls[0].text).toContain("first room is cold");
+    // Turn 2 still completed in full (its narrative, spoken via the same 'speak' job that replaced
+    // turn 1's) — this fix isn't just "stop the old job," it has to let the new one actually finish.
+    expect(generateCalls.some((c) => c.text.includes("short hallway"))).toBe(true);
   });
 
   test("removing the downloaded voice model resets the picker so reopening it reloads instead of reusing a stale list", async ({
@@ -434,10 +538,15 @@ test.describe("Kokoro voice picker", () => {
       page.getByRole("dialog", { name: "Choose a Kokoro voice" }),
     ).toBeVisible();
     await expect(page.getByRole("button", { name: /^Adam/ })).toBeVisible();
+    // KokoroTTS.from_pretrained() runs inside kokoroTts.worker.ts (#44) — a separate realm from
+    // the page — so this count is recorded onto the worker's own `self`, not `window`. The worker
+    // is a page-lifetime singleton (kokoroTts.ts never tears it down), so the same handle is valid
+    // across the remove-and-reopen below too.
+    const worker = await getKokoroWorker(page);
     await expect
       .poll(() =>
-        page.evaluate(
-          () => (window as unknown as { __kokoroLoadCalls?: number }).__kokoroLoadCalls ?? 0,
+        worker.evaluate(
+          () => (self as unknown as { __kokoroLoadCalls?: number }).__kokoroLoadCalls ?? 0,
         ),
       )
       .toBe(1);
@@ -461,8 +570,8 @@ test.describe("Kokoro voice picker", () => {
     await expect(page.getByRole("button", { name: /^Adam/ })).toBeVisible();
     await expect
       .poll(() =>
-        page.evaluate(
-          () => (window as unknown as { __kokoroLoadCalls?: number }).__kokoroLoadCalls ?? 0,
+        worker.evaluate(
+          () => (self as unknown as { __kokoroLoadCalls?: number }).__kokoroLoadCalls ?? 0,
         ),
       )
       .toBe(2);
