@@ -63,30 +63,30 @@ export function Header() {
           {context?.turnLabel && (
             <Button
               size="icon-sm"
-              variant="outline"
+              variant="ghost"
               onClick={() => setTurnInfoOpen(true)}
               title={context.turnLabel}
               aria-label={context.turnLabel}
             >
-              <MapPin className="size-4" />
+              <MapPin className="size-5" />
             </Button>
           )}
           {context?.showReadAloudToggle && (
             <Button
               size="icon-sm"
-              variant={readAloud ? 'default' : 'outline'}
+              variant={readAloud ? 'default' : 'ghost'}
               onClick={toggleReadAloud}
               aria-pressed={readAloud}
               title={readAloud ? 'Stop reading turns aloud' : 'Read new turns aloud'}
               aria-label={readAloud ? 'Stop reading turns aloud' : 'Read new turns aloud'}
             >
-              {readAloud ? <Volume2 className="size-4" /> : <VolumeX className="size-4" />}
+              {readAloud ? <Volume2 className="size-5" /> : <VolumeX className="size-5" />}
             </Button>
           )}
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button size="icon-sm" variant="outline" title="Menu" aria-label="Menu">
-                <Menu className="size-4" />
+              <Button size="icon-sm" variant="ghost" title="Menu" aria-label="Menu">
+                <Menu className="size-5" />
               </Button>
             </DropdownMenuTrigger>
             {/* min-w-52 overrides the primitive's min-w-32 default — this trigger is a small
@@ -95,14 +95,14 @@ export function Header() {
                 still wrapped, 208px doesn't. */}
             <DropdownMenuContent align="end" className="min-w-52">
               {context && (
-                <DropdownMenuItem asChild>
+                <DropdownMenuItem asChild className="text-base">
                   <Link to={`/codex/${context.campaignId}`}>
                     <BookOpen className="size-4" />
                     Codex
                   </Link>
                 </DropdownMenuItem>
               )}
-              <DropdownMenuItem asChild>
+              <DropdownMenuItem asChild className="text-base">
                 <Link to={context ? `/settings/${context.campaignId}` : '/settings'}>
                   <SettingsIcon className="size-4" />
                   Settings
@@ -111,7 +111,7 @@ export function Header() {
               {context && (
                 <>
                   <DropdownMenuSeparator />
-                  <DropdownMenuItem asChild>
+                  <DropdownMenuItem asChild className="text-base">
                     <Link to="/">
                       <Home className="size-4" />
                       Back to campaigns
