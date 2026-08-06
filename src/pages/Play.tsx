@@ -21,6 +21,12 @@ import type { TurnOption, TurnRecord, ValidationIssue } from '@/types/turn'
 import { getSttProvider, getTtsProvider, isSttProviderAvailable, isTtsProviderAvailable } from '@/lib/voice/getProvider'
 import type { SttProvider, TtsProvider } from '@/lib/voice/types'
 import { describeKokoroProgress } from '@/lib/voice/kokoroTts'
+import {
+  clearMediaSession,
+  setMediaSessionHandlers,
+  setMediaSessionMetadata,
+  setMediaSessionPlaybackState,
+} from '@/lib/voice/mediaSession'
 import { generateClaudeReply } from '@/lib/ai/claudeProvider'
 import { describeLocalModelProgress, generateLocalReply } from '@/lib/ai/localModel'
 import { buildSpokenScript, splitNarrativeIntoBlocks } from '@/lib/ai/turnBlocks'
@@ -82,6 +88,14 @@ export function Play() {
    * audio per instance, so a fresh instance per call meant stop() could never reach audio started
    * by an earlier instance. */
   const ttsProviderRef = useRef<{ kind: TtsProviderKind; provider: TtsProvider } | null>(null)
+  /** The text/turn most recently handed to speakText() — lets the OS-level Media Session "play"
+   * control (see mediaSession.ts) restart narration after a "pause", since no TtsProvider
+   * implementation can genuinely resume mid-utterance. */
+  const lastSpokenRef = useRef<{ text: string; turn?: number } | null>(null)
+  /** Bumped on every speakText() call; a pending speak() promise's `finally` only clears the Media
+   * Session if it's still the most recent call — otherwise it would wipe out a session that
+   * actually belongs to a newer, still-playing turn (one playback pre-empting another). */
+  const mediaSessionTokenRef = useRef(0)
   /** The last turn number we've already spoken aloud — set to the campaign's current turn on
    * load so resuming a session never re-narrates history, only turns completed from here on. */
   const spokenTurnRef = useRef<number | null>(null)
@@ -135,6 +149,39 @@ export function Play() {
     }
   }, [campaign])
 
+  /** Distinguishes the two ways a speak() in flight can be interrupted, read once by speakText's
+   * `finally` (guarded by mediaSessionTokenRef, same as elsewhere) to decide whether to clear the
+   * Media Session or leave it showing a "paused" state — see pausePlayback's doc comment for why
+   * that distinction exists. Reset at the start of every speakText call, so a natural end (no stop
+   * requested at all) always sees 'hard' and clears normally. */
+  const pendingStopModeRef = useRef<'hard' | 'soft'>('hard')
+
+  /** Fully stops any current narration, in-app and OS-level alike — clears the Media Session
+   * notification entirely (see mediaSession.ts) rather than leaving a dead one visible. The single
+   * hard-stop path shared by the per-turn stop button, the Read-aloud toggle turning off, and the
+   * OS "stop" media control. */
+  const stopPlayback = useCallback(() => {
+    pendingStopModeRef.current = 'hard'
+    ttsProviderRef.current?.provider.stop()
+    setPlayingTurn(null)
+    clearMediaSession()
+  }, [])
+
+  /** Stops the underlying audio like stopPlayback, but — unlike it — deliberately leaves the Media
+   * Session's metadata and action handlers in place, only moving its playback state to 'paused'.
+   * This exists solely for the OS "pause" media control: none of the three TtsProvider
+   * implementations support real pause/resume (see types.ts), so there's no way to actually resume
+   * mid-utterance — but a "pause" tap that made the whole Now Playing notification vanish (as a
+   * full stop would) leaves no way to resume at all, since its "play" button would vanish with it.
+   * Keeping the session alive means the OS "play" control (wired in speakText below) can still
+   * restart the same turn from the beginning — a real, working action, just not a true resume. */
+  const pausePlayback = useCallback(() => {
+    pendingStopModeRef.current = 'soft'
+    ttsProviderRef.current?.provider.stop()
+    setPlayingTurn(null)
+    setMediaSessionPlaybackState('paused')
+  }, [])
+
   // Reacts to the header's Read-aloud toggle (see playHeaderStore) — must run before the
   // auto-narrate effect below so a just-enabled toggle's spokenTurnRef reset takes effect before
   // that effect checks it in the same commit.
@@ -142,19 +189,23 @@ export function Play() {
     if (prevReadAloudRef.current === readAloud) return
     prevReadAloudRef.current = readAloud
     if (!readAloud) {
-      ttsProviderRef.current?.provider.stop()
-      setPlayingTurn(null)
+      stopPlayback()
     } else {
       // Turning it on should only narrate turns from here forward, not retroactively speak
       // whatever turn is already sitting on screen (e.g. one applied while it was off).
       spokenTurnRef.current = lastTurn?.turn ?? spokenTurnRef.current
     }
-  }, [readAloud, lastTurn])
+  }, [readAloud, lastTurn, stopPlayback])
 
   /** Speaks arbitrary turn text — used both for the auto-narrate-new-turns effect below and the
    * per-turn "play this turn" button, so a turn missed the first time (read-aloud was off, or you
    * weren't listening) can always be replayed on demand. `turn`, if given, drives which turn's
-   * button shows a stop icon while this plays. */
+   * button shows a stop icon while this plays.
+   *
+   * Also drives the OS-level Media Session (see mediaSession.ts) for whichever provider is
+   * speaking — real `navigator.mediaSession` metadata/action handlers, not a parallel mechanism,
+   * so Android's "Now Playing" notification/lock-screen controls work the same way for
+   * `browser`/`elevenlabs`/`huggingface-local` alike. */
   const speakText = useCallback(
     (text: string, turn?: number) => {
       if (!settings) return
@@ -176,6 +227,22 @@ export function Play() {
       }
       ttsProviderRef.current = { kind, provider }
       setPlayingTurn(turn ?? null)
+      lastSpokenRef.current = { text, turn }
+      pendingStopModeRef.current = 'hard'
+      const mediaSessionToken = ++mediaSessionTokenRef.current
+      setMediaSessionMetadata({
+        title: turn !== undefined ? `Turn ${turn}` : (turnLabel ?? 'Narration'),
+        artist: campaignName ?? 'Adventure',
+      })
+      setMediaSessionPlaybackState('playing')
+      setMediaSessionHandlers({
+        onPlay: () => {
+          const last = lastSpokenRef.current
+          if (last) speakText(last.text, last.turn)
+        },
+        onPause: pausePlayback,
+        onStop: stopPlayback,
+      })
       // Each provider that supports voice selection keys off its own campaign setting —
       // elevenLabsVoiceId/kokoroVoiceId are independent choices, not a shared field, since a
       // campaign can switch providers without losing either one's pick.
@@ -195,9 +262,17 @@ export function Play() {
           // Only clear if nothing newer has already taken over (e.g. stop() was called manually
           // and already reset this, or another turn started playing in the meantime).
           setPlayingTurn((current) => (current === (turn ?? null) ? null : current))
+          // Same "nothing newer took over" guard, for the Media Session notification — a stale
+          // settle from a pre-empted call must not clear a session that now belongs to whatever
+          // superseded it. Also skipped for a soft pause (pausePlayback already set the Media
+          // Session to 'paused' and deliberately left its metadata/handlers alone — see its doc
+          // comment) so this settle doesn't wipe out the very session pausing was trying to keep.
+          if (mediaSessionTokenRef.current === mediaSessionToken && pendingStopModeRef.current !== 'soft') {
+            clearMediaSession()
+          }
         })
     },
-    [settings],
+    [settings, campaignName, turnLabel, stopPlayback, pausePlayback],
   )
 
   /** Reads a logged turn aloud on demand — the spoken script covers prose *and*, for the
@@ -205,8 +280,7 @@ export function Play() {
    * so voice-only play can select an option by ear. */
   function toggleTurnPlayback(turn: TurnRecord) {
     if (playingTurn === turn.turn) {
-      ttsProviderRef.current?.provider.stop()
-      setPlayingTurn(null)
+      stopPlayback()
       return
     }
     const isLive = turn.turn === lastTurn?.turn
@@ -237,6 +311,9 @@ export function Play() {
     return () => {
       sttProviderRef.current?.stop()
       ttsProviderRef.current?.provider.stop()
+      // Not stopPlayback() — this only runs on unmount, and that also calls setPlayingTurn, which
+      // React warns about (harmlessly, but noisily) when called after the component is gone.
+      clearMediaSession()
     }
   }, [])
 

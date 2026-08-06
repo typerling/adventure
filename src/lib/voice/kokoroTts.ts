@@ -301,6 +301,24 @@ export function createKokoroTtsProvider(opts: KokoroTtsOptions = {}): TtsProvide
 
       // Generate one chunk ahead of playback so the next clip is usually ready the moment the
       // current one ends — otherwise every sentence boundary would stall for a full generation.
+      //
+      // Backgrounding note (see #39): unlike ElevenLabs' one-continuous-file-per-turn playback,
+      // this generate-ahead-then-play loop depends on real work continuing to run on *this* main
+      // thread between chunks — `tts.generate()` is WASM inference, not delegated to a Worker the
+      // way the local text models are (see localModel.worker.ts). A currently-*playing* `<audio>`
+      // clip is exempted from Chrome's background-tab throttling (that's exactly why ElevenLabs/
+      // Kokoro survive backgrounding better than raw SpeechSynthesis at all — see mediaSession.ts's
+      // doc comment and the Settings note next to Browser TTS), but the *next* chunk's generation
+      // is ordinary main-thread JS/WASM work, which is a plausible target for whatever CPU/timer
+      // deprioritization a backgrounded renderer gets. That could show up as a real gap: the
+      // current clip finishes, but the next one isn't ready yet, so playback stalls mid-turn
+      // instead of erroring. This is a *suspected* gap, not a confirmed one — verifying it needs a
+      // real Android device (measuring generate() latency foreground vs. backgrounded), which
+      // wasn't available in the environment that wrote this comment. If it does turn out to be
+      // real, the fix is almost certainly moving `tts.generate()` into a Worker (mirroring
+      // localModel.worker.ts) so its progress isn't tied to main-thread scheduling at all — not
+      // pre-generating further ahead, which only shifts the problem and costs more memory/latency
+      // up front.
       let upcoming = chunks.length > 0 ? generate(chunks[0]) : null
       for (let i = 0; i < chunks.length; i++) {
         const pending = upcoming!

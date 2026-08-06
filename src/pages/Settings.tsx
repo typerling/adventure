@@ -763,6 +763,18 @@ export function Settings() {
                   ))}
                 </SelectContent>
               </Select>
+              {settings.ttsProvider === "browser" && (
+                <p className="text-xs text-muted-foreground">
+                  On Android, Chrome stops browser speech when the tab is
+                  backgrounded or the screen locks — a platform limitation of
+                  the Web Speech API itself (its audio isn&apos;t exposed as a
+                  real media stream, so it can&apos;t hold background audio
+                  focus the way ElevenLabs/Kokoro&apos;s playback does), not a
+                  bug in this app. Switch to ElevenLabs or Kokoro if you need
+                  narration to keep playing with the screen off or another app
+                  in front.
+                </p>
+              )}
             </div>
 
             {(settings.sttProvider === "elevenlabs" ||
