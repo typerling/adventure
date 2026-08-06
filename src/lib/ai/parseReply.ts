@@ -1,4 +1,4 @@
-import type { ParsedTurnReply, StateDelta } from '@/types/turn'
+import type { ParsedTurnReply, StateDelta, TurnOption } from '@/types/turn'
 
 export type ParseResult =
   | { ok: true; reply: ParsedTurnReply }
@@ -42,7 +42,7 @@ export function parseTurnReply(raw: string): ParseResult {
 
   const obj = parsed as Record<string, unknown>
   const state_delta = (obj.state_delta ?? {}) as StateDelta
-  const options = Array.isArray(obj.options) ? obj.options.filter((o) => typeof o === 'string') : []
+  const options = parseOptions(obj.options)
   const summary_update = typeof obj.summary_update === 'string' ? obj.summary_update : undefined
 
   if (!narrative) {
@@ -50,4 +50,22 @@ export function parseTurnReply(raw: string): ParseResult {
   }
 
   return { ok: true, reply: { narrative, state_delta, summary_update, options } }
+}
+
+/** Normalizes `options` to the current `{label, manus?}[]` shape. Also accepts the legacy plain
+ * `string[]` shape (upconverting each string to `{label: s, manus: s}`) so a manual-mode paste
+ * from a chat UI that hasn't picked up the new contract instructions yet doesn't hard-fail. */
+function parseOptions(raw: unknown): TurnOption[] {
+  if (!Array.isArray(raw)) return []
+  const options: TurnOption[] = []
+  for (const entry of raw) {
+    if (typeof entry === 'string') {
+      options.push({ label: entry, manus: entry })
+    } else if (entry && typeof entry === 'object' && typeof (entry as Record<string, unknown>).label === 'string') {
+      const label = (entry as Record<string, unknown>).label as string
+      const manusRaw = (entry as Record<string, unknown>).manus
+      options.push({ label, manus: typeof manusRaw === 'string' ? manusRaw : undefined })
+    }
+  }
+  return options
 }

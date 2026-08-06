@@ -14,7 +14,7 @@ import { parseTurnReply } from '@/lib/ai/parseReply'
 import { validateStateDelta } from '@/lib/ai/validate'
 import { getCachedCampaign, setCachedCampaign, type CachedCampaignData } from './campaignCache'
 import type { CampaignFile, CampaignSettings } from '@/types/campaign'
-import type { TurnRecord, ValidationIssue } from '@/types/turn'
+import type { TurnOption, TurnRecord, ValidationIssue } from '@/types/turn'
 
 interface CampaignData {
   status: 'loading' | 'ready' | 'error'
@@ -28,7 +28,12 @@ interface CampaignData {
 }
 
 export type SubmitOutcome =
-  | { ok: true }
+  // `options` carries the just-parsed turn's full {label, manus?} shape — richer than what
+  // `recentTurns`/`TurnRecord.optionsOffered` retains (plain labels only, see the two call sites
+  // below), so a caller that wants manus-accurate speech for the turn it just applied has to
+  // capture it from here; by the next render, only the label survives. `turn` identifies which
+  // turn these options belong to, so a caller can tell a fresh result apart from a stale one.
+  | { ok: true; turn: number; options: TurnOption[] }
   | { ok: false; error: string }
   | { ok: false; issues: ValidationIssue[] }
 
@@ -149,7 +154,9 @@ export function useCampaign(folderId: string | undefined) {
           timestamp: new Date().toISOString(),
           playerAction,
           narrative: parsed.reply.narrative,
-          optionsOffered: parsed.reply.options,
+          // story/log/*.md keeps storing plain option label strings — the richer {label, manus}
+          // shape is a live/in-memory-only concept (see ParsedTurnReply), not a persisted one.
+          optionsOffered: parsed.reply.options.map((o) => o.label),
         })
 
         const nextSummary = parsed.reply.summary_update
@@ -175,7 +182,7 @@ export function useCampaign(folderId: string | undefined) {
             timestamp: new Date().toISOString(),
             playerAction,
             narrative: parsed.reply.narrative,
-            optionsOffered: parsed.reply.options,
+            optionsOffered: parsed.reply.options.map((o) => o.label),
           },
         ].slice(-6)
 
@@ -200,7 +207,7 @@ export function useCampaign(folderId: string | undefined) {
           recentTurns: nextRecentTurns,
         }))
 
-        return { ok: true }
+        return { ok: true, turn: nextTurn, options: parsed.reply.options }
       } catch (err) {
         // Writes above are sequential and not transactional — an error partway through can
         // mean some of them already landed on Drive/Sheets while local state never updates.

@@ -128,8 +128,13 @@ Sheets between sessions, and prose stays prose instead of being awkwardly stuffe
 Every AI reply — whether pasted in manually or returned by an API call — must follow one
 contract so the app can parse it. **Two-part output:**
 
-1. **Narrative prose** — what gets shown/read aloud. Clean text, no markup, written in second
-   person, present tense (audiobook feel).
+1. **Narrative prose** — what gets shown/read aloud, written in second person, present tense
+   (audiobook feel). Real markdown (paragraphs, emphasis, lists, headers) is allowed and
+   rendered client-side via `react-markdown`, restricted to the safe subset it produces by
+   default — no `rehype-raw`/raw HTML, since this is unsanitized AI output rendered directly.
+   The narrative includes the literal placeholder token `{{options}}` at the point the turn's
+   options should render inline (usually near the end, but not hardcoded to always be last); if
+   omitted, the client falls back to appending the options after the narrative automatically.
 2. A single trailing fenced block, ` ```state ` … ` ``` `, containing structured JSON:
 
 ```json
@@ -146,15 +151,28 @@ contract so the app can parse it. **Two-part output:**
   },
   "summary_update": "one or two sentences to fold into the rolling summary",
   "options": [
-    "Search the altar for more clues",
-    "Ask Old Maren about the key",
-    "Leave the chapel and head back to the market"
+    {"label": "Search the altar for more clues"},
+    {"label": "Ask Old Maren about the key"},
+    {"label": "Leave the chapel and head back to the market", "manus": "Leave and head back to the market"}
   ]
 }
 ```
 
-- `options` (2–4 suggestions) render as buttons; a free-text box and a mic button are always
-  present alongside them regardless of what's suggested.
+- `options` (2–4 suggestions) are `{label, manus?}` objects: `label` is what renders as a button,
+  `manus` is what a TTS provider reads aloud for it and defaults to `label` when omitted (most
+  options don't need it — they're already short phrases that read fine as-is). The parser also
+  accepts the legacy plain `string[]` shape and upconverts each string to `{label, manus}` with
+  both equal to it, so a manual-mode paste from a chat UI that hasn't picked up this contract yet
+  doesn't hard-fail. Options render inline in the narrative, at the `{{options}}` token's
+  position (or appended at the end as a fallback) — a `TurnBlock` sequence
+  (`{type: 'prose', markdown} | {type: 'options', items}`, `src/types/turn.ts`) is what the
+  renderer (`src/components/TurnContent.tsx`) and the TTS spoken-script builder
+  (`src/lib/ai/turnBlocks.ts`) both consume, via a small per-block-type mapping that a future
+  block type (a dice-roll result, an item card, ...) can extend without restructuring either. A
+  free-text box and a mic button are always present alongside the options regardless of what's
+  suggested. This block-splitting is a pure render-time transform, not a persisted shape:
+  `story/log/*.md` keeps storing the raw narrative string and plain option label strings, exactly
+  as before this existed.
 - The **system prompt** sent every turn (built by the app, shown in full in manual mode so
   you can inspect/edit it before pasting) includes: DM persona + tone, the difficulty rules
   (§7), the world/character setup from `campaign.md`, a fresh `batchGet` snapshot of the

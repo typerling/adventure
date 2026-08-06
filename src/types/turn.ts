@@ -16,13 +16,30 @@ export interface StateDelta {
   new_lore?: { name: string; type?: string; summary: string; tags?: string }[]
 }
 
-/** Full parsed shape of one AI reply, after the fenced ```state block is extracted. */
+/** One suggested next action. `manus` is the text spoken aloud for this option — it defaults to
+ * `label` when the AI doesn't need it to read differently than it displays (most options). See
+ * DESIGN.md §5 and `src/lib/ai/contract.ts`. */
+export interface TurnOption {
+  label: string
+  manus?: string
+}
+
+/** Full parsed shape of one AI reply, after the fenced ```state block is extracted. `options` is
+ * always normalized to `TurnOption[]` by parseReply.ts, even when the AI (or a manual paste from
+ * a chat UI that hasn't picked up the new contract) sent the legacy `string[]` shape. */
 export interface ParsedTurnReply {
   narrative: string
   state_delta: StateDelta
   summary_update?: string
-  options: string[]
+  options: TurnOption[]
 }
+
+/** One piece of a turn's rendered content, in sequence. A union so future block types (a
+ * dice-roll result, an item card, ...) can be added without restructuring `TurnContent` or the
+ * spoken-script builder — see turnBlocks.ts and src/components/TurnContent.tsx. */
+export type TurnBlock =
+  | { type: 'prose'; markdown: string }
+  | { type: 'options'; items: { label: string; manus: string }[] }
 
 /** One turn as archived in story/log/*.md. */
 export interface TurnRecord {

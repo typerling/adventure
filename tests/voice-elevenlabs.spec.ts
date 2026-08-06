@@ -162,7 +162,11 @@ test.describe('ElevenLabs voice provider', () => {
     await expect(page.getByText('Dust rises as your fingers find a hidden latch.')).toBeVisible()
 
     await expect.poll(() => elevenLabs.ttsRequests.length).toBe(1)
-    expect(elevenLabs.ttsRequests[0].text).toBe('Dust rises as your fingers find a hidden latch.')
+    // Since #25, the spoken script is the narrative *and* the applied turn's options read aloud
+    // in sequence — submitFreeTextTurn's reply hardcodes `options: ['Look around', 'Move on']`.
+    expect(elevenLabs.ttsRequests[0].text).toBe(
+      'Dust rises as your fingers find a hidden latch. Your options: Look around. Move on.',
+    )
     expect(elevenLabs.ttsRequests[0].voiceId).toBeTruthy()
   })
 
