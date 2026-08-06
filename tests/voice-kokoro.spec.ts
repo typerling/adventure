@@ -225,6 +225,90 @@ test.describe("Kokoro voice picker", () => {
     ).toBeVisible();
   });
 
+  test("selecting a voice while its own preview is still generating does not play stale audio afterward", async ({
+    page,
+  }) => {
+    // Flagged in PR #42's review: previewKokoroVoice had no cancellation for a still-in-flight
+    // generateKokoroPreview() call, so picking a voice (or closing the dialog) while its preview
+    // was still generating didn't stop that generation from creating an Audio and calling .play()
+    // once it finally resolved — audibly starting playback after the dialog had already closed.
+    await installGoogleApiMock(page);
+    await installFakeKokoroModule(page);
+    // A custom fake distinct from the shared installFakeAudioPlayback/installControllableAudioPlayback
+    // helpers: this test needs to count *how many times* play() is called, not just control when
+    // playback ends.
+    await page.addInitScript(() => {
+      class CountingAudio {
+        src: string
+        onended: (() => void) | null = null
+        onerror: ((event?: unknown) => void) | null = null
+        constructor(src: string) {
+          this.src = src
+        }
+        play() {
+          const w = window as unknown as { __kokoroPreviewPlayCount?: number }
+          w.__kokoroPreviewPlayCount = (w.__kokoroPreviewPlayCount ?? 0) + 1
+          return Promise.resolve()
+        }
+        pause() {}
+      }
+      Object.defineProperty(window, "Audio", { value: CountingAudio, configurable: true })
+    })
+
+    await createRandomCampaign(page);
+    await setCampaignVoiceProviders(page, { tts: "huggingface-local" });
+    const campaignId = campaignIdFromUrl(page);
+    await page.goto(`/settings/${campaignId}`);
+
+    // Gate the fake model's generate() so the preview call hangs until explicitly released.
+    await page.evaluate(() => {
+      const w = window as unknown as {
+        __kokoroGeneratePause?: Promise<void>;
+        __releaseKokoroGenerate?: () => void;
+      };
+      w.__kokoroGeneratePause = new Promise<void>((resolve) => {
+        w.__releaseKokoroGenerate = resolve;
+      });
+    });
+
+    await page.getByRole("button", { name: "Browse voices" }).click();
+    await expect(
+      page.getByRole("dialog", { name: "Choose a Kokoro voice" }),
+    ).toBeVisible();
+
+    await page.getByRole("button", { name: "Preview Adam" }).click();
+    // The call is recorded as soon as it starts, even though the fake is holding it open.
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as unknown as { __kokoroGenerateCalls?: unknown[] })
+              .__kokoroGenerateCalls?.length ?? 0,
+        ),
+      )
+      .toBe(1);
+
+    // Select a voice while that preview is still generating — this closes the dialog.
+    await page.getByRole("button", { name: /^Adam/ }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+
+    // Now let the delayed generate() resolve.
+    await page.evaluate(() =>
+      (
+        window as unknown as { __releaseKokoroGenerate?: () => void }
+      ).__releaseKokoroGenerate?.(),
+    );
+    await page.waitForTimeout(300);
+
+    // The superseded preview must not have played audio after the dialog closed.
+    const playCount = await page.evaluate(
+      () =>
+        (window as unknown as { __kokoroPreviewPlayCount?: number })
+          .__kokoroPreviewPlayCount ?? 0,
+    );
+    expect(playCount).toBe(0);
+  });
+
   test("a selected Kokoro voice is threaded into Play.tsx's speak() call", async ({
     page,
   }) => {

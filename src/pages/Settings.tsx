@@ -173,6 +173,11 @@ export function Settings() {
   >(null);
   const kokoroPreviewAudioRef = useRef<HTMLAudioElement | null>(null);
   const kokoroPreviewUrlRef = useRef<string | null>(null);
+  // Bumped by stopKokoroPreview() — every path that should invalidate an in-flight preview
+  // (starting a different preview, selecting a voice, closing the dialog) already calls that, so
+  // a preview's async continuation can tell it's been superseded by comparing against this after
+  // its await, the same playToken/isStale pattern kokoroTts.ts's own speak() uses.
+  const kokoroPreviewTokenRef = useRef(0);
   const setHeaderContext = usePlayHeaderStore((s) => s.setContext);
 
   function patchModelRow(
@@ -362,6 +367,7 @@ export function Settings() {
   }
 
   function stopKokoroPreview() {
+    kokoroPreviewTokenRef.current++;
     kokoroPreviewAudioRef.current?.pause();
     kokoroPreviewAudioRef.current = null;
     if (kokoroPreviewUrlRef.current) {
@@ -404,6 +410,10 @@ export function Settings() {
       return;
     }
     stopKokoroPreview();
+    // Captured *after* stopKokoroPreview()'s bump, so this call owns the token current as of now
+    // — selecting a voice, closing the dialog, or starting a different preview all call
+    // stopKokoroPreview() too, which bumps past this and makes the check below fail.
+    const token = kokoroPreviewTokenRef.current;
     setKokoroPreviewLoadingVoiceId(voice.id);
     try {
       // The model is already resident by the time any card is clickable (listing the catalog
@@ -412,6 +422,9 @@ export function Settings() {
       const blob = await generateKokoroPreview(voice.id, (p) =>
         setKokoroVoicesStatusMessage(describeKokoroProgress(p)),
       );
+      // Superseded while generating (a voice was selected, the dialog closed, or another preview
+      // started) — don't create or play audio for a choice that's no longer current.
+      if (token !== kokoroPreviewTokenRef.current) return;
       const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       kokoroPreviewUrlRef.current = url;
@@ -434,11 +447,15 @@ export function Settings() {
       setKokoroPreviewingVoiceId(voice.id);
       await audio.play();
     } catch (err) {
-      toast.error(
-        err instanceof Error
-          ? err.message
-          : "Couldn't generate that voice preview.",
-      );
+      // Same staleness check — a superseded preview failing shouldn't toast an error for a
+      // choice the player has already moved on from.
+      if (token === kokoroPreviewTokenRef.current) {
+        toast.error(
+          err instanceof Error
+            ? err.message
+            : "Couldn't generate that voice preview.",
+        );
+      }
     } finally {
       setKokoroVoicesStatusMessage("");
       setKokoroPreviewLoadingVoiceId((current) =>
@@ -951,10 +968,10 @@ export function Settings() {
                               variant="ghost"
                               size="icon"
                               className="shrink-0"
-                              disabled={
-                                kokoroPreviewLoadingVoiceId !== null &&
-                                kokoroPreviewLoadingVoiceId !== voice.id
-                              }
+                              // Disabled while *any* preview is generating — including this
+                              // voice's own, since clicking again mid-generation would otherwise
+                              // fire a second concurrent generate() call for the same voice.
+                              disabled={kokoroPreviewLoadingVoiceId !== null}
                               onClick={() => void previewKokoroVoice(voice)}
                               aria-label={
                                 kokoroPreviewingVoiceId === voice.id

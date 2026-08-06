@@ -48,6 +48,10 @@ export async function installFakeKokoroModule(
         const voice = (options && options.voice) || 'af_heart'
         window.__kokoroGenerateCalls = window.__kokoroGenerateCalls || []
         window.__kokoroGenerateCalls.push({ text, voice })
+        // Recorded before this optional gate, so a test can observe the call happened while still
+        // controlling exactly when it resolves — lets a test simulate acting (selecting a voice,
+        // closing the dialog) while a preview is still in flight, deterministically.
+        if (window.__kokoroGeneratePause) await window.__kokoroGeneratePause
         return {
           toBlob: () => new Blob([new Uint8Array([0, 0, 0, 0])], { type: 'audio/wav' }),
         }
