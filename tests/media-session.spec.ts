@@ -27,8 +27,27 @@ async function installMediaSessionSpy(page: Page): Promise<void> {
     navigator.mediaSession.setActionHandler = (action, handler) => {
       registered[action] = handler !== null
       handlers[action] = handler as (() => void) | null
+      // Captured once, the first time a non-null pause handler is registered. pausePlayback is a
+      // stable function identity for the component's whole lifetime (a useCallback with no deps),
+      // so this stays a valid reference to call even after a later setActionHandler('pause', null)
+      // overwrites handlers.pause above — the same way a real OS that already has the callback
+      // can still invoke it regardless of what the app does to the "currently registered" one
+      // afterward. Lets a test simulate an OS tap landing just after the app cleared its session.
+      if (action === 'pause' && handler && !(window as unknown as Record<string, unknown>).__capturedPauseHandler) {
+        ;(window as unknown as Record<string, unknown>).__capturedPauseHandler = handler
+      }
       original(action, handler)
     }
+  })
+}
+
+/** Invokes the pause handler captured the first time it was registered — bypassing whatever is
+ * *currently* registered, to simulate an OS tap dispatched to a callback the app has since
+ * cleared. See installMediaSessionSpy's __capturedPauseHandler comment. */
+async function tapCapturedPauseHandler(page: Page): Promise<void> {
+  await page.evaluate(() => {
+    const handler = (window as unknown as { __capturedPauseHandler?: () => void }).__capturedPauseHandler
+    handler?.()
   })
 }
 
@@ -118,6 +137,37 @@ test.describe('Media Session integration (#39)', () => {
 
     await expect.poll(async () => (await readMediaSessionState(page)).playbackState).toBe('none')
     expect((await readMediaSessionState(page)).title).toBeNull()
+  })
+
+  test('an OS pause tap that lands just after playback already ended naturally does not resurrect the cleared Media Session', async ({
+    page,
+  }) => {
+    // Flagged in PR #43's review: pausePlayback wrote playbackState: 'paused' unconditionally,
+    // with no check for whether the session it meant to pause had already been cleared by a
+    // natural end. A real OS dispatches a tap to whatever callback reference it already holds —
+    // re-registering (nulling) that handler afterward doesn't retroactively un-dispatch a tap that
+    // already landed, so this simulates that by invoking the *originally* captured pause handler
+    // directly, after the natural end has already cleared the session.
+    await installGoogleApiMock(page)
+    // Default ttsDurationMs (0) — ends on its own almost immediately, same as the natural-end test
+    // above.
+    await installFakeWebSpeechApi(page, { sttSupported: true, ttsSupported: true })
+    await installMediaSessionSpy(page)
+    await createRandomCampaign(page)
+
+    await submitFreeTextTurn(page, 'look around', 'You step into a quiet, dust-lit room.')
+    await expect(page.getByText('You step into a quiet, dust-lit room.')).toBeVisible()
+
+    await page.getByRole('button', { name: 'Play this turn aloud' }).click()
+    await expect(page.getByRole('button', { name: 'Play this turn aloud' })).toBeVisible() // reverted once it "ended"
+    await expect.poll(async () => (await readMediaSessionState(page)).playbackState).toBe('none')
+
+    // The pause tap arrives after the clear above already happened.
+    await tapCapturedPauseHandler(page)
+
+    const state = await readMediaSessionState(page)
+    expect(state.playbackState).toBe('none')
+    expect(state.title).toBeNull()
   })
 
   test('turning off Read-aloud mid-playback clears the Media Session too', async ({ page }) => {

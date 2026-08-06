@@ -92,10 +92,25 @@ export function Play() {
    * control (see mediaSession.ts) restart narration after a "pause", since no TtsProvider
    * implementation can genuinely resume mid-utterance. */
   const lastSpokenRef = useRef<{ text: string; turn?: number } | null>(null)
+  /** Always the current render's speakText — see the useEffect below that keeps it in sync. The
+   * Media Session's onPlay handler (registered inside speakText itself, see below) calls through
+   * this ref rather than self-referencing speakText by name directly: speakText is a useCallback
+   * memoized on settings/campaignName/turnLabel, and a handler registered by one call of it closes
+   * over *that* call's specific closure — if any of those deps change while a turn sits paused,
+   * calling speakText by name from within its own old closure would still run with the stale
+   * values, not the current ones. Reading through this ref instead always gets the latest. */
+  const speakTextRef = useRef<((text: string, turn?: number) => void) | null>(null)
   /** Bumped on every speakText() call; a pending speak() promise's `finally` only clears the Media
    * Session if it's still the most recent call — otherwise it would wipe out a session that
    * actually belongs to a newer, still-playing turn (one playback pre-empting another). */
   const mediaSessionTokenRef = useRef(0)
+  /** True from the moment speakText() sets Media Session metadata/handlers until something
+   * actually clears them (a hard stop, or a natural end's finally). Guards pausePlayback: an OS
+   * "pause" tap can arrive just after playback already ended naturally and cleared the session on
+   * its own — without this check, pausePlayback would unconditionally write playbackState:
+   * 'paused' onto a session with no metadata and no live handlers, stuck that way until the next
+   * speakText() call overwrites it. */
+  const mediaSessionLiveRef = useRef(false)
   /** The last turn number we've already spoken aloud — set to the campaign's current turn on
    * load so resuming a session never re-narrates history, only turns completed from here on. */
   const spokenTurnRef = useRef<number | null>(null)
@@ -165,6 +180,7 @@ export function Play() {
     ttsProviderRef.current?.provider.stop()
     setPlayingTurn(null)
     clearMediaSession()
+    mediaSessionLiveRef.current = false
   }, [])
 
   /** Stops the underlying audio like stopPlayback, but — unlike it — deliberately leaves the Media
@@ -179,7 +195,12 @@ export function Play() {
     pendingStopModeRef.current = 'soft'
     ttsProviderRef.current?.provider.stop()
     setPlayingTurn(null)
-    setMediaSessionPlaybackState('paused')
+    // If playback already ended naturally (and speakText's finally already cleared the session)
+    // just before this OS pause tap arrived, there's no live session left to move to 'paused' —
+    // see mediaSessionLiveRef's doc comment.
+    if (mediaSessionLiveRef.current) {
+      setMediaSessionPlaybackState('paused')
+    }
   }, [])
 
   // Reacts to the header's Read-aloud toggle (see playHeaderStore) — must run before the
@@ -234,11 +255,12 @@ export function Play() {
         title: turn !== undefined ? `Turn ${turn}` : (turnLabel ?? 'Narration'),
         artist: campaignName ?? 'Adventure',
       })
+      mediaSessionLiveRef.current = true
       setMediaSessionPlaybackState('playing')
       setMediaSessionHandlers({
         onPlay: () => {
           const last = lastSpokenRef.current
-          if (last) speakText(last.text, last.turn)
+          if (last) speakTextRef.current?.(last.text, last.turn)
         },
         onPause: pausePlayback,
         onStop: stopPlayback,
@@ -269,11 +291,18 @@ export function Play() {
           // comment) so this settle doesn't wipe out the very session pausing was trying to keep.
           if (mediaSessionTokenRef.current === mediaSessionToken && pendingStopModeRef.current !== 'soft') {
             clearMediaSession()
+            mediaSessionLiveRef.current = false
           }
         })
     },
     [settings, campaignName, turnLabel, stopPlayback, pausePlayback],
   )
+
+  // Keeps speakTextRef current — see its own doc comment for why onPlay reads through it instead
+  // of self-referencing speakText by name.
+  useEffect(() => {
+    speakTextRef.current = speakText
+  }, [speakText])
 
   /** Reads a logged turn aloud on demand — the spoken script covers prose *and*, for the
    * currently-live turn, its options read out in order (see turnBlocks.ts's buildSpokenScript),
