@@ -23,7 +23,14 @@ export function splitNarrativeIntoBlocks(narrative: string, options: TurnOption[
   }
 
   const before = narrative.slice(0, tokenIndex).trim()
-  const after = narrative.slice(tokenIndex + OPTIONS_TOKEN.length).trim()
+  // Only the first occurrence becomes the split point — a second (AI mistake, or a coincidental
+  // repeat) would otherwise survive into the trailing prose as literal, visible `{{options}}`
+  // text, since react-markdown has no reason to treat it specially. Strip any leftover
+  // occurrences rather than rendering them.
+  const after = narrative
+    .slice(tokenIndex + OPTIONS_TOKEN.length)
+    .replaceAll(OPTIONS_TOKEN, '')
+    .trim()
 
   const blocks: TurnBlock[] = []
   if (before) blocks.push({ type: 'prose', markdown: before })

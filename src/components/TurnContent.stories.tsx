@@ -38,6 +38,14 @@ The silence presses in, waiting for you to choose.`
 const NO_PLACEHOLDER_NARRATIVE = `Old Maren sets down her cup and studies you for a long moment.
 "You want the key," she says, "but keys like that one don't come free."`
 
+const DUPLICATE_TOKEN_NARRATIVE = `The bridge sways underfoot.
+
+{{options}}
+
+You catch the far rail. {{options}} The rope creaks below you.`
+
+const TOKEN_ONLY_NARRATIVE = `{{options}}`
+
 const SAMPLE_OPTIONS = [
   { label: 'Search the altar for more clues' },
   { label: 'Ask Old Maren about the key' },
@@ -123,6 +131,53 @@ export const HistoricalTurnNoInteractionMobile: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await expect(canvas.getByText(/sunken chapel's broken archway/)).toBeVisible()
+    expect(canvas.queryByRole('button')).not.toBeInTheDocument()
+  },
+}
+
+/** Edge case flagged in review: the AI is only ever instructed to place one `{{options}}` token,
+ * but a repeated (or coincidentally duplicated) one shouldn't leak as literal, visible text in the
+ * trailing prose — only the first occurrence is a real split point, the rest get stripped. */
+export const DuplicateTokenNoLeakMobile: Story = {
+  args: {
+    blocks: splitNarrativeIntoBlocks(DUPLICATE_TOKEN_NARRATIVE, SAMPLE_OPTIONS),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText(/bridge sways underfoot/)).toBeVisible()
+    await expect(canvas.getByText(/rope creaks below you/)).toBeVisible()
+    // Exactly one options block rendered — one set of buttons, not two.
+    expect(canvas.getAllByRole('button')).toHaveLength(SAMPLE_OPTIONS.length)
+    // The second token doesn't survive into the rendered prose as literal text.
+    expect(canvasElement.textContent).not.toContain('{{options}}')
+  },
+}
+
+/** Edge case flagged in review: a narrative that's *only* the token (nothing before or after) —
+ * no empty prose block should render, just the options. */
+export const TokenOnlyNarrativeMobile: Story = {
+  args: {
+    blocks: splitNarrativeIntoBlocks(TOKEN_ONLY_NARRATIVE, SAMPLE_OPTIONS),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByRole('button', { name: /Search the altar for more clues/ })).toBeVisible()
+    // No stray prose block/paragraph rendered around the options.
+    expect(canvasElement.querySelectorAll('p')).toHaveLength(0)
+  },
+}
+
+/** Edge case flagged in review: zero options with the token still present — the split position is
+ * preserved (prose before/after stays split, doesn't silently rejoin into one block) even though
+ * there's nothing to render for the options block itself. */
+export const EmptyOptionsWithTokenMobile: Story = {
+  args: {
+    blocks: splitNarrativeIntoBlocks(INLINE_NARRATIVE, []),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText(/sunken chapel's broken archway/)).toBeVisible()
+    await expect(canvas.getByText(/silence presses in/)).toBeVisible()
     expect(canvas.queryByRole('button')).not.toBeInTheDocument()
   },
 }
