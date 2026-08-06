@@ -37,7 +37,10 @@ export async function submitFreeTextTurn(
  * Call while `page` is on /play/:id, /codex/:id, or /settings/:id for that campaign. */
 export async function setCampaignVoiceProviders(
   page: Page,
-  opts: { stt?: "browser" | "elevenlabs"; tts?: "browser" | "elevenlabs" },
+  opts: {
+    stt?: "browser" | "elevenlabs";
+    tts?: "browser" | "elevenlabs" | "huggingface-local";
+  },
 ): Promise<void> {
   const match = page.url().match(/\/(?:play|codex|settings)\/([^/?#]+)/);
   if (!match)
@@ -70,7 +73,11 @@ export async function setCampaignVoiceProviders(
     await page
       .getByRole("option", {
         name:
-          opts.tts === "browser" ? "Browser (SpeechSynthesis)" : "ElevenLabs",
+          opts.tts === "browser"
+            ? "Browser (SpeechSynthesis)"
+            : opts.tts === "elevenlabs"
+              ? "ElevenLabs"
+              : "Kokoro (on-device, runs locally)",
       })
       .click();
   }

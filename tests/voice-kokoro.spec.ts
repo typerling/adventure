@@ -1,6 +1,21 @@
 import { test, expect } from "@playwright/test";
 import { installGoogleApiMock } from "./mocks/googleApi";
-import { createRandomCampaign } from "./helpers";
+import {
+  installControllableAudioPlayback,
+  installFakeAudioPlayback,
+} from "./mocks/elevenLabs";
+import { installFakeKokoroModule } from "./mocks/kokoro";
+import {
+  createRandomCampaign,
+  setCampaignVoiceProviders,
+  submitFreeTextTurn,
+} from "./helpers";
+
+function campaignIdFromUrl(page: import("@playwright/test").Page): string {
+  const match = page.url().match(/\/play\/([^/?#]+)/);
+  if (!match) throw new Error(`campaignIdFromUrl: no campaign id in URL "${page.url()}"`);
+  return match[1];
+}
 
 /**
  * Kokoro (kokoro-js) replaced the "Local Hugging Face model (Phase 2 — coming soon)" placeholder
@@ -114,4 +129,175 @@ test("an already-downloaded Kokoro voice model shows as ready and can be removed
     return keys.filter((r) => r.url.includes("Kokoro")).length;
   });
   expect(remaining).toBe(0);
+});
+
+test.describe("Kokoro voice picker", () => {
+  test("the voice field and Browse voices button are hidden unless the campaign uses Kokoro for text-to-speech", async ({
+    page,
+  }) => {
+    await installGoogleApiMock(page);
+    await createRandomCampaign(page);
+    const campaignId = campaignIdFromUrl(page);
+
+    // A fresh campaign defaults to the browser TTS provider — hidden.
+    await page.goto(`/settings/${campaignId}`);
+    await expect(page.locator("#kokoroVoiceId")).toHaveCount(0);
+
+    // Selecting Kokoro for text-to-speech reveals it.
+    await setCampaignVoiceProviders(page, { tts: "huggingface-local" });
+    await page.goto(`/settings/${campaignId}`);
+    await expect(page.locator("#kokoroVoiceId")).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Browse voices" }),
+    ).toBeVisible();
+  });
+
+  test("voice picker lists Kokoro's voices, previews one, and selecting one sets the voice ID", async ({
+    page,
+  }) => {
+    await installGoogleApiMock(page);
+    await installFakeKokoroModule(page);
+    // Not the auto-ending fake — the preview toggle needs a window to click "stop"/observe
+    // "Stop preview of…" before playback would resolve on its own (same reasoning as the
+    // ElevenLabs picker's equivalent test in voice-elevenlabs.spec.ts).
+    await installControllableAudioPlayback(page);
+
+    await createRandomCampaign(page);
+    await setCampaignVoiceProviders(page, { tts: "huggingface-local" });
+    const campaignId = campaignIdFromUrl(page);
+    await page.goto(`/settings/${campaignId}`);
+
+    await page.getByRole("button", { name: "Browse voices" }).click();
+    await expect(
+      page.getByRole("dialog", { name: "Choose a Kokoro voice" }),
+    ).toBeVisible();
+
+    // Metadata from the fake model's own `voices` getter — not a hardcoded list — is rendered:
+    // name, language, gender, and (where present) traits.
+    await expect(page.getByRole("button", { name: /^Heart/ })).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Adam/ })).toBeVisible();
+    await expect(
+      page.getByTestId("kokoro-voice-af_heart"),
+    ).toContainText("en-us");
+    await expect(
+      page.getByTestId("kokoro-voice-af_heart"),
+    ).toContainText("Female");
+    await expect(
+      page.getByTestId("kokoro-voice-am_adam"),
+    ).toContainText("Male");
+
+    // af_heart is the fallback when nothing is chosen yet — shown as "Default", not "Selected".
+    await expect(
+      page.getByTestId("kokoro-voice-af_heart").getByText("Default"),
+    ).toBeVisible();
+    await expect(page.locator("#kokoroVoiceId")).toHaveValue("");
+
+    // Preview generates a clip on-device (via the faked KokoroTTS.generate) and plays it —
+    // recorded onto window.__kokoroGenerateCalls so this can assert the exact voice used.
+    await page.getByRole("button", { name: "Preview Adam" }).click();
+    await expect(
+      page.getByRole("button", { name: "Stop preview of Adam" }),
+    ).toBeVisible();
+    const generateCalls = await page.evaluate(
+      () =>
+        (
+          window as unknown as {
+            __kokoroGenerateCalls?: { text: string; voice: string }[];
+          }
+        ).__kokoroGenerateCalls ?? [],
+    );
+    expect(generateCalls).toHaveLength(1);
+    expect(generateCalls[0].voice).toBe("am_adam");
+    expect(generateCalls[0].text).toBe(
+      "Hello, this is a preview of my voice.",
+    );
+
+    // Selecting a voice sets the field and closes the picker, without needing the preview
+    // stopped first.
+    await page.getByRole("button", { name: /^Adam/ }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.locator("#kokoroVoiceId")).toHaveValue("am_adam");
+
+    // Reopening the picker reuses the already-loaded list and shows the new selection.
+    await page.getByRole("button", { name: "Browse voices" }).click();
+    await expect(
+      page.getByTestId("kokoro-voice-am_adam").getByText("Selected"),
+    ).toBeVisible();
+  });
+
+  test("a selected Kokoro voice is threaded into Play.tsx's speak() call", async ({
+    page,
+  }) => {
+    await installGoogleApiMock(page);
+    await installFakeKokoroModule(page);
+    await installFakeAudioPlayback(page);
+
+    await createRandomCampaign(page);
+    await setCampaignVoiceProviders(page, { tts: "huggingface-local" });
+    const campaignId = campaignIdFromUrl(page);
+
+    // Set the voice directly via the text field — exercises persistence into
+    // CampaignSettings.kokoroVoiceId without needing the picker's own model load.
+    await page.goto(`/settings/${campaignId}`);
+    await page.locator("#kokoroVoiceId").fill("am_adam");
+    await page.getByRole("button", { name: "Save settings" }).click();
+    await expect(page.getByText("Settings saved.")).toBeVisible();
+
+    // Reloading confirms it actually persisted to settings.md, not just component state.
+    await page.reload();
+    await expect(page.locator("#kokoroVoiceId")).toHaveValue("am_adam");
+
+    await page.goto(`/play/${campaignId}`);
+    await page.getByRole("button", { name: "Read new turns aloud" }).click();
+    await submitFreeTextTurn(
+      page,
+      "listen",
+      "A low hum fills the chamber.",
+    );
+    await expect(
+      page.getByText("A low hum fills the chamber."),
+    ).toBeVisible();
+
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (
+              window as unknown as {
+                __kokoroGenerateCalls?: { text: string; voice: string }[];
+              }
+            ).__kokoroGenerateCalls?.length ?? 0,
+        ),
+      )
+      .toBeGreaterThan(0);
+    const generateCalls = await page.evaluate(
+      () =>
+        (
+          window as unknown as {
+            __kokoroGenerateCalls?: { text: string; voice: string }[];
+          }
+        ).__kokoroGenerateCalls ?? [],
+    );
+    // Every chunk of the narrative was spoken with the campaign's chosen voice, not the default.
+    expect(generateCalls.every((c) => c.voice === "am_adam")).toBe(true);
+  });
+
+  test("Browse voices surfaces a clear error when the voice model fails to download", async ({
+    page,
+  }) => {
+    await installGoogleApiMock(page);
+    // Force the model download to fail fast instead of really fetching it — same technique as
+    // the "download fails fast" test above, applied to the picker's own load-on-open path.
+    await page.route(/huggingface\.co|hf\.co/, (route) => route.abort("failed"));
+
+    await createRandomCampaign(page);
+    await setCampaignVoiceProviders(page, { tts: "huggingface-local" });
+    const campaignId = campaignIdFromUrl(page);
+    await page.goto(`/settings/${campaignId}`);
+
+    await page.getByRole("button", { name: "Browse voices" }).click();
+    await expect(
+      page.getByText("Couldn't load Kokoro's voice list", { exact: false }),
+    ).toBeVisible({ timeout: 20_000 });
+  });
 });

@@ -72,11 +72,15 @@ import {
   type LocalModelDevice,
 } from "@/lib/ai/localModel";
 import {
+  DEFAULT_VOICE as KOKORO_DEFAULT_VOICE,
   describeKokoroProgress,
+  generateKokoroPreview,
   getKokoroLoadState,
   hasDownloadedKokoroModel,
+  listKokoroVoices,
   preloadKokoroModel,
   removeKokoroModel,
+  type KokoroVoice,
 } from "@/lib/voice/kokoroTts";
 
 interface LocalModelRowState {
@@ -152,6 +156,23 @@ export function Settings() {
     null,
   );
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const [kokoroVoicePickerOpen, setKokoroVoicePickerOpen] = useState(false);
+  const [kokoroVoices, setKokoroVoices] = useState<KokoroVoice[]>([]);
+  const [kokoroVoicesLoadState, setKokoroVoicesLoadState] = useState<
+    "idle" | "loading" | "error" | "loaded"
+  >("idle");
+  const [kokoroVoicesStatusMessage, setKokoroVoicesStatusMessage] =
+    useState("");
+  // Distinct from kokoroVoicesLoadState: the list can be fully loaded while one particular card's
+  // preview is still generating (the model is resident either way by the time any card is
+  // clickable, but generate() is still an async call worth showing feedback for).
+  const [kokoroPreviewLoadingVoiceId, setKokoroPreviewLoadingVoiceId] =
+    useState<string | null>(null);
+  const [kokoroPreviewingVoiceId, setKokoroPreviewingVoiceId] = useState<
+    string | null
+  >(null);
+  const kokoroPreviewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const kokoroPreviewUrlRef = useRef<string | null>(null);
   const setHeaderContext = usePlayHeaderStore((s) => s.setContext);
 
   function patchModelRow(
@@ -199,7 +220,13 @@ export function Settings() {
 
   // Leaving the page mid-preview shouldn't leave a voice sample playing in the background.
   useEffect(() => {
-    return () => previewAudioRef.current?.pause();
+    return () => {
+      previewAudioRef.current?.pause();
+      kokoroPreviewAudioRef.current?.pause();
+      if (kokoroPreviewUrlRef.current) {
+        URL.revokeObjectURL(kokoroPreviewUrlRef.current);
+      }
+    };
   }, []);
 
   // Refines the in-memory-only guess from getLocalModelLoadState() (which only knows about this
@@ -332,6 +359,99 @@ export function Settings() {
     setSettings({ ...settings, elevenLabsVoiceId: voice.voiceId });
     stopVoicePreview();
     setVoicePickerOpen(false);
+  }
+
+  function stopKokoroPreview() {
+    kokoroPreviewAudioRef.current?.pause();
+    kokoroPreviewAudioRef.current = null;
+    if (kokoroPreviewUrlRef.current) {
+      URL.revokeObjectURL(kokoroPreviewUrlRef.current);
+      kokoroPreviewUrlRef.current = null;
+    }
+    setKokoroPreviewingVoiceId(null);
+  }
+
+  async function openKokoroVoicePicker() {
+    setKokoroVoicePickerOpen(true);
+    // Same dedup reasoning as openVoicePicker: skip a redundant fetch (here, a redundant model
+    // load) for a list already loaded or in flight.
+    if (
+      kokoroVoicesLoadState === "loaded" ||
+      kokoroVoicesLoadState === "loading"
+    )
+      return;
+    setKokoroVoicesLoadState("loading");
+    setKokoroVoicesStatusMessage("");
+    try {
+      const list = await listKokoroVoices((p) =>
+        setKokoroVoicesStatusMessage(describeKokoroProgress(p)),
+      );
+      setKokoroVoices(list);
+      setKokoroVoicesLoadState("loaded");
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to load Kokoro voices.",
+      );
+      setKokoroVoicesLoadState("error");
+    } finally {
+      setKokoroVoicesStatusMessage("");
+    }
+  }
+
+  async function previewKokoroVoice(voice: KokoroVoice) {
+    if (kokoroPreviewingVoiceId === voice.id) {
+      stopKokoroPreview();
+      return;
+    }
+    stopKokoroPreview();
+    setKokoroPreviewLoadingVoiceId(voice.id);
+    try {
+      // The model is already resident by the time any card is clickable (listing the catalog
+      // above required loading it), so this onProgress is really only exercised if a previous
+      // load failed and this preview click is what retries it.
+      const blob = await generateKokoroPreview(voice.id, (p) =>
+        setKokoroVoicesStatusMessage(describeKokoroProgress(p)),
+      );
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      kokoroPreviewUrlRef.current = url;
+      kokoroPreviewAudioRef.current = audio;
+      audio.onended = () => {
+        URL.revokeObjectURL(url);
+        if (kokoroPreviewUrlRef.current === url) kokoroPreviewUrlRef.current = null;
+        setKokoroPreviewingVoiceId((current) =>
+          current === voice.id ? null : current,
+        );
+      };
+      audio.onerror = () => {
+        toast.error("Couldn't play that voice preview.");
+        URL.revokeObjectURL(url);
+        if (kokoroPreviewUrlRef.current === url) kokoroPreviewUrlRef.current = null;
+        setKokoroPreviewingVoiceId((current) =>
+          current === voice.id ? null : current,
+        );
+      };
+      setKokoroPreviewingVoiceId(voice.id);
+      await audio.play();
+    } catch (err) {
+      toast.error(
+        err instanceof Error
+          ? err.message
+          : "Couldn't generate that voice preview.",
+      );
+    } finally {
+      setKokoroVoicesStatusMessage("");
+      setKokoroPreviewLoadingVoiceId((current) =>
+        current === voice.id ? null : current,
+      );
+    }
+  }
+
+  function selectKokoroVoice(voice: KokoroVoice) {
+    if (!settings) return;
+    setSettings({ ...settings, kokoroVoiceId: voice.id });
+    stopKokoroPreview();
+    setKokoroVoicePickerOpen(false);
   }
 
   function saveClaudeKey() {
@@ -659,6 +779,46 @@ export function Settings() {
               </div>
             )}
 
+            {settings.ttsProvider === "huggingface-local" && (
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="kokoroVoiceId">Kokoro voice (optional)</Label>
+                <div className="flex gap-2">
+                  <Input
+                    id="kokoroVoiceId"
+                    value={settings.kokoroVoiceId ?? ""}
+                    onChange={(e) =>
+                      setSettings({
+                        ...settings,
+                        kokoroVoiceId: e.target.value.trim() || undefined,
+                      })
+                    }
+                    placeholder={`Defaults to ${KOKORO_DEFAULT_VOICE} if left blank`}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => void openKokoroVoicePicker()}
+                  >
+                    Browse voices
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {kokoroVoicesLoadState === "loaded" &&
+                    settings.kokoroVoiceId &&
+                    (() => {
+                      const name = kokoroVoices.find(
+                        (v) => v.id === settings.kokoroVoiceId,
+                      )?.name;
+                      return name ? `Currently: ${name}. ` : "";
+                    })()}
+                  Only used for text-to-speech. Browsing voices downloads the
+                  on-device voice model the first time (see "Kokoro voice
+                  model" below) — after that, previews and playback are
+                  instant.
+                </p>
+              </div>
+            )}
+
             <Dialog
               open={voicePickerOpen}
               onOpenChange={(open) => {
@@ -733,6 +893,102 @@ export function Settings() {
                             {settings.elevenLabsVoiceId === voice.voiceId && (
                               <span className="shrink-0 text-xs text-muted-foreground">
                                 Selected
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </ScrollArea>
+                  ))}
+              </DialogContent>
+            </Dialog>
+
+            <Dialog
+              open={kokoroVoicePickerOpen}
+              onOpenChange={(open) => {
+                setKokoroVoicePickerOpen(open);
+                if (!open) stopKokoroPreview();
+              }}
+            >
+              <DialogContent className="sm:max-w-md">
+                <DialogHeader>
+                  <DialogTitle>Choose a Kokoro voice</DialogTitle>
+                  <DialogDescription>
+                    Preview generates a short clip on this device — the voice
+                    model downloads the first time, then previews and
+                    playback are instant.
+                  </DialogDescription>
+                </DialogHeader>
+                {kokoroVoicesLoadState === "loading" && (
+                  <div className="flex flex-col items-center justify-center gap-2 py-8 text-center text-sm text-muted-foreground">
+                    <Loader2 className="size-4 animate-spin" />
+                    {kokoroVoicesStatusMessage || "Loading voices…"}
+                  </div>
+                )}
+                {kokoroVoicesLoadState === "error" && (
+                  <p className="py-4 text-sm text-muted-foreground">
+                    Couldn't load Kokoro's voice list — it needs to download
+                    the voice model once. Check your connection and try
+                    again.
+                  </p>
+                )}
+                {kokoroVoicesLoadState === "loaded" &&
+                  (kokoroVoices.length === 0 ? (
+                    <p className="py-4 text-sm text-muted-foreground">
+                      No voices found.
+                    </p>
+                  ) : (
+                    <ScrollArea className="h-80 pr-3">
+                      <div className="flex flex-col gap-1">
+                        {kokoroVoices.map((voice) => (
+                          <div
+                            key={voice.id}
+                            data-testid={`kokoro-voice-${voice.id}`}
+                            className="flex items-center gap-2 rounded-md p-2 hover:bg-muted/50"
+                          >
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="shrink-0"
+                              disabled={
+                                kokoroPreviewLoadingVoiceId !== null &&
+                                kokoroPreviewLoadingVoiceId !== voice.id
+                              }
+                              onClick={() => void previewKokoroVoice(voice)}
+                              aria-label={
+                                kokoroPreviewingVoiceId === voice.id
+                                  ? `Stop preview of ${voice.name}`
+                                  : `Preview ${voice.name}`
+                              }
+                            >
+                              {kokoroPreviewLoadingVoiceId === voice.id ? (
+                                <Loader2 className="size-4 animate-spin" />
+                              ) : kokoroPreviewingVoiceId === voice.id ? (
+                                <Square className="size-4" />
+                              ) : (
+                                <Play className="size-4" />
+                              )}
+                            </Button>
+                            <button
+                              type="button"
+                              className="flex-1 truncate text-left text-sm"
+                              onClick={() => selectKokoroVoice(voice)}
+                            >
+                              {voice.name}
+                              <span className="ml-1.5 text-xs text-muted-foreground">
+                                {voice.language}
+                                {voice.gender ? ` · ${voice.gender}` : ""}
+                                {voice.traits ? ` ${voice.traits}` : ""}
+                              </span>
+                            </button>
+                            {(settings.kokoroVoiceId === voice.id ||
+                              (!settings.kokoroVoiceId &&
+                                voice.id === KOKORO_DEFAULT_VOICE)) && (
+                              <span className="shrink-0 text-xs text-muted-foreground">
+                                {settings.kokoroVoiceId === voice.id
+                                  ? "Selected"
+                                  : "Default"}
                               </span>
                             )}
                           </div>
