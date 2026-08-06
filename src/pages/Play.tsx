@@ -20,7 +20,7 @@ import {
 import type { TurnOption, TurnRecord, ValidationIssue } from '@/types/turn'
 import { getSttProvider, getTtsProvider, isSttProviderAvailable, isTtsProviderAvailable } from '@/lib/voice/getProvider'
 import type { SttProvider, TtsProvider } from '@/lib/voice/types'
-import { describeKokoroProgress } from '@/lib/voice/kokoroTts'
+import { describeKokoroGenerateProgress, describeKokoroProgress } from '@/lib/voice/kokoroTts'
 import {
   clearMediaSession,
   setMediaSessionHandlers,
@@ -241,6 +241,11 @@ export function Play() {
               // Kokoro downloads a model on its very first use — without this, read-aloud would
               // just sit silent for the duration with nothing on screen explaining why.
               onKokoroLoadProgress: (p) => setVoiceLoadMessage(describeKokoroProgress(p)),
+              // Kokoro's speak() now generates a turn's whole clip before playback can start
+              // (issue #44) — without this, that wait reads as frozen the same way an unreported
+              // model download would.
+              onKokoroGenerateProgress: (completed, total) =>
+                setVoiceLoadMessage(describeKokoroGenerateProgress(completed, total)),
             })
       if (!provider) {
         toast.error("Text-to-speech isn't available — check Settings or your browser's support.")

@@ -4,7 +4,7 @@ import {
   installControllableAudioPlayback,
   installFakeAudioPlayback,
 } from "./mocks/elevenLabs";
-import { installFakeKokoroModule } from "./mocks/kokoro";
+import { getKokoroWorker, installFakeKokoroModule } from "./mocks/kokoro";
 import {
   createRandomCampaign,
   setCampaignVoiceProviders,
@@ -193,15 +193,19 @@ test.describe("Kokoro voice picker", () => {
     await expect(page.locator("#kokoroVoiceId")).toHaveValue("");
 
     // Preview generates a clip on-device (via the faked KokoroTTS.generate) and plays it —
-    // recorded onto window.__kokoroGenerateCalls so this can assert the exact voice used.
+    // recorded onto the worker's own self.__kokoroGenerateCalls so this can assert the exact
+    // voice used.
     await page.getByRole("button", { name: "Preview Adam" }).click();
     await expect(
       page.getByRole("button", { name: "Stop preview of Adam" }),
     ).toBeVisible();
-    const generateCalls = await page.evaluate(
+    // KokoroTTS.generate() runs inside kokoroTts.worker.ts (#44) — a separate realm from the page,
+    // so this call is recorded onto the worker's own `self`, not `window`.
+    const worker = await getKokoroWorker(page);
+    const generateCalls = await worker.evaluate(
       () =>
         (
-          window as unknown as {
+          self as unknown as {
             __kokoroGenerateCalls?: { text: string; voice: string }[];
           }
         ).__kokoroGenerateCalls ?? [],
@@ -260,9 +264,21 @@ test.describe("Kokoro voice picker", () => {
     const campaignId = campaignIdFromUrl(page);
     await page.goto(`/settings/${campaignId}`);
 
-    // Gate the fake model's generate() so the preview call hangs until explicitly released.
-    await page.evaluate(() => {
-      const w = window as unknown as {
+    await page.getByRole("button", { name: "Browse voices" }).click();
+    await expect(
+      page.getByRole("dialog", { name: "Choose a Kokoro voice" }),
+    ).toBeVisible();
+    // Wait for the voice list itself, not just the dialog — confirms kokoroTts.worker.ts (#44) has
+    // actually spawned and finished its 'load'/'listVoices' round trip, so the gate installed next
+    // is in place before the "Preview Adam" click below can race it.
+    await expect(page.getByRole("button", { name: /^Adam/ })).toBeVisible();
+
+    // Gate the fake model's generate() so the preview call hangs until explicitly released. Set on
+    // the worker's own `self` via Worker.evaluate() — not page.evaluate() — since KokoroTTS.generate()
+    // now runs inside kokoroTts.worker.ts (#44), a separate realm from the page.
+    const worker = await getKokoroWorker(page);
+    await worker.evaluate(() => {
+      const w = self as unknown as {
         __kokoroGeneratePause?: Promise<void>;
         __releaseKokoroGenerate?: () => void;
       };
@@ -271,18 +287,13 @@ test.describe("Kokoro voice picker", () => {
       });
     });
 
-    await page.getByRole("button", { name: "Browse voices" }).click();
-    await expect(
-      page.getByRole("dialog", { name: "Choose a Kokoro voice" }),
-    ).toBeVisible();
-
     await page.getByRole("button", { name: "Preview Adam" }).click();
     // The call is recorded as soon as it starts, even though the fake is holding it open.
     await expect
       .poll(() =>
-        page.evaluate(
+        worker.evaluate(
           () =>
-            (window as unknown as { __kokoroGenerateCalls?: unknown[] })
+            (self as unknown as { __kokoroGenerateCalls?: unknown[] })
               .__kokoroGenerateCalls?.length ?? 0,
         ),
       )
@@ -293,9 +304,9 @@ test.describe("Kokoro voice picker", () => {
     await expect(page.getByRole("dialog")).toHaveCount(0);
 
     // Now let the delayed generate() resolve.
-    await page.evaluate(() =>
+    await worker.evaluate(() =>
       (
-        window as unknown as { __releaseKokoroGenerate?: () => void }
+        self as unknown as { __releaseKokoroGenerate?: () => void }
       ).__releaseKokoroGenerate?.(),
     );
     await page.waitForTimeout(300);
@@ -342,22 +353,24 @@ test.describe("Kokoro voice picker", () => {
       page.getByText("A low hum fills the chamber."),
     ).toBeVisible();
 
+    // KokoroTTS.generate() runs inside kokoroTts.worker.ts (#44) — a separate realm from the page.
+    const worker = await getKokoroWorker(page);
     await expect
       .poll(() =>
-        page.evaluate(
+        worker.evaluate(
           () =>
             (
-              window as unknown as {
+              self as unknown as {
                 __kokoroGenerateCalls?: { text: string; voice: string }[];
               }
             ).__kokoroGenerateCalls?.length ?? 0,
         ),
       )
       .toBeGreaterThan(0);
-    const generateCalls = await page.evaluate(
+    const generateCalls = await worker.evaluate(
       () =>
         (
-          window as unknown as {
+          self as unknown as {
             __kokoroGenerateCalls?: { text: string; voice: string }[];
           }
         ).__kokoroGenerateCalls ?? [],
@@ -434,10 +447,15 @@ test.describe("Kokoro voice picker", () => {
       page.getByRole("dialog", { name: "Choose a Kokoro voice" }),
     ).toBeVisible();
     await expect(page.getByRole("button", { name: /^Adam/ })).toBeVisible();
+    // KokoroTTS.from_pretrained() runs inside kokoroTts.worker.ts (#44) — a separate realm from
+    // the page — so this count is recorded onto the worker's own `self`, not `window`. The worker
+    // is a page-lifetime singleton (kokoroTts.ts never tears it down), so the same handle is valid
+    // across the remove-and-reopen below too.
+    const worker = await getKokoroWorker(page);
     await expect
       .poll(() =>
-        page.evaluate(
-          () => (window as unknown as { __kokoroLoadCalls?: number }).__kokoroLoadCalls ?? 0,
+        worker.evaluate(
+          () => (self as unknown as { __kokoroLoadCalls?: number }).__kokoroLoadCalls ?? 0,
         ),
       )
       .toBe(1);
@@ -461,8 +479,8 @@ test.describe("Kokoro voice picker", () => {
     await expect(page.getByRole("button", { name: /^Adam/ })).toBeVisible();
     await expect
       .poll(() =>
-        page.evaluate(
-          () => (window as unknown as { __kokoroLoadCalls?: number }).__kokoroLoadCalls ?? 0,
+        worker.evaluate(
+          () => (self as unknown as { __kokoroLoadCalls?: number }).__kokoroLoadCalls ?? 0,
         ),
       )
       .toBe(2);

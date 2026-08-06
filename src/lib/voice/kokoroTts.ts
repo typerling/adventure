@@ -1,10 +1,16 @@
 import type { TtsProvider } from './types'
 import {
-  createProgressAggregator,
   describeModelDownloadProgress,
   requestPersistentStorage,
   type ModelDownloadProgress,
 } from '@/lib/modelDownloadProgress'
+import { CACHE_NAMES, DEFAULT_VOICE, MAX_CHUNK_CHARS, PREVIEW_TEXT, PROGRESS_LABEL } from './kokoroConstants'
+import type {
+  KokoroWorkerRequest,
+  KokoroWorkerRequestInit,
+  KokoroWorkerResponse,
+  KokoroWorkerVoice,
+} from './kokoroWorkerProtocol'
 
 /**
  * Kokoro (kokoro-js) — a small, high-quality on-device TTS model, replacing the noticeably
@@ -12,9 +18,38 @@ import {
  * WASM (broadly compatible — unlike the local Gemma text model, this doesn't need WebGPU, so
  * there's no hard support gate the way isLocalModelSupported() has for that).
  *
- * `kokoro-js` is dynamically imported (only when this TTS provider is actually used) — it bundles
- * its own copy of @huggingface/transformers and a full ONNX runtime, too heavy for the main app
- * bundle.
+ * **Model loading and generation run in a dedicated Worker** (`kokoroTts.worker.ts`), mirroring
+ * `src/lib/ai/localModel.worker.ts`'s split for the local text models — see that file's doc
+ * comment for why. This module is only the main-thread face of it: the public API, load-progress
+ * state/listeners, and the Cache Storage-backed downloaded/remove helpers, talking to the worker
+ * over the typed protocol in `kokoroWorkerProtocol.ts`. `kokoro-js` itself is imported *only* by
+ * the worker (plus one narrow exception, `splitIntoSpeakableChunks` below, which needs none of the
+ * model) and by that worker dynamically, only when Kokoro TTS is actually used.
+ *
+ * Playback is one continuous clip per turn, matching `elevenLabsTts.ts`'s one-request/one-blob/
+ * one-play model exactly (issue #44): `speak()` asks the worker to generate every chunk from
+ * `splitIntoSpeakableChunks` and stitch them into one clip *before* any playback starts, trading
+ * "starts speaking after the first chunk" for gapless audio and no possibility of a mid-turn stall
+ * waiting on the next chunk (the risk the old generate-ahead-then-play loop carried — see this
+ * module's git history / issue #44 for that architecture, since removed).
+ *
+ * **Backgrounding, revisited (originally flagged in #39/PR #43):** the specific risk that comment
+ * described — a currently-*playing* clip surviving Chrome's background-tab throttling while the
+ * *next* chunk's `tts.generate()` call, running on the main thread, might not, leaving a real
+ * mid-turn gap once playback caught up to an unready chunk — no longer applies, and this time
+ * that's structural, not just measured: there is no "next chunk" moment anymore, since every chunk
+ * finishes generating *before* playback of the single stitched clip ever starts. What replaces it
+ * is a narrower question — does pre-generation *itself* keep making progress if the player
+ * backgrounds the tab immediately after starting a turn, before playback has begun — and this PR
+ * does not claim to have verified that on a real device either, same limitation the original
+ * comment had. What's true in general on the web platform: a dedicated Worker's own execution
+ * isn't subject to the same background-tab *timer* throttling that affects `setTimeout`/
+ * `setInterval`/rAF on the main thread, which is a good sign; but Chrome's coarser tab *freezing*
+ * (suspending a hidden tab's JS entirely after several minutes) applies to workers too and would
+ * still delay when playback can start. If that turns out to matter in practice, it's a much
+ * smaller, better-understood problem than the old one (bounded to "pre-generation may pause while
+ * hidden," not "audio may silently stall mid-turn") — measuring it for real is future work, not
+ * done here.
  *
  * Caching caveat: kokoro-js depends on @huggingface/transformers v3, a different major version
  * than this app's own v4, so npm keeps them as two separate installs with two separate `env`
@@ -25,45 +60,88 @@ import {
  * caching, which needs a secure context: over HTTPS/localhost the download is cached normally,
  * but on a plain-HTTP LAN address `caches` is absent, `useBrowserCache` computes to false, and it
  * re-downloads per page load rather than failing (verified against the installed v3.8.1 source).
+ * Cache Storage is shared per-origin between the main thread and a Worker, so this is unaffected
+ * by the download itself happening inside kokoroTts.worker.ts.
  */
 
-const MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX'
-/** Exported so Settings can mark this voice as the fallback in the picker without duplicating the
- * literal, and so createKokoroTtsProvider's own fallback (below) stays the single source of truth. */
-export const DEFAULT_VOICE = 'af_heart'
-const PROGRESS_LABEL = 'voice model'
-/** Fixed phrase for Settings' per-voice preview button — short enough to generate quickly, long
- * enough to actually hear the voice's character. */
-const PREVIEW_TEXT = 'Hello, this is a preview of my voice.'
-
-/**
- * Safety net for a single sentence long enough to still blow the model's token budget on its own
- * (see splitIntoSpeakableChunks). Kokoro's context is 512 tokens — 510 usable phoneme tokens plus
- * two specials, which is what the hardcoded `509` style-vector cap in its `generate_from_ids`
- * reflects. Phoneme count per character varies, and truncation past that point is *silent*, so
- * this budget is deliberately well under the ~470 English characters measured to hit the limit.
- */
-const MAX_CHUNK_CHARS = 320
-
-/** Cache Storage buckets kokoro-js and its bundled transformers write into — cleared together by
- * removeKokoroModel(). 'kokoro-voices' is kokoro's own hardcoded per-voice cache; the other is
- * its transformers copy's default model cache (env.cacheKey). */
-const CACHE_NAMES = ['kokoro-voices', 'transformers-cache']
+export { DEFAULT_VOICE }
 
 export type KokoroLoadProgress = ModelDownloadProgress
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let loadPromise: Promise<any> | null = null
+// ---- Worker bridge — mirrors localModel.ts's getWorker()/send() pattern. Kokoro has exactly one
+// model, so (unlike localModel.ts) none of this needs to be keyed by a model id. ----
+
+let worker: Worker | null = null
+let nextRequestId = 1
+
+interface PendingRequest {
+  resolve: (message: KokoroWorkerResponse) => void
+  reject: (err: Error) => void
+  onChunkProgress?: (completed: number, total: number) => void
+}
+const pending = new Map<number, PendingRequest>()
+
 let isReady = false
+let loadPromise: Promise<void> | null = null
 // See localModel.ts's identical pattern for why this exists: a load is a module-level singleton
 // that can outlive the component that started it, so a newly (re-)attached listener needs the
 // latest known state replayed immediately rather than sitting blank until the next real update.
 let lastProgress: KokoroLoadProgress | null = null
 const progressListeners = new Set<(p: KokoroLoadProgress) => void>()
 
-function broadcastProgress(p: KokoroLoadProgress): void {
-  lastProgress = p
-  for (const listener of progressListeners) listener(p)
+/** Constructed lazily and then kept for the page's lifetime: it holds the loaded model, so
+ * terminating it between turns would throw away the very thing that makes a second turn fast. */
+function getWorker(): Worker {
+  if (worker) return worker
+  worker = new Worker(new URL('./kokoroTts.worker.ts', import.meta.url), { type: 'module' })
+  worker.addEventListener('message', (event: MessageEvent<KokoroWorkerResponse>) => {
+    const message = event.data
+    switch (message.kind) {
+      case 'progress':
+        lastProgress = message.progress
+        for (const listener of progressListeners) listener(message.progress)
+        break
+      case 'chunkProgress':
+        pending.get(message.requestId)?.onChunkProgress?.(message.completed, message.total)
+        break
+      case 'voices':
+      case 'audio':
+      case 'done': {
+        const entry = pending.get(message.requestId)
+        pending.delete(message.requestId)
+        entry?.resolve(message)
+        break
+      }
+      case 'error': {
+        const entry = pending.get(message.requestId)
+        pending.delete(message.requestId)
+        entry?.reject(new Error(message.message))
+        break
+      }
+    }
+  })
+  // A worker that dies outright (an OOM kill, most likely) would otherwise leave every caller
+  // awaiting a reply that can never arrive.
+  worker.addEventListener('error', (event) => {
+    const err = new Error(event.message || 'The Kokoro voice worker stopped unexpectedly.')
+    for (const [, entry] of pending) entry.reject(err)
+    pending.clear()
+    worker = null
+    // Describes the dead worker's memory, not this one's — a replacement starts empty, so leaving
+    // this set would report the model as ready/loading when nothing actually holds it.
+    isReady = false
+    loadPromise = null
+    lastProgress = null
+  })
+  return worker
+}
+
+function send(request: KokoroWorkerRequestInit, onChunkProgress?: (completed: number, total: number) => void) {
+  const requestId = nextRequestId++
+  return new Promise<KokoroWorkerResponse>((resolve, reject) => {
+    pending.set(requestId, { resolve, reject, onChunkProgress })
+    getWorker().postMessage({ ...request, requestId } as KokoroWorkerRequest)
+  })
 }
 
 /** Lets Settings show whether the voice model still needs downloading, without triggering it. */
@@ -72,24 +150,15 @@ export function getKokoroLoadState(): 'unloaded' | 'loading' | 'ready' {
   return loadPromise ? 'loading' : 'unloaded'
 }
 
-function loadKokoro(onProgress?: (p: KokoroLoadProgress) => void) {
+function loadKokoro(onProgress?: (p: KokoroLoadProgress) => void): Promise<void> {
   if (onProgress) {
     progressListeners.add(onProgress)
     if (lastProgress) onProgress(lastProgress)
   }
   if (!loadPromise) {
+    // Window-only API, which is part of why this stayed on the main thread.
     requestPersistentStorage()
-    loadPromise = (async () => {
-      const { KokoroTTS } = await import('kokoro-js')
-      // KokoroTTS.from_pretrained() internally makes two concurrent from_pretrained() calls (model
-      // weights + tokenizer) sharing one progress_callback, so the same per-file-progress-resets
-      // problem localModel.ts has applies here — see createProgressAggregator's doc comment.
-      return KokoroTTS.from_pretrained(MODEL_ID, {
-        dtype: 'q8',
-        device: 'wasm',
-        progress_callback: createProgressAggregator(broadcastProgress),
-      })
-    })()
+    loadPromise = send({ kind: 'load' }).then(() => undefined)
     loadPromise.then(
       () => {
         isReady = true
@@ -130,8 +199,8 @@ export async function hasDownloadedKokoroModel(): Promise<boolean> {
   }
 }
 
-/** Removes the downloaded voice model from this device, and resets in-memory state so the next
- * use re-downloads from scratch rather than reusing a stale reference. */
+/** Removes the downloaded voice model from this device, and resets in-memory state (here and in
+ * the worker) so the next use re-downloads from scratch rather than reusing a stale reference. */
 export async function removeKokoroModel(): Promise<void> {
   if (typeof caches !== 'undefined') {
     await Promise.all(
@@ -154,6 +223,7 @@ export async function removeKokoroModel(): Promise<void> {
   }
   loadPromise = null
   isReady = false
+  if (worker) await send({ kind: 'evict' })
 }
 
 /** Shared with Settings' manual "download now" button so both places describe load progress
@@ -162,48 +232,52 @@ export function describeKokoroProgress(p: KokoroLoadProgress): string {
   return describeModelDownloadProgress(p, PROGRESS_LABEL)
 }
 
+/** Shared with Play.tsx's `voiceLoadMessage` — the same progress-message convention as
+ * describeKokoroProgress (model download), reused for per-turn generation now that playback waits
+ * for the whole clip to finish generating before it can start (issue #44). `completed`/`total` are
+ * chunk counts, not bytes/percent — for a single-chunk job (e.g. a voice preview) this reads as a
+ * plain "Generating…" rather than a redundant "part 1 of 1". */
+export function describeKokoroGenerateProgress(completed: number, total: number): string {
+  return total <= 1 ? 'Generating narration…' : `Generating narration — part ${completed} of ${total}…`
+}
+
 /** One entry from the loaded model's own voice catalog (`tts.voices`) — kokoro-js's per-voice
  * metadata varies by voice (e.g. `traits` is only present on some), so everything but the id/name/
  * language/gender is optional here rather than assumed. */
-export interface KokoroVoice {
-  id: string
-  name: string
-  language: string
-  gender: string
-  traits?: string
-}
+export type KokoroVoice = KokoroWorkerVoice
 
 /**
  * Lists the voices the model actually ships with, read from the loaded model's own `voices`
- * getter rather than a hardcoded catalog here — kokoro-js bundles that catalog as a plain object
- * (not exported from the package on its own), so getting at it means going through a real
- * `KokoroTTS` instance, and `KokoroTTS.from_pretrained()` only returns once loading finishes.
- * Concretely: this triggers the same load-or-reuse path speak() already uses (loadKokoro), so
- * calling it for the first time in a session downloads the model — Settings surfaces that via
- * `onProgress`, the same progress plumbing/format as the "download voice model now" card.
+ * getter in the worker rather than a hardcoded catalog here — kokoro-js bundles that catalog as a
+ * plain object (not exported from the package on its own), so getting at it means going through a
+ * real `KokoroTTS` instance, which only exists once loading finishes. Concretely: this triggers
+ * the same load-or-reuse path speak() already uses (loadKokoro), so calling it for the first time
+ * in a session downloads the model — Settings surfaces that via `onProgress`, the same progress
+ * plumbing/format as the "download voice model now" card.
  */
 export async function listKokoroVoices(onProgress?: (p: KokoroLoadProgress) => void): Promise<KokoroVoice[]> {
-  const tts = await loadKokoro(onProgress)
-  return Object.entries(tts.voices).map(([id, voice]) => {
-    const v = voice as { name: string; language: string; gender: string; traits?: string }
-    return { id, name: v.name, language: v.language, gender: v.gender, traits: v.traits }
-  })
+  await loadKokoro(onProgress)
+  const res = await send({ kind: 'listVoices' })
+  if (res.kind !== 'voices') throw new Error('Unexpected response loading Kokoro voices.')
+  return res.voices
 }
 
 /**
  * Generates a short, fixed preview clip for one voice — used by Settings' per-voice preview
  * button. Loads the model first if it isn't already resident (same load-or-reuse path as speak()/
  * listKokoroVoices, so a model already loaded to populate the voice list is reused rather than
- * loaded twice). An unrecognized voice id falls back to DEFAULT_VOICE, same as speak() does.
+ * loaded twice). An unrecognized voice id falls back to DEFAULT_VOICE, resolved worker-side, same
+ * as speak() does. Goes through the same 'speak' worker request as a real turn (a one-chunk job),
+ * rather than a separate code path, so there's only one place that generates and encodes audio.
  */
 export async function generateKokoroPreview(
   voiceId: string,
   onProgress?: (p: KokoroLoadProgress) => void,
 ): Promise<Blob> {
-  const tts = await loadKokoro(onProgress)
-  const voice = voiceId in tts.voices ? voiceId : DEFAULT_VOICE
-  const audio = await tts.generate(PREVIEW_TEXT, { voice })
-  return audio.toBlob()
+  await loadKokoro(onProgress)
+  const res = await send({ kind: 'speak', chunks: [PREVIEW_TEXT], voice: voiceId })
+  if (res.kind !== 'audio') throw new Error('Unexpected response generating a Kokoro voice preview.')
+  return res.blob
 }
 
 /** Splits one long sentence on word boundaries when it alone would exceed the token budget. */
@@ -231,7 +305,9 @@ function splitLongSentence(sentence: string): string[] {
  * This exists because `KokoroTTS.generate()` tokenizes with `truncation: true` against a 512-token
  * context, so anything longer is **silently cut off mid-sentence** with no error — a whole turn's
  * narrative reliably trips this (measured: audio stopped ~470 characters into a 687-character
- * turn). Splitting first and generating per chunk is the fix.
+ * turn). Splitting first and generating per chunk is the fix. This is unaffected by #44's move of
+ * generation into a Worker: the chunks it produces are simply what gets generated (all up front,
+ * then stitched into one clip) instead of generated-and-played one at a time.
  *
  * Uses kokoro-js's own `TextSplitterStream` for the sentence boundaries (it handles abbreviations,
  * decimals, quotes and brackets), driven synchronously: `push()` then spreading runs its internal
@@ -239,7 +315,10 @@ function splitLongSentence(sentence: string): string[] {
  * `KokoroTTS.stream()`, which builds a `TextSplitterStream` internally but never `close()`s it —
  * its async iterator would then block forever waiting for input that never comes.
  *
- * Exported for tests: this runs with no model download, so the splitting is verifiable on its own.
+ * Runs on the main thread, not in kokoroTts.worker.ts: it's pure string processing with no model
+ * involved (`TextSplitterStream` needs no `from_pretrained()` call at all), so there's nothing to
+ * gain from moving it, and it's exported for tests on that basis — this runs with no model
+ * download, so the splitting is verifiable on its own.
  */
 export async function splitIntoSpeakableChunks(text: string): Promise<string[]> {
   const { TextSplitterStream } = await import('kokoro-js')
@@ -252,16 +331,24 @@ export interface KokoroTtsOptions {
   /** Called while the model downloads/initializes — only ever fires on the first speak() of a
    * session (or after removeKokoroModel()), since the loaded model is reused after that. */
   onLoadProgress?: (p: KokoroLoadProgress) => void
+  /** Called while a turn's audio is generating, once per finished chunk — every speak() call
+   * reports this, since playback now waits for the whole clip to finish generating before it can
+   * start (issue #44). Pass completed/total to describeKokoroGenerateProgress for a ready-made
+   * label, the same convention describeKokoroProgress already establishes for download progress. */
+  onGenerateProgress?: (completed: number, total: number) => void
 }
 
 export function createKokoroTtsProvider(opts: KokoroTtsOptions = {}): TtsProvider {
   let currentAudio: HTMLAudioElement | null = null
-  /** Bumped by stop() and by each new speak(), so an in-flight chunk sequence can tell it's been
-   * superseded and bail out instead of continuing to play over whatever replaced it. */
+  /** Bumped by stop() and by each new speak(), so an in-flight generate-then-play call can tell
+   * it's been superseded and bail out instead of playing over whatever replaced it. Generation
+   * already under way in the worker when that happens isn't cancelled (kokoro-js has no abort
+   * primitive for a `generate()` call in flight, and neither does localModel.worker.ts's
+   * equivalent) — its result just arrives and is discarded once isStale() is true. */
   let playToken = 0
   /** Settles the in-flight clip when stop() interrupts it. `pause()` fires neither 'ended' nor
-   * 'error', so without this the promise never settles: the blob URL is never revoked, the chunk
-   * loop never reaches its isStale() check, and its lookahead-rejection guards never run. */
+   * 'error', so without this the promise never settles: the blob URL is never revoked, and
+   * playBlob's own isStale()-adjacent cleanup never runs. */
   let settleCurrent: (() => void) | null = null
 
   function playBlob(blob: Blob): Promise<void> {
@@ -287,71 +374,35 @@ export function createKokoroTtsProvider(opts: KokoroTtsOptions = {}): TtsProvide
       currentAudio?.pause()
       currentAudio = null
 
-      const tts = await loadKokoro(opts.onLoadProgress)
+      await loadKokoro(opts.onLoadProgress)
       if (isStale()) return
-      const voice = speakOpts?.voice && speakOpts.voice in tts.voices ? speakOpts.voice : DEFAULT_VOICE
 
       // See splitIntoSpeakableChunks — generating the whole narrative in one call would silently
       // truncate it at the model's 512-token context.
       const chunks = await splitIntoSpeakableChunks(text)
+      if (isStale() || chunks.length === 0) return
+
+      // Generate every chunk up front and stitch them into one continuous clip before any playback
+      // starts, matching ElevenLabs' one-request/one-blob/one-play model (issue #44) — trading
+      // "starts speaking after the first chunk" for gapless playback and no possibility of a
+      // mid-turn stall waiting on the next chunk. This runs in kokoroTts.worker.ts: pre-generating
+      // every chunk back-to-back is tens of seconds of unbroken WASM work for a realistic turn
+      // (measured — see that worker's doc comment), which would otherwise freeze the main thread
+      // for the whole wait.
+      const res = await send({ kind: 'speak', chunks, voice: speakOpts?.voice ?? '' }, (completed, total) =>
+        opts.onGenerateProgress?.(completed, total),
+      )
       if (isStale()) return
+      if (res.kind !== 'audio') throw new Error('Unexpected response generating narration.')
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const generate = (chunk: string): Promise<any> => tts.generate(chunk, { voice })
-
-      // Generate one chunk ahead of playback so the next clip is usually ready the moment the
-      // current one ends — otherwise every sentence boundary would stall for a full generation.
-      //
-      // Backgrounding note (see #39): unlike ElevenLabs' one-continuous-file-per-turn playback,
-      // this generate-ahead-then-play loop depends on real work continuing to run on *this* main
-      // thread between chunks — `tts.generate()` is WASM inference, not delegated to a Worker the
-      // way the local text models are (see localModel.worker.ts). A currently-*playing* `<audio>`
-      // clip is exempted from Chrome's background-tab throttling (that's exactly why ElevenLabs/
-      // Kokoro survive backgrounding better than raw SpeechSynthesis at all — see mediaSession.ts's
-      // doc comment and the Settings note next to Browser TTS), but the *next* chunk's generation
-      // is ordinary main-thread JS/WASM work, which is a plausible target for whatever CPU/timer
-      // deprioritization a backgrounded renderer gets. That could show up as a real gap: the
-      // current clip finishes, but the next one isn't ready yet, so playback stalls mid-turn
-      // instead of erroring. This is a *suspected* gap, not a confirmed one — verifying it needs a
-      // real Android device (measuring generate() latency foreground vs. backgrounded), which
-      // wasn't available in the environment that wrote this comment. If it does turn out to be
-      // real, the fix is almost certainly moving `tts.generate()` into a Worker (mirroring
-      // localModel.worker.ts) so its progress isn't tied to main-thread scheduling at all — not
-      // pre-generating further ahead, which only shifts the problem and costs more memory/latency
-      // up front.
-      let upcoming = chunks.length > 0 ? generate(chunks[0]) : null
-      for (let i = 0; i < chunks.length; i++) {
-        const pending = upcoming!
-        upcoming = i + 1 < chunks.length ? generate(chunks[i + 1]) : null
-        let audioData
-        try {
-          audioData = await pending
-        } catch (err) {
-          upcoming?.catch(() => {}) // don't leave the lookahead as an unhandled rejection
-          throw err
-        }
-        if (isStale()) {
-          upcoming?.catch(() => {})
-          return
-        }
-        try {
-          await playBlob(audioData.toBlob())
-        } catch (err) {
-          upcoming?.catch(() => {})
-          throw err
-        }
-        if (isStale()) {
-          upcoming?.catch(() => {})
-          return
-        }
-      }
+      await playBlob(res.blob)
     },
     stop() {
       playToken++
       currentAudio?.pause()
       currentAudio = null
-      // Resolve (not reject) the in-flight clip: the chunk loop then sees isStale() and returns
-      // cleanly, running its cleanup. Rejecting would surface a deliberate stop as an error.
+      // Resolve (not reject) the in-flight clip: a deliberate stop isn't a failure, and callers
+      // treat a rejection as an error worth toasting.
       settleCurrent?.()
       settleCurrent = null
     },

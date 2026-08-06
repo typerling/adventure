@@ -36,6 +36,10 @@ export interface GetTtsProviderOptions {
   /** Only Kokoro reports load progress — it's the one TTS provider that downloads a model. The
    * other two either use a built-in browser voice or a remote API, so nothing to report. */
   onKokoroLoadProgress?: (p: KokoroLoadProgress) => void
+  /** Only Kokoro reports generation progress — it's the one TTS provider whose speak() now waits
+   * for a whole turn's audio to finish generating before playback can start (issue #44).
+   * ElevenLabs' single request and the browser's built-in synthesis have no equivalent wait. */
+  onKokoroGenerateProgress?: (completed: number, total: number) => void
 }
 
 /** Same as getSttProvider, for TTS. */
@@ -43,7 +47,10 @@ export function getTtsProvider(kind: TtsProviderKind, opts: GetTtsProviderOption
   if (kind === 'browser') return isBrowserTtsSupported() ? createBrowserTtsProvider() : null
   if (kind === 'elevenlabs') return createElevenLabsTtsProvider()
   if (kind === 'huggingface-local') {
-    return createKokoroTtsProvider({ onLoadProgress: opts.onKokoroLoadProgress })
+    return createKokoroTtsProvider({
+      onLoadProgress: opts.onKokoroLoadProgress,
+      onGenerateProgress: opts.onKokoroGenerateProgress,
+    })
   }
   return null
 }
