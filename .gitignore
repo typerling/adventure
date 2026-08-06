@@ -13,3 +13,7 @@ playwright/.cache
 
 *storybook.log
 storybook-static
+
+# Local tooling state — background subagents (e.g. issue implementers spawned from planning
+# sessions) work in isolated git worktrees under .claude/worktrees/, not repo content.
+.claude
