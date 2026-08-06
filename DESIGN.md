@@ -227,9 +227,13 @@ contract so the app can parse it. **Two-part output:**
   populates these for an NPC with real interaction this turn (dialogue, an ongoing role in the
   scene) — a background character mentioned in passing stays name+description only, matching the
   Lazy-GM principle of not over-investing in throwaway characters. `secrets` is GM-only ground
-  truth (a hidden motive, a lie told) that must never appear in the narrative, options, or any
-  player-facing render (Play, Codex) — it exists purely so future turns don't contradict a fact
-  the player hasn't discovered yet. `notes_add` does double duty: the app deterministically (no
+  truth (a hidden motive, a lie told) that must never appear in the *narrative*, *options*, or
+  Codex — it exists so future turns don't contradict a fact the player hasn't discovered yet, and
+  reaching the model on later turns is the whole point, so it's included in the prompt like any
+  other documented state. That means it's visible in manual mode's copy/paste textarea (the whole
+  built prompt is shown there so you can inspect/paste it — nothing in it can be hidden from
+  whoever's relaying it by hand); that's a pre-existing property of manual mode, not a leak this
+  introduces. `notes_add` does double duty: the app deterministically (no
   extra AI call) overwrites that NPC's condensed `notes` column with it *and* appends it as a
   turn-numbered entry to `world/npcs/<slug>.md` (creating the file on first use) — same
   summary-plus-detail-file pattern as `LoreEntry`'s `summary`/`detail_file` (see §4), applied for
@@ -242,8 +246,8 @@ contract so the app can parse it. **Two-part output:**
   you can inspect/edit it before pasting) includes: DM persona + tone, the difficulty rules
   (§7), the world/character setup from `campaign.md`, a fresh `batchGet` snapshot of the
   Character/Inventory/NPCs/NPCAttributes/Monsters/Map/Quests tabs (every known NPC's condensed
-  `notes` and attributes included unconditionally — cheap, the whole snapshot is already loaded —
-  but never `secrets`), the rolling summary from `rolling.md`, the last ~6 raw turns, and a fixed
+  `notes`, `secrets`, and attributes included unconditionally — cheap, the whole snapshot is
+  already loaded), the rolling summary from `rolling.md`, the last ~6 raw turns, and a fixed
   instruction block requiring the `state` JSON contract and telling the model to **only** report
   changes that are consistent with the supplied state (no inventing items you already have, no
   NPCs dying twice, etc.) — this is the "review against documented information" the brief asked

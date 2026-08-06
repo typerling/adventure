@@ -184,4 +184,41 @@ test.describe('NPC + player character profiles (#30)', () => {
     await expect(promptTextarea).toHaveValue(/## Recalled history for NPCs named in this turn's action/)
     await expect(promptTextarea).toHaveValue(/Admitted she's been paid to keep strangers out of the crypt\./)
   })
+
+  test('a secret reaches a later turn\'s prompt — manual mode cannot hide it, unlike Play/Codex', async ({ page }) => {
+    // A secret only does its job (the DM staying consistent about something it hasn't told the
+    // player yet) if the model actually sees it again on a later turn — so unlike the earlier
+    // "never leaks into Play/Codex" test, this specifically checks the *prompt* the app builds
+    // for the *next* turn, where it deliberately does appear. See promptBuilder.ts's "Known
+    // NPCs" doc comment: this is an accepted, pre-existing property of manual mode (it shows the
+    // whole built prompt for the player to copy — nothing in a prompt can be hidden from someone
+    // relaying it by hand), not a gap this test is settling for.
+    //
+    // Two turns/dialogs open back-to-back below with no pause — hide toasts so a lingering
+    // "Turn applied." doesn't intercept the second Act click (see hideToasts's doc comment /
+    // the "returning NPC" test above for the same issue).
+    await hideToasts(page)
+    await installGoogleApiMock(page)
+    await createRandomCampaign(page)
+
+    await submitTurnWithDelta(
+      page,
+      'talk to the old caretaker',
+      'Old Maren eyes you warily before speaking.',
+      {
+        new_npcs: [
+          {
+            name: 'Old Maren',
+            description: 'the chapel caretaker',
+            secrets: 'she sold the key to the cult, not the other way around',
+          },
+        ],
+      },
+    )
+
+    // Renders unconditionally with every known NPC each turn — unlike detail-file recall, this
+    // isn't gated on the new action naming her.
+    await actAndOpenDialog(page, 'look around the market square')
+    await expect(page.locator('textarea[readonly]')).toHaveValue(/she sold the key to the cult/)
+  })
 })

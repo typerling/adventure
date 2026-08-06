@@ -54,8 +54,17 @@ function renderSnapshot(snapshot: SheetSnapshot): string {
     lines.push('', 'Known NPCs:')
     for (const n of knownNpcs) {
       lines.push(`- ${n.name} [${n.status}${n.relationship ? `, ${n.relationship}` : ''}]: ${n.description}`)
-      // Never render n.secrets here — GM-only, must never reach a prompt section that could leak
-      // into narration verbatim; secrets exist purely to be checked against, not displayed.
+      // Secrets DO need to reach the model — that's the whole point of tracking them (so the AI
+      // can behave consistently around something an NPC is hiding, and reveal it at the right
+      // moment) — so this is deliberately included in the prompt for every mode, not just
+      // API/local. The tradeoff: manual mode shows the whole built prompt to the player for
+      // copy/pasting (see buildTurnPrompt's own doc comment), so a secret genuinely can be
+      // visible there if the player reads closely. That's an accepted, pre-existing property of
+      // manual mode (it can't hide *anything* in the prompt from the player who's relaying it),
+      // not a new leak this introduces — see DESIGN.md §5. What secrets must never do is appear
+      // in the *narrative*, *options*, or Codex — i.e. what the AI writes back and what gets
+      // rendered as the story, not the DM-facing input that produces it.
+      if (n.secrets) lines.push(`  Secrets (do not reveal unless the story naturally does): ${n.secrets}`)
       if (n.voice) lines.push(`  Voice: ${n.voice}`)
       if (n.notes) lines.push(`  Notes: ${n.notes}`)
       const attrs = snapshot.NPCAttributes.filter((a) => a.npcId === n.id)
