@@ -116,7 +116,17 @@ function AppShell() {
   return (
     <div className="min-h-svh">
       <Header />
-      <div className={cn(context && 'pb-16 md:pb-0')}>
+      {/* Bottom padding reserves space for the fixed BottomNav so it can't overlap the end of a
+          page's content — only while a campaign context exists (that's the only time BottomNav
+          renders at all), and only below `md` (where BottomNav itself is hidden). The safe-area
+          inset is part of the reserve because it's part of the nav's height: BottomNav pads itself
+          by `env(safe-area-inset-bottom)`, so on a notched phone it is taller than 4rem and a flat
+          `pb-16` would leave the end of the page underneath it. That inset is 0 in headless
+          Chromium, so no test can catch this — hence spelling it out here. */}
+      <div
+        data-testid="app-content"
+        className={cn(context && 'pb-[calc(4rem+env(safe-area-inset-bottom))] md:pb-0')}
+      >
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/new" element={<NewCampaign />} />

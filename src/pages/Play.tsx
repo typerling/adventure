@@ -42,6 +42,11 @@ import { describeLocalModelProgress, generateLocalReply } from '@/lib/ai/localMo
 
 type DialogStage = 'closed' | 'prompt'
 
+/** How far past the bottom of the story log still counts as "at the bottom", in px. Shared by the
+ * IntersectionObserver's rootMargin and the reconcile check that runs when suppression ends — the
+ * two must agree or they'd disagree about the same scroll position. */
+const AT_BOTTOM_SLACK_PX = 32
+
 /** Options are arbitrary AI-generated strings with no inherent icon/color meaning — these just
  * cycle to give the choice list the same varied, illustrated-card look as a fixed icon per option
  * would, without pretending to understand what each option is about. */
@@ -229,6 +234,22 @@ export function Play() {
   const suppressObserverRef = useRef(false)
   const suppressTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
+  /** Ends the suppression window and immediately reconciles against reality. The re-check is the
+   * important half: an IntersectionObserver only fires on *changes*, so anything it was told to
+   * ignore mid-window is not re-reported afterwards. Without this, a player who scrolls up during
+   * the post-turn auto-scroll would leave the options/input showing over text they haven't read,
+   * stuck that way until some later scroll happened to change the intersection state again. */
+  const endSuppression = useCallback(() => {
+    suppressObserverRef.current = false
+    const root = viewportRef.current
+    const target = bottomRef.current
+    if (!root || !target) return
+    // Same test the observer's rootMargin encodes, just evaluated once here rather than per frame.
+    const isSentinelInView =
+      target.getBoundingClientRect().top <= root.getBoundingClientRect().bottom + AT_BOTTOM_SLACK_PX
+    if (!isSentinelInView) setIsAtBottom(false)
+  }, [])
+
   // Detects leaving the bottom of the log via the sentinel's real visibility within the
   // ScrollArea's viewport, rather than computing it by hand from scrollTop/scrollHeight on every
   // 'scroll' event — an IntersectionObserver reports the *actual* overlap at each moment, so it
@@ -244,7 +265,7 @@ export function Play() {
         if (suppressObserverRef.current) return
         if (!entry.isIntersecting) setIsAtBottom(false)
       },
-      { root, rootMargin: '0px 0px 32px 0px' },
+      { root, rootMargin: `0px 0px ${AT_BOTTOM_SLACK_PX}px 0px` },
     )
     observer.observe(target)
     return () => observer.disconnect()
@@ -253,20 +274,19 @@ export function Play() {
     // keeps climbing regardless, which is what should re-arm this on every actual new turn.
   }, [lastTurn?.turn])
 
-  // Clears suppression exactly when the programmatic scroll actually finishes, rather than
-  // guessing a fixed duration — 'scrollend' fires once the browser's smooth-scroll animation
-  // settles, however long that took for however far it had to travel (a long story log can need
-  // more than a token delay). The timeout in scrollToBottom is a fallback only, for when nothing
-  // moves at all (already at the bottom) and 'scrollend' never fires to begin with.
+  // Ends suppression when the scroll actually finishes rather than after a guessed duration —
+  // 'scrollend' fires once the browser's smooth-scroll animation settles, however far it had to
+  // travel (a long story log can need more than a token delay). The timeout in scrollToBottom
+  // remains a genuine fallback: 'scrollend' never fires when nothing moved at all (already at the
+  // bottom), and measurement showed it can also fail to fire for a user scroll that happens
+  // *during* the programmatic one — in that case the timeout is what ends the window, so the
+  // options can linger over unread text for up to its duration rather than clearing immediately.
   useEffect(() => {
     const el = viewportRef.current
     if (!el) return
-    const onScrollEnd = () => {
-      suppressObserverRef.current = false
-    }
-    el.addEventListener('scrollend', onScrollEnd)
-    return () => el.removeEventListener('scrollend', onScrollEnd)
-  }, [])
+    el.addEventListener('scrollend', endSuppression)
+    return () => el.removeEventListener('scrollend', endSuppression)
+  }, [endSuppression])
 
   useEffect(() => {
     return () => {
@@ -274,22 +294,29 @@ export function Play() {
     }
   }, [])
 
-  function scrollToBottom() {
+  const scrollToBottom = useCallback(() => {
     setIsAtBottom(true)
     suppressObserverRef.current = true
     if (suppressTimeoutRef.current) clearTimeout(suppressTimeoutRef.current)
-    suppressTimeoutRef.current = setTimeout(() => {
-      suppressObserverRef.current = false
-    }, 1500)
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }
+    suppressTimeoutRef.current = setTimeout(endSuppression, 1500)
+    // Deferred a frame rather than scrolled straight away, because setIsAtBottom(true) above
+    // *shrinks* the log (the taller scrolled-away height collapses back to h-[50svh]) and React
+    // hasn't committed that yet. A synchronous scrollIntoView would aim at the pre-shrink layout
+    // and stop a few hundred px short of the real bottom — which then made endSuppression measure
+    // "not at the bottom", latch closed again, regrow the log, and leave "Scroll to continue"
+    // showing while the player was already at the bottom. Clicking it just alternated between the
+    // two states forever.
+    requestAnimationFrame(() => {
+      bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+    })
+  }, [endSuppression])
 
   // Scrolls to the newest turn as soon as one is added — a chat-style "jump to the latest
   // message" so a freshly-generated/applied turn is never left scrolled out of view. See the
   // observer effect above for why lastTurn?.turn, not recentTurns.length.
   useEffect(() => {
     scrollToBottom()
-  }, [lastTurn?.turn])
+  }, [lastTurn?.turn, scrollToBottom])
 
   useEffect(() => {
     return () => {
@@ -466,9 +493,20 @@ export function Play() {
           isAtBottom's one-way latch — meant "Scroll to continue" never went away again. An
           explicit calc() height has no such ambiguity to resolve. Approximate, not exact: the
           point is reclaiming most of the freed area, not filling to the pixel, and undershooting
-          is deliberately safer than overshooting into an unwanted extra scrollbar. */}
+          is deliberately safer than overshooting into an unwanted extra scrollbar.
+
+          Both heights are in `svh`, not a mix of `vh` and `svh`: on iOS `vh` tracks the *large*
+          viewport (toolbars hidden) while `svh` tracks the small one, so mixing them would measure
+          the two states against different boxes and make the "grown" height not actually the
+          bigger of the two while the toolbars are showing. The max() guards the same thing for
+          short viewports generally — below roughly 350px of height, `100svh - 11rem` is *smaller*
+          than `50svh`, so without it the log would shrink on scrolling away instead of growing
+          (landscape phones hit this; the tests' fixed 844px viewport does not). */}
       <div className="relative">
-        <ScrollArea className={isAtBottom ? 'h-[50vh]' : 'h-[calc(100svh-11rem)]'} viewportRef={viewportRef}>
+        <ScrollArea
+          className={isAtBottom ? 'h-[50svh]' : 'h-[max(50svh,calc(100svh-11rem))]'}
+          viewportRef={viewportRef}
+        >
           {recentTurns.length === 0 ? (
             <p className="p-4 font-serif text-sm text-muted-foreground italic sm:p-5">
               No story yet — describe your first action below to begin.
