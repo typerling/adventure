@@ -268,7 +268,12 @@ export async function listKokoroVoices(onProgress?: (p: KokoroLoadProgress) => v
  * listKokoroVoices, so a model already loaded to populate the voice list is reused rather than
  * loaded twice). An unrecognized voice id falls back to DEFAULT_VOICE, resolved worker-side, same
  * as speak() does. Goes through the same 'speak' worker request as a real turn (a one-chunk job),
- * rather than a separate code path, so there's only one place that generates and encodes audio.
+ * rather than a separate code path, so there's only one place that generates and encodes audio —
+ * which also means a preview can be superseded (worker-side `'done'` instead of `'audio'`, see
+ * kokoroTts.worker.ts's speak()) by a newer preview or a real turn starting playback while this
+ * one is still generating, not just by kokoroPreviewTokenRef's own staleness check in Settings.tsx
+ * (which still runs after this resolves — this rejection is the same "not current anymore" case,
+ * caught there and correctly not toasted for a choice the player has already moved past).
  */
 export async function generateKokoroPreview(
   voiceId: string,
@@ -276,6 +281,7 @@ export async function generateKokoroPreview(
 ): Promise<Blob> {
   await loadKokoro(onProgress)
   const res = await send({ kind: 'speak', chunks: [PREVIEW_TEXT], voice: voiceId })
+  if (res.kind === 'done') throw new Error('Superseded by a newer request before this preview finished generating.')
   if (res.kind !== 'audio') throw new Error('Unexpected response generating a Kokoro voice preview.')
   return res.blob
 }
@@ -389,9 +395,13 @@ export function createKokoroTtsProvider(opts: KokoroTtsOptions = {}): TtsProvide
       // every chunk back-to-back is tens of seconds of unbroken WASM work for a realistic turn
       // (measured — see that worker's doc comment), which would otherwise freeze the main thread
       // for the whole wait.
-      const res = await send({ kind: 'speak', chunks, voice: speakOpts?.voice ?? '' }, (completed, total) =>
-        opts.onGenerateProgress?.(completed, total),
-      )
+      const res = await send({ kind: 'speak', chunks, voice: speakOpts?.voice ?? '' }, (completed, total) => {
+        // opts.onGenerateProgress is one shared callback across every speak() call on this
+        // provider instance (Play.tsx reuses one instance per provider kind — see its
+        // ttsProviderRef comment) — without this check, a chunkProgress message from a call
+        // that's since been superseded would still overwrite the *current* call's progress text.
+        if (!isStale()) opts.onGenerateProgress?.(completed, total)
+      })
       if (isStale()) return
       if (res.kind !== 'audio') throw new Error('Unexpected response generating narration.')
 

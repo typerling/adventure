@@ -84,11 +84,13 @@ export async function installFakeKokoroModule(
         if (self.__kokoroGeneratePause) await self.__kokoroGeneratePause
         // audio/sampling_rate: what kokoroTts.worker.ts's stitchAudio() actually reads off the
         // real RawAudio-shaped return value (see its doc comment) — a couple of silent samples is
-        // enough for a valid, playable (silent) clip without faking real speech synthesis.
+        // enough for a valid, playable (silent) clip without faking real speech synthesis. No
+        // toBlob() here (unlike the real RawAudio) — production code only ever reads .audio/
+        // .sampling_rate directly and builds its own WAV, so a fake toBlob would just be unused
+        // surface implying an API nothing calls.
         return {
           audio: new Float32Array([0, 0]),
           sampling_rate: 24000,
-          toBlob: () => new Blob([new Uint8Array([0, 0, 0, 0])], { type: 'audio/wav' }),
         }
       }
     }

@@ -140,27 +140,63 @@ async function listVoices(requestId: number): Promise<void> {
   post({ kind: 'voices', requestId, voices })
 }
 
+/** The most recent 'speak' request kokoroTts.ts actually wants — set synchronously the instant a
+ * new 'speak' message arrives, not when its turn in speakQueue comes up. Lets doSpeak notice it's
+ * been superseded (a newer turn started playing before this one finished) and bail without either
+ * running a pointless generation or posting a result nothing will use. */
+let currentSpeakRequestId: number | null = null
+/** Serializes 'speak' jobs — kokoro-js's WASM session isn't verified safe for concurrent
+ * generate() calls (nothing in its source or docs promises reentrancy), and issue #44 was
+ * explicit about not assuming that without checking. Without this, clicking a different turn's
+ * play button while an earlier turn's pre-generation is still running (now tens of seconds, not
+ * the second or two the old per-chunk-interleaved-with-playback design left as a window) would
+ * dispatch a second 'speak' job straight into the same shared model instance. */
+let speakQueue: Promise<void> = Promise.resolve()
+
 /**
  * Generates every chunk, then stitches them into one continuous clip — the whole point of #44.
  * `chunks` is always non-empty here; kokoroTts.ts skips sending the request at all for empty text.
  */
-async function speak(requestId: number, chunks: string[], voice: string): Promise<void> {
+async function doSpeak(requestId: number, chunks: string[], voice: string): Promise<void> {
+  // Every bail-out below posts 'done' (a plain no-payload response, same as 'load'/'evict' use)
+  // rather than just returning — kokoroTts.ts's pending Map is keyed by requestId and only cleaned
+  // up when *some* response arrives for it; silently returning here would leave that entry (and
+  // its awaiting caller) hanging forever instead of settling. The caller already checks its own
+  // staleness (isStale()) before ever looking at what kind of response it got, so 'done' is a safe
+  // stand-in for a superseded 'audio' — its content is never inspected.
+  if (requestId !== currentSpeakRequestId) {
+    post({ kind: 'done', requestId })
+    return
+  }
   const tts = await loadTts()
   const resolvedVoice = resolveVoice(tts, voice)
   const generated: { audio: Float32Array; sampling_rate: number }[] = []
   for (let i = 0; i < chunks.length; i++) {
-    // Sequential, deliberately: kokoro-js's WASM session isn't verified safe for concurrent
-    // generate() calls (nothing in its source or docs promises reentrancy), and issue #44 was
-    // explicit about not assuming that without checking — which this didn't attempt, since moving
-    // to a Worker was already enough to fix the main-thread-blocking problem that motivated looking
-    // at concurrency in the first place. If per-turn generation time ever becomes the bottleneck
-    // (rather than "does it block the UI"), verifying safe concurrent generate() calls is the next
-    // place to look — not assumed safe here.
+    // Superseded mid-generation — stop after whatever chunk is already in flight rather than
+    // grinding through the rest of a turn nothing will play.
+    if (requestId !== currentSpeakRequestId) {
+      post({ kind: 'done', requestId })
+      return
+    }
     const audio = await tts.generate(chunks[i], { voice: resolvedVoice })
     generated.push({ audio: audio.audio, sampling_rate: audio.sampling_rate })
     post({ kind: 'chunkProgress', requestId, completed: i + 1, total: chunks.length })
   }
+  if (requestId !== currentSpeakRequestId) {
+    post({ kind: 'done', requestId })
+    return
+  }
   post({ kind: 'audio', requestId, blob: stitchAudio(generated) })
+}
+
+function speak(requestId: number, chunks: string[], voice: string): Promise<void> {
+  currentSpeakRequestId = requestId
+  const job = speakQueue.then(() => doSpeak(requestId, chunks, voice))
+  // Keep the queue itself alive even when a job rejects, so one failed/superseded turn doesn't
+  // permanently wedge every 'speak' request queued after it — the rejection still propagates to
+  // this call's own caller (the message handler's `.catch(fail)`) via `job`, just not the queue.
+  speakQueue = job.catch(() => {})
+  return job
 }
 
 ctx.addEventListener('message', (event) => {
