@@ -364,10 +364,15 @@ philosophy as the AI backend. Three implementations exist (Kokoro is TTS-only):
   recognizes this one error id specifically (`'popup_closed'` while `window.crossOriginIsolated`),
   at every popup call site (interactive `signIn`, `getValidAccessToken`'s silent refresh, and the
   startup silent-reauth), and calls `disableCrossOriginIsolationAndReload()` instead of surfacing
-  an ordinary auth failure — unregistering the worker and reloading so the next sign-in attempt
-  runs unisolated instead of failing the same way forever (this app's access tokens are
-  short-lived, so leaving this undetected would eventually break every long play session's
-  background token refresh, not just an explicit sign-in click).
+  an ordinary auth failure — unregistering the worker, marking isolation disabled for the rest of
+  this tab session (`sessionStorage`, checked by `ensureCrossOriginIsolated()` on every later
+  call so an ordinary reload or PWA relaunch after recovery doesn't immediately re-isolate and
+  re-break the next popup — found missing, and fixed, in independent review), and reloading so
+  sign-in can be retried unisolated instead of failing the same way forever within that session
+  (this app's access tokens are short-lived, so leaving this undetected would eventually break
+  every long play session's background token refresh, not just an explicit sign-in click). A
+  fresh tab/session still retries isolation from scratch, so this is a bounded, per-session
+  opt-out rather than a permanent one.
 
   For local testing, `vite.config.ts`'s dev/preview servers can set the same headers natively when
   `VITE_COI_HEADERS=1` is set (off by default, so the normal dev/test workflow matches today's

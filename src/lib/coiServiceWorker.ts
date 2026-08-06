@@ -9,9 +9,22 @@
  * `crossOriginIsolated` flips true. `sessionStorage` guards that to happen at most once per tab
  * session, so a browser that never actually achieves isolation (no ServiceWorker support, or
  * something blocks it) degrades to "stays single-threaded," not a reload loop.
+ *
+ * The other reload loop, found in independent review of the PR that introduced this: isolation
+ * being unregistered by `disableCrossOriginIsolationAndReload()` (below) only lasts until the
+ * *next* call to this function — which happens unconditionally on every app boot, from
+ * `main.tsx`. Without `ISOLATION_DISABLED_KEY`, an ordinary page reload (or PWA relaunch) right
+ * after recovery would immediately re-register the worker and re-isolate the page, so the very
+ * next popup-based token refresh (this app's access tokens are short-lived — see authStore.ts's
+ * SESSION_STORAGE_KEY comment) would sever and "recover" all over again, forever, within the same
+ * tab. `ISOLATION_DISABLED_KEY` makes that recovery durable for the rest of *this* `sessionStorage`
+ * lifetime (survives reloads, cleared by closing the tab) — a fresh tab/session still retries
+ * isolation from scratch, so this is a bounded, per-session opt-out, not a permanent one.
  */
 
 const RELOAD_GUARD_KEY = 'adventure:coi-reload-attempted'
+/** Set by disableCrossOriginIsolationAndReload(), checked here — see the doc comment above. */
+const ISOLATION_DISABLED_KEY = 'adventure:coi-disabled'
 
 function swUrl(): string {
   return `${import.meta.env.BASE_URL}coi-serviceworker.js`
@@ -29,6 +42,10 @@ export async function ensureCrossOriginIsolated(): Promise<void> {
     if (window.crossOriginIsolated) return // Already isolated - a host that CAN set the headers
     // natively (local dev/preview with VITE_COI_HEADERS, or a future non-GitHub-Pages host)
     // needs no service worker at all.
+    // Recovery just deliberately stepped out of isolation for a broken sign-in popup - honor that
+    // for the rest of this tab session instead of immediately re-isolating on the very next load
+    // (this function's own doc comment above has the full story).
+    if (sessionStorage.getItem(ISOLATION_DISABLED_KEY) === '1') return
     if (!('serviceWorker' in navigator)) return
 
     await navigator.serviceWorker.register(swUrl(), { scope: swScope() })
@@ -48,9 +65,11 @@ export async function ensureCrossOriginIsolated(): Promise<void> {
 
 /**
  * The escape hatch for authStore.ts's sign-in recovery path (see that file and
- * coi-serviceworker.js's doc comment for why this is ever needed): unregisters the worker and
- * clears the reload guard so the *next* load is no longer isolated, then reloads immediately so
- * the popup-based OAuth flow that just failed can be retried in a working state.
+ * coi-serviceworker.js's doc comment for why this is ever needed): unregisters the worker,
+ * marks isolation disabled for the rest of this tab session (see ISOLATION_DISABLED_KEY's doc
+ * comment above - without this, `ensureCrossOriginIsolated()` would just re-register on the very
+ * next load and re-break the next popup-based token request), then reloads immediately so the
+ * popup-based OAuth flow that just failed can be retried in a working, unisolated state.
  */
 export async function disableCrossOriginIsolationAndReload(): Promise<void> {
   try {
@@ -63,6 +82,7 @@ export async function disableCrossOriginIsolationAndReload(): Promise<void> {
     // isolated page that can never sign in.
   } finally {
     sessionStorage.removeItem(RELOAD_GUARD_KEY)
+    sessionStorage.setItem(ISOLATION_DISABLED_KEY, '1')
     window.location.reload()
   }
 }

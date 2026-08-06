@@ -17,7 +17,7 @@
  * independently-registered workers racing/overwriting each other's registration is exactly the
  * failure mode this file exists to avoid.
  *
- * IMPORTANT — read src/lib/coiServiceWorker.ts and authStore.ts's `recoverFromIsolatedPopupFailure`
+ * IMPORTANT — read src/lib/coiServiceWorker.ts and authStore.ts's `isPopupSeveredByIsolation`
  * before touching the header values below. Enabling cross-origin isolation has a real, confirmed
  * cost: it breaks Google Identity Services' popup-based OAuth flow. Verified by reading GIS's own
  * unminified `gsi/client.js` source (not assumed): both interactive sign-in AND background silent
@@ -26,10 +26,13 @@
  * `Cross-Origin-Opener-Policy: same-origin` severs `window.opener` for that cross-origin popup —
  * confirmed empirically in real Chromium with a synthetic two-origin popup+postMessage test, not
  * just from spec-reading. Neither swapping COEP to `credentialless` nor anything else about COEP
- * changes this — it is entirely a COOP effect. `authStore.ts` detects the resulting
- * `popup_closed`/`popup_failed_to_open` GIS error while `self.crossOriginIsolated` is true and
- * unregisters this worker + reloads to recover sign-in, trading away the speed win rather than
- * leaving the user stuck signed out. Don't change these header values without re-reading that flow.
+ * changes this — it is entirely a COOP effect. `authStore.ts` detects the resulting `popup_closed`
+ * GIS error (the only error id this failure mode was actually observed producing — see
+ * `isPopupSeveredByIsolation`'s own doc comment, don't assume other GIS error ids need the same
+ * treatment without verifying them the same way) while `self.crossOriginIsolated` is true, and
+ * calls `disableCrossOriginIsolationAndReload()` (src/lib/coiServiceWorker.ts) to recover sign-in,
+ * trading away the speed win for the rest of that tab session rather than leaving the user stuck
+ * signed out. Don't change these header values without re-reading that flow.
  */
 
 self.addEventListener('install', () => {

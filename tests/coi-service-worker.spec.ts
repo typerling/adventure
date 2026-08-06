@@ -3,6 +3,12 @@ import type { Page } from '@playwright/test'
 import { installGoogleApiMock } from './mocks/googleApi'
 import { createRandomCampaign } from './helpers'
 
+declare global {
+  interface Window {
+    __coiRegisterCalls: number
+  }
+}
+
 const SESSION_STORAGE_KEY = 'adventure:google-session'
 
 /**
@@ -69,6 +75,18 @@ async function installIsolatedFakeGis(page: Page): Promise<void> {
       sessionStorage.setItem('test:coiRecovered', '1')
       return realGetRegistrations()
     }
+    // Counts real register() attempts on *this* document load only (reset fresh by this same
+    // init script on every navigation) - lets a later reload check whether
+    // ensureCrossOriginIsolated() tried to re-register on that specific load, without needing a
+    // real service worker to actually install (this suite blocks those by default - see
+    // playwright.config.ts - so the real call safely rejects; only whether it was *attempted*
+    // matters here).
+    window.__coiRegisterCalls = 0
+    const realRegister = navigator.serviceWorker.register.bind(navigator.serviceWorker)
+    navigator.serviceWorker.register = (...args: Parameters<typeof realRegister>) => {
+      window.__coiRegisterCalls++
+      return realRegister(...args)
+    }
     ;(window as unknown as { google: unknown }).google = {
       accounts: {
         oauth2: {
@@ -96,11 +114,27 @@ test('recovers from a sign-in popup severed by cross-origin isolation instead of
 
   await page.goto(`/play/${campaignId}`)
 
-  // The real, unfaked disableCrossOriginIsolationAndReload triggers a genuine reload before
-  // landing here - proving authStore treated 'popup_closed' while crossOriginIsolated as
-  // "isolation needs to step aside" rather than an ordinary auth failure (which would show this
-  // same card immediately, with no reload). Post-reload, the getter above reports
-  // crossOriginIsolated: false, so that second 'popup_closed' falls through to the ordinary
-  // "no session to restore" path instead of looping into another "recovery".
+  // The end state alone (the sign-in button) does NOT prove recovery ran: an ordinary,
+  // un-recovered 'popup_closed' auth failure lands on the exact same button with the exact same
+  // markup, since authStore's normal error path also sets status: 'signed-out'. What's unique to
+  // recovery actually firing is disableCrossOriginIsolationAndReload calling
+  // navigator.serviceWorker.getRegistrations() - which installIsolatedFakeGis's stub uses to set
+  // this marker - so assert that directly rather than trusting the visible end state alone
+  // (caught by independent review: this assertion previously passed identically with the
+  // recovery code path reverted entirely).
   await expect(page.getByRole('button', { name: 'Sign in with Google' })).toBeVisible({ timeout: 15_000 })
+  expect(await page.evaluate(() => sessionStorage.getItem('test:coiRecovered'))).toBe('1')
+
+  // Recovery must also be durable past this point (a second finding from the same independent
+  // review): disableCrossOriginIsolationAndReload only unregisters the worker for *this* load -
+  // without ISOLATION_DISABLED_KEY (coiServiceWorker.ts), main.tsx's unconditional
+  // ensureCrossOriginIsolated() call on the *next* ordinary page load (a ordinary refresh, tab
+  // restore, or PWA relaunch - not another recovery) would immediately re-register and re-isolate,
+  // breaking the very next popup-based token request the exact same way. Prove that specifically
+  // by reloading once more and confirming ensureCrossOriginIsolated() did not attempt to
+  // re-register on that load - not just by checking the visible end state, which looks identical
+  // whether or not it re-registered.
+  await page.reload()
+  await expect(page.getByRole('button', { name: 'Sign in with Google' })).toBeVisible({ timeout: 15_000 })
+  expect(await page.evaluate(() => window.__coiRegisterCalls)).toBe(0)
 })
