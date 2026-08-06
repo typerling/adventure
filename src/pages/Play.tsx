@@ -1,24 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { toast } from 'sonner'
-import {
-  ArrowUp,
-  ChevronDown,
-  ChevronRight,
-  CircleAlert,
-  Compass,
-  Feather,
-  Footprints,
-  Loader2,
-  Mic,
-  MicOff,
-  Sparkles,
-  Square,
-  Volume2,
-} from 'lucide-react'
+import { ArrowUp, ChevronDown, CircleAlert, Loader2, Mic, MicOff, Square, Volume2 } from 'lucide-react'
 import { useCampaign } from '@/hooks/useCampaign'
 import { usePlayHeaderStore } from '@/store/playHeaderStore'
-import { cn } from '@/lib/utils'
 import { DEFAULT_SETTINGS, type TtsProvider as TtsProviderKind } from '@/types/campaign'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -33,12 +18,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import type { ValidationIssue } from '@/types/turn'
+import type { TurnOption, TurnRecord, ValidationIssue } from '@/types/turn'
 import { getSttProvider, getTtsProvider, isSttProviderAvailable, isTtsProviderAvailable } from '@/lib/voice/getProvider'
 import type { SttProvider, TtsProvider } from '@/lib/voice/types'
 import { describeKokoroProgress } from '@/lib/voice/kokoroTts'
 import { generateClaudeReply } from '@/lib/ai/claudeProvider'
 import { describeLocalModelProgress, generateLocalReply } from '@/lib/ai/localModel'
+import { buildSpokenScript, splitNarrativeIntoBlocks } from '@/lib/ai/turnBlocks'
+import { TurnContent } from '@/components/TurnContent'
 
 type DialogStage = 'closed' | 'prompt'
 
@@ -47,15 +34,20 @@ type DialogStage = 'closed' | 'prompt'
  * two must agree or they'd disagree about the same scroll position. */
 const AT_BOTTOM_SLACK_PX = 32
 
-/** Options are arbitrary AI-generated strings with no inherent icon/color meaning — these just
- * cycle to give the choice list the same varied, illustrated-card look as a fixed icon per option
- * would, without pretending to understand what each option is about. */
-const OPTION_ICONS = [Footprints, Compass, Feather, Sparkles]
-const OPTION_COLORS = [
-  'bg-primary text-primary-foreground',
-  'bg-secondary text-secondary-foreground',
-  'bg-accent text-accent-foreground',
-]
+/** Turns a logged turn into its render/speak block sequence (see turnBlocks.ts). Options are only
+ * included for the currently-live turn (`interactive`) — historical turns render/speak prose
+ * only, matching today's behavior where only the latest turn's options are ever offered again.
+ *
+ * `optionsOffered` on a `TurnRecord` only ever carries plain labels (story/log/*.md has no
+ * persisted `manus` — see useCampaign.ts), so without `optionsOverride` manus here always falls
+ * back to the label. `optionsOverride` is how the *just-applied* live turn gets manus fidelity
+ * anyway: `handleSubmitReply` below captures the freshly-parsed `{label, manus?}` options (from
+ * `SubmitOutcome`) before they're downgraded to labels-only in `recentTurns`, and passes them
+ * through for that one turn's narration. */
+function blocksForTurn(turn: TurnRecord, interactive: boolean, optionsOverride?: TurnOption[]) {
+  const items: TurnOption[] = interactive ? (optionsOverride ?? turn.optionsOffered.map((label) => ({ label }))) : []
+  return splitNarrativeIntoBlocks(turn.narrative, items)
+}
 
 export function Play() {
   const { campaignId } = useParams<{ campaignId: string }>()
@@ -99,6 +91,11 @@ export function Play() {
   /** The last turn number we've already spoken aloud — set to the campaign's current turn on
    * load so resuming a session never re-narrates history, only turns completed from here on. */
   const spokenTurnRef = useRef<number | null>(null)
+  /** The freshly-parsed `{label, manus?}` options for the turn most recently applied via
+   * handleSubmitReply, keyed by turn number so a stale value from an earlier turn is never
+   * mistaken for the current one. See blocksForTurn's doc comment for why this exists — it's the
+   * one place manus data survives long enough to actually be spoken. */
+  const pendingSpokenOptionsRef = useRef<{ turn: number; options: TurnOption[] } | null>(null)
   const prevReadAloudRef = useRef(readAloud)
   const bottomRef = useRef<HTMLDivElement>(null)
   const viewportRef = useRef<HTMLDivElement>(null)
@@ -124,7 +121,6 @@ export function Play() {
   const [inputFocused, setInputFocused] = useState(false)
 
   const lastTurn = recentTurns.at(-1)
-  const options = lastTurn?.optionsOffered ?? []
 
   const sttAvailable = Boolean(settings) && isSttProviderAvailable(settings!.sttProvider)
   const ttsAvailable = Boolean(settings) && isTtsProviderAvailable(settings!.ttsProvider)
@@ -206,20 +202,30 @@ export function Play() {
     [settings],
   )
 
-  function toggleTurnPlayback(turn: number, narrative: string) {
-    if (playingTurn === turn) {
+  /** Reads a logged turn aloud on demand — the spoken script covers prose *and*, for the
+   * currently-live turn, its options read out in order (see turnBlocks.ts's buildSpokenScript),
+   * so voice-only play can select an option by ear. */
+  function toggleTurnPlayback(turn: TurnRecord) {
+    if (playingTurn === turn.turn) {
       ttsProviderRef.current?.provider.stop()
       setPlayingTurn(null)
       return
     }
-    speakText(narrative, turn)
+    const isLive = turn.turn === lastTurn?.turn
+    const override = isLive && pendingSpokenOptionsRef.current?.turn === turn.turn
+      ? pendingSpokenOptionsRef.current.options
+      : undefined
+    const script = buildSpokenScript(blocksForTurn(turn, isLive, override))
+    speakText(script, turn.turn)
   }
 
   useEffect(() => {
     if (!readAloud || !ttsAvailable || !lastTurn) return
     if (spokenTurnRef.current !== null && lastTurn.turn <= spokenTurnRef.current) return
     spokenTurnRef.current = lastTurn.turn
-    speakText(lastTurn.narrative, lastTurn.turn)
+    const override =
+      pendingSpokenOptionsRef.current?.turn === lastTurn.turn ? pendingSpokenOptionsRef.current.options : undefined
+    speakText(buildSpokenScript(blocksForTurn(lastTurn, true, override)), lastTurn.turn)
   }, [lastTurn, readAloud, ttsAvailable, settings, speakText])
 
   /** While true, the observer below ignores what it sees — set for a short window around a
@@ -381,6 +387,10 @@ export function Play() {
         setStage('closed')
         setFreeText('')
         toast.success('Turn applied.')
+        // Captured here, before this turn's options are downgraded to plain labels in
+        // recentTurns — see blocksForTurn's doc comment for why this is the one place manus
+        // fidelity survives long enough to be spoken.
+        pendingSpokenOptionsRef.current = { turn: outcome.turn, options: outcome.options }
         return
       }
       // Auto modes keep the dialog closed while generating (see startTurn) — surface it now so a
@@ -482,35 +492,44 @@ export function Play() {
           software-rasterization glyph artifact in some renderers. A wrapper div inside the
           clipped viewport keeps glyphs safely away from the clip edge.
 
-          The log grows to a taller *fixed* height while the options/input are hidden, reclaiming
-          most of the vertical space they'd otherwise leave blank below a lone "Scroll to
-          continue" button. Deliberately an explicit bound (calc against the viewport), not
-          flex-1/min-h — a flex-grow child of an auto/min-height-only flex container has no fixed
-          budget to distribute, and different browsers resolve that ambiguity by sizing the child
-          to its full *content* height instead of the visible viewport (confirmed empirically: the
-          log's clientHeight grew to match its entire scrollHeight, thousands of pixels tall). That
-          also would have kept the bottom sentinel permanently visible, which — combined with
-          isAtBottom's one-way latch — meant "Scroll to continue" never went away again. An
-          explicit calc() height has no such ambiguity to resolve. Approximate, not exact: the
-          point is reclaiming most of the freed area, not filling to the pixel, and undershooting
-          is deliberately safer than overshooting into an unwanted extra scrollbar.
+          The log is a *fixed* height in both states, reclaiming most of the vertical space
+          something else would otherwise leave blank below it. Deliberately an explicit bound
+          (calc against the viewport), not flex-1/min-h — a flex-grow child of an auto/min-height-
+          only flex container has no fixed budget to distribute, and different browsers resolve
+          that ambiguity by sizing the child to its full *content* height instead of the visible
+          viewport (confirmed empirically: the log's clientHeight grew to match its entire
+          scrollHeight, thousands of pixels tall). That also would have kept the bottom sentinel
+          permanently visible, which — combined with isAtBottom's one-way latch — meant "Scroll to
+          continue" never went away again. An explicit calc() height has no such ambiguity to
+          resolve. Approximate, not exact: the point is reclaiming most of the freed area, not
+          filling to the pixel, and undershooting is deliberately safer than overshooting into an
+          unwanted extra scrollbar.
+
+          Both states use the *same* max(50svh, calc(100svh - Nrem)) shape, just with a different
+          reserve — they used to differ more (a flat 50svh at rest vs. this formula once
+          away/hidden), back when the options below the log were the only thing living in that
+          reserved space. Since #25 moved options *into* the log itself (inline with the
+          narrative, not a separate block underneath), a turn with several options routinely
+          exceeds a flat 50svh, and reusing the smaller fixed height left the log scrolling
+          internally to show its own tail *and* left a large dead gap between the input row and
+          the bottom of the viewport — nothing below the log grew to reclaim the space the
+          separate options block used to occupy. Measured empirically (390×844 viewport): the
+          content above the log plus the input row and its surrounding gap take up ~10rem
+          (scroll-area top offset + gap-4 + the input row's own height + a little bottom breathing
+          room) at rest, versus ~7rem when options/input are hidden away from the bottom (no input
+          row to leave room for then).
 
           Both heights are in `svh`, not a mix of `vh` and `svh`: on iOS `vh` tracks the *large*
           viewport (toolbars hidden) while `svh` tracks the small one, so mixing them would measure
           the two states against different boxes and make the "grown" height not actually the
           bigger of the two while the toolbars are showing. The max() guards the same thing for
-          short viewports generally — below roughly 350px of height, `100svh - 7rem` is *smaller*
-          than `50svh`, so without it the log would shrink on scrolling away instead of growing
-          (landscape phones hit this; the tests' fixed 844px viewport does not).
-
-          The `7rem` reserve is just the header plus this page's own top/bottom padding — it used
-          to be `11rem` to additionally cover the fixed `BottomNav` and the bottom-padding reserve
-          `App.tsx` set aside for it (see issue #21); now that both are gone, nothing sits below
-          the log any more, so the smaller reserve is the one that actually reaches close to the
-          bottom of the viewport instead of leaving the old nav's-worth of dead space behind. */}
+          short viewports generally — below roughly 350px (at rest) or 210px (away) of height, the
+          calc() term goes *smaller* than 50svh, so without the guard the log would shrink instead
+          of growing on a short/landscape phone (the tests' fixed 844px viewport does not hit
+          this). */}
       <div className="relative">
         <ScrollArea
-          className={isAtBottom ? 'h-[50svh]' : 'h-[max(50svh,calc(100svh-7rem))]'}
+          className={isAtBottom ? 'h-[max(50svh,calc(100svh-10rem))]' : 'h-[max(50svh,calc(100svh-7rem))]'}
           viewportRef={viewportRef}
         >
           {recentTurns.length === 0 ? (
@@ -519,35 +538,48 @@ export function Play() {
             </p>
           ) : (
             <div className="flex flex-col gap-6 p-4 sm:p-5">
-              {recentTurns.map((t) => (
-                <div key={t.turn} className="flex flex-col gap-2">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                      Turn {t.turn} — you: {t.playerAction}
-                    </p>
-                    {ttsAvailable && (
-                      <Button
-                        size="icon-xs"
-                        variant="ghost"
-                        onClick={() => toggleTurnPlayback(t.turn, t.narrative)}
-                        title={playingTurn === t.turn ? 'Stop playback' : 'Play this turn aloud'}
-                        aria-label={playingTurn === t.turn ? 'Stop playback' : 'Play this turn aloud'}
-                      >
-                        {playingTurn === t.turn ? <Square className="size-3.5" /> : <Volume2 className="size-3.5" />}
-                      </Button>
-                    )}
+              {recentTurns.map((t) => {
+                const isLastTurn = t.turn === lastTurn?.turn
+                return (
+                  <div key={t.turn} className="flex flex-col gap-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
+                        Turn {t.turn} — you: {t.playerAction}
+                      </p>
+                      {ttsAvailable && (
+                        <Button
+                          size="icon-xs"
+                          variant="ghost"
+                          onClick={() => toggleTurnPlayback(t)}
+                          title={playingTurn === t.turn ? 'Stop playback' : 'Play this turn aloud'}
+                          aria-label={playingTurn === t.turn ? 'Stop playback' : 'Play this turn aloud'}
+                        >
+                          {playingTurn === t.turn ? <Square className="size-3.5" /> : <Volume2 className="size-3.5" />}
+                        </Button>
+                      )}
+                    </div>
+                    {/* Options render inline with the narrative — at the point the AI marked with
+                        {{options}}, or appended at the end as a fallback — only for the live
+                        turn; historical turns render prose only (see TurnContent.tsx). Scrolling
+                        away from the bottom of the log naturally scrolls the live turn's options
+                        out of view too, so no extra gating is needed here beyond what already
+                        hides the free-text input below. */}
+                    <TurnContent
+                      blocks={blocksForTurn(t, isLastTurn)}
+                      onSelectOption={isLastTurn ? startTurn : undefined}
+                      disabled={generating}
+                    />
                   </div>
-                  <p className="font-serif text-base leading-relaxed whitespace-pre-wrap">{t.narrative}</p>
-                </div>
-              ))}
+                )
+              })}
               <div ref={bottomRef} />
             </div>
           )}
         </ScrollArea>
 
-        {/* Options and the free-text input only make sense once the player has read up to the
-            latest turn — this affordance is what surfaces in their place while scrolled up
-            through earlier history, so it's never unclear how to get back to acting. */}
+        {/* The free-text input only makes sense once the player has read up to the latest turn —
+            this affordance is what surfaces in its place while scrolled up through earlier
+            history, so it's never unclear how to get back to acting. */}
         {!isAtBottom && (
           <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-2">
             <Button
@@ -589,34 +621,6 @@ export function Play() {
           voice recording out from under the player with no way to get back to it. */}
       {(isAtBottom || inputFocused || listening) && (
         <div className="flex animate-in fade-in flex-col gap-4 duration-200">
-          {options.length > 0 && (
-            <div className="flex flex-col gap-2.5">
-              {options.map((opt, i) => {
-                const Icon = OPTION_ICONS[i % OPTION_ICONS.length]
-                return (
-                  <button
-                    key={opt}
-                    type="button"
-                    onClick={() => startTurn(opt)}
-                    disabled={generating}
-                    className="group flex items-center gap-3 rounded-2xl border border-border/60 bg-card px-3.5 py-3 text-left shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md disabled:pointer-events-none disabled:opacity-50"
-                  >
-                    <span
-                      className={cn(
-                        'flex size-10 shrink-0 items-center justify-center rounded-xl',
-                        OPTION_COLORS[i % OPTION_COLORS.length],
-                      )}
-                    >
-                      <Icon className="size-5" />
-                    </span>
-                    <span className="min-w-0 flex-1 font-heading text-base leading-snug text-foreground">{opt}</span>
-                    <ChevronRight className="size-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
-                  </button>
-                )
-              })}
-            </div>
-          )}
-
           <div className="flex items-end gap-2 rounded-2xl border border-border/60 bg-card px-3 py-2 shadow-sm">
             <Textarea
               value={freeText}

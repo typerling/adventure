@@ -3,6 +3,10 @@ import { installGoogleApiMock } from './mocks/googleApi'
 import { installFakeWebSpeechApi, simulateSpeechResult, getSpokenTexts } from './mocks/webSpeech'
 import { createRandomCampaign, getRecordedToasts, recordToasts, submitFreeTextTurn } from './helpers'
 
+/** What gets spoken for a turn applied via `submitFreeTextTurn` — narrative, then (since #25) its
+ * options read aloud in sequence, per its hardcoded `options: ['Look around', 'Move on']`. */
+const SPOKEN_TURN = 'You step into a quiet, dust-lit room. Your options: Look around. Move on.'
+
 test.describe('browser voice (STT/TTS)', () => {
   test('mic button transcribes speech into the free-text box', async ({ page }) => {
     await installGoogleApiMock(page)
@@ -37,7 +41,7 @@ test.describe('browser voice (STT/TTS)', () => {
     await submitFreeTextTurn(page, 'look around', 'You step into a quiet, dust-lit room.')
     await expect(page.getByText('You step into a quiet, dust-lit room.')).toBeVisible()
 
-    await expect.poll(() => getSpokenTexts(page)).toEqual(['You step into a quiet, dust-lit room.'])
+    await expect.poll(() => getSpokenTexts(page)).toEqual([SPOKEN_TURN])
   })
 
   test('does not speak a turn applied before Read aloud was turned on', async ({ page }) => {
@@ -79,7 +83,7 @@ test.describe('browser voice (STT/TTS)', () => {
 
     // "In case one missed the opportunity" — replaying it manually still works.
     await page.getByRole('button', { name: 'Play this turn aloud' }).click()
-    await expect.poll(() => getSpokenTexts(page)).toEqual(['You step into a quiet, dust-lit room.'])
+    await expect.poll(() => getSpokenTexts(page)).toEqual([SPOKEN_TURN])
   })
 
   test('stopping playback is not reported as an error', async ({ page }) => {
@@ -98,7 +102,7 @@ test.describe('browser voice (STT/TTS)', () => {
     await expect(page.getByText('You step into a quiet, dust-lit room.')).toBeVisible()
 
     await page.getByRole('button', { name: 'Play this turn aloud' }).click()
-    await expect.poll(() => getSpokenTexts(page)).toEqual(['You step into a quiet, dust-lit room.'])
+    await expect.poll(() => getSpokenTexts(page)).toEqual([SPOKEN_TURN])
 
     // Stop mid-utterance, then toggle read-aloud on and off (which also cancels) — none of these
     // are failures, so none should surface an error.

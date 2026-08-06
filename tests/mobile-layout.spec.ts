@@ -1,6 +1,6 @@
-import { test, expect, type Page } from '@playwright/test'
+import { test, expect } from '@playwright/test'
 import { installGoogleApiMock } from './mocks/googleApi'
-import { createRandomCampaign } from './helpers'
+import { createRandomCampaign, hideToasts } from './helpers'
 
 /**
  * Page-level responsive coverage for the three campaign screens. The component-level counterpart
@@ -20,29 +20,9 @@ import { createRandomCampaign } from './helpers'
 const MOBILE = { width: 390, height: 844 } // below Tailwind's `md` (768px)
 const DESKTOP = { width: 1280, height: 900 } // above it
 
-/**
- * Sonner renders toasts pinned to the bottom of the viewport, which at phone width sits directly
- * over the Play screen's input row — so a toast left over from campaign creation intercepts
- * clicks meant for the page underneath. Headless Chromium never fires Sonner's auto-dismiss
- * timer, so waiting it out isn't an option either; the overlap is permanent here.
- *
- * These are layout assertions, so the toast layer is hidden rather than worked around. Note the
- * `document.head` guard: init scripts run before the document exists, so touching
- * `document.documentElement` directly throws — and Playwright swallows that, leaving a helper
- * that silently does nothing (which is exactly what this used to do, until a 1-in-8 flake on the
- * click below gave it away).
- */
-async function hideToasts(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    const inject = () => {
-      const style = document.createElement('style')
-      style.textContent = '[data-sonner-toaster] { display: none !important; }'
-      document.head.appendChild(style)
-    }
-    if (document.head) inject()
-    else document.addEventListener('DOMContentLoaded', inject, { once: true })
-  })
-}
+// hideToasts is shared via ./helpers now — see its doc comment there for why this is needed
+// (headless Chromium never fires Sonner's auto-dismiss timer) and for the mid-test variant a
+// test needing a toast visible first, then out of the way, uses instead.
 
 /** Play/Codex/Settings for the campaign currently open, as `[label, path]` pairs. */
 function campaignRoutes(campaignId: string): [string, string][] {
@@ -222,6 +202,17 @@ test.describe('mobile (below md)', () => {
    * shape of two bugs shipped and fixed in quick succession: first the options/input staying
    * visible above unread text, then the space they vacated being left as a blank void instead of
    * the log growing into it. Both were only visible at phone width, which is why they got through.
+   *
+   * As of the inline-options rework (see issue #25), options render *inside* the scrollable log
+   * (TurnContent, positioned at the live turn's `{{options}}` token or appended at the end as a
+   * fallback — this turn uses the fallback, exercising that path) rather than in a separately
+   * conditionally-mounted panel below it. That changes what "hidden" means for the option
+   * button specifically: scrolling away no longer unmounts it (it's ordinary log content, so
+   * `toBeHidden()` — which only checks CSS/DOM state, not scroll position — would report it as
+   * still visible), it scrolls out of the browser viewport along with the rest of the unread
+   * text above it, which `toBeInViewport()` does check. The free-text input is a separate
+   * element below the log and still gets unmounted exactly as before, so it keeps the stricter
+   * `toBeHidden()` assertion.
    */
   test('Play: options and input are reachable, and hide behind a scroll affordance', async ({ page }) => {
     await installGoogleApiMock(page)
@@ -231,6 +222,8 @@ test.describe('mobile (below md)', () => {
     const longNarrative = 'A very long narrative paragraph. '.repeat(60)
     await page.getByPlaceholder('Say or do anything…').fill('look around')
     await page.getByRole('button', { name: 'Act', exact: true }).click()
+    // No {{options}} token in this narrative — deliberately exercising the fallback path
+    // (options appended after the narrative) alongside the legacy plain-string `options` shape.
     await page.getByPlaceholder(/Paste the narrative/).fill(
       `${longNarrative}\n\n\`\`\`state\n${JSON.stringify({
         state_delta: {},
@@ -243,8 +236,9 @@ test.describe('mobile (below md)', () => {
 
     // Landing at the bottom of a fresh turn: both ways to act are available.
     const input = page.getByPlaceholder('Say or do anything…')
+    const lookAroundOption = page.getByRole('button', { name: 'Look around' })
     await expect(input).toBeVisible()
-    await expect(page.getByRole('button', { name: 'Look around' })).toBeVisible()
+    await expect(lookAroundOption).toBeInViewport()
 
     const viewport = page.locator('[data-slot="scroll-area-viewport"]')
     const logHeightAtBottom = await viewport.evaluate((el) => el.getBoundingClientRect().height)
@@ -254,7 +248,10 @@ test.describe('mobile (below md)', () => {
       el.scrollTop = 0
     })
     await expect(input).toBeHidden()
-    await expect(page.getByRole('button', { name: 'Look around' })).toBeHidden()
+    // The option, now part of the unread text below, scrolls out of view with it rather than
+    // being unmounted — see this test's doc comment for why toBeInViewport() replaces
+    // toBeHidden() here specifically.
+    await expect(lookAroundOption).not.toBeInViewport()
 
     const scrollBack = page.getByRole('button', { name: 'Scroll to continue' })
     await expect(scrollBack).toBeVisible()
@@ -282,6 +279,7 @@ test.describe('mobile (below md)', () => {
     // alternating forever) looked fine for the first second and only appeared afterwards.
     await scrollBack.click()
     await expect(input).toBeVisible()
+    await expect(lookAroundOption).toBeInViewport()
     await expect(scrollBack).toBeHidden()
 
     await page.waitForTimeout(2000)

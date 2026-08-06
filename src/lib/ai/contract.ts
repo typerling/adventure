@@ -3,8 +3,14 @@ export const STATE_CONTRACT_INSTRUCTIONS = `## Reply format (required)
 
 Reply in exactly two parts, every turn, with nothing before or after them:
 
-1. Narrative prose — second person, present tense, no markdown formatting, no headers, no
-   meta-commentary. This is what gets displayed and read aloud, so keep it clean prose.
+1. Narrative prose — second person, present tense, no meta-commentary. This is what gets
+   displayed and read aloud, so keep it clean. Markdown formatting (paragraphs, emphasis,
+   lists, headers) is allowed and rendered — use it where it genuinely helps readability, not
+   for its own sake. Include the literal placeholder token \`{{options}}\` at the point in the
+   text where the next choice should appear — usually near the end, but not always (e.g. it can
+   sit mid-scene if the choice is about something just described). If you omit it, the options
+   are appended after your narrative automatically, so leaving it out is safe, just less
+   precise.
 2. A single fenced block at the very end, opened with \`\`\`state and closed with \`\`\`,
    containing one JSON object with this shape (omit keys that don't apply this turn; never
    invent keys):
@@ -26,7 +32,11 @@ Reply in exactly two parts, every turn, with nothing before or after them:
     "new_lore": [{"name": "string", "type": "string", "summary": "string", "tags": "string"}]
   },
   "summary_update": "one or two sentences folding this turn into the running summary",
-  "options": ["short action 1", "short action 2", "short action 3"]
+  "options": [
+    {"label": "short action 1"},
+    {"label": "short action 2"},
+    {"label": "short action 3", "manus": "how this reads aloud, if different from the label"}
+  ]
 }
 \`\`\`
 
@@ -41,7 +51,10 @@ Critical rules:
   documented. If the current state doesn't support what the player asked for, resolve that in
   the narrative (they fail, are stopped, improvise, etc.) rather than in the state block.
 - "options" must contain 2-4 short, concrete next actions in the player's voice (e.g. "Search
-  the desk", not "You could search the desk"). The player can also always type or speak
+  the desk", not "You could search the desk"), each as an object with a "label" (what's shown
+  on screen). Only add "manus" to an option when it should be *spoken* differently than its
+  label — most options read fine aloud as-is, so leave it out unless there's a real reason
+  (e.g. the label uses a symbol or abbreviation). The player can also always type or speak
   something else entirely, so options are suggestions, not the only path.
 - Keep "summary_update" to 1-2 sentences — it gets folded into a running summary that must stay
   short across a long campaign.`
