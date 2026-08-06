@@ -7,8 +7,30 @@ export interface StateDelta {
   stat_changes?: Record<string, number | string>
   status_add?: string[]
   status_remove?: string[]
-  new_npcs?: { name: string; description: string; status?: EntityStatus }[]
-  npc_updates?: { name: string; status?: EntityStatus; relationship?: string }[]
+  new_npcs?: {
+    name: string
+    description: string
+    status?: EntityStatus
+    /** A voice descriptor, e.g. "gravelly, clipped sentences". Only for NPCs meeting the
+     * "real interaction" bar — see contract.ts's profile-depth gate. */
+    voice?: string
+    /** GM-only ground truth — never surfaced to the player. */
+    secrets?: string
+    /** Free-form genre-specific facts, e.g. {"Clan": "Ashfall"} or {"Augments": "ocular HUD"}. */
+    attributes?: Record<string, string>
+    /** New notable detail worth recording permanently. Doubles as this NPC's fresh condensed
+     * `notes` value and as the entry appended to its world/npcs/<slug>.md history. */
+    notes_add?: string
+  }[]
+  npc_updates?: {
+    name: string
+    status?: EntityStatus
+    relationship?: string
+    voice?: string
+    secrets?: string
+    attributes?: Record<string, string>
+    notes_add?: string
+  }[]
   new_monsters?: { name: string; description: string; threatNotes?: string }[]
   new_locations?: { name: string; connects_to?: string; description?: string; state?: MapNodeState }[]
   events?: { title: string; summary: string; tags?: string }[]

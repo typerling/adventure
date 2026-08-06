@@ -7,6 +7,7 @@ import type {
   MapNode,
   Monster,
   Npc,
+  NpcAttribute,
   Quest,
   Skill,
   TimelineEvent,
@@ -19,6 +20,7 @@ export interface SheetSnapshot {
   Inventory: InventoryItem[]
   Skills: Skill[]
   NPCs: Npc[]
+  NPCAttributes: NpcAttribute[]
   Monsters: Monster[]
   Timeline: TimelineEvent[]
   Quests: Quest[]
@@ -52,6 +54,12 @@ function renderSnapshot(snapshot: SheetSnapshot): string {
     lines.push('', 'Known NPCs:')
     for (const n of knownNpcs) {
       lines.push(`- ${n.name} [${n.status}${n.relationship ? `, ${n.relationship}` : ''}]: ${n.description}`)
+      // Never render n.secrets here — GM-only, must never reach a prompt section that could leak
+      // into narration verbatim; secrets exist purely to be checked against, not displayed.
+      if (n.voice) lines.push(`  Voice: ${n.voice}`)
+      if (n.notes) lines.push(`  Notes: ${n.notes}`)
+      const attrs = snapshot.NPCAttributes.filter((a) => a.npcId === n.id)
+      if (attrs.length) lines.push(`  Attributes: ${attrs.map((a) => `${a.key}: ${a.value}`).join('; ')}`)
     }
   }
 
@@ -92,6 +100,26 @@ function renderRecentTurns(turns: TurnRecord[]): string {
     .join('\n\n')
 }
 
+/** NPC name -> that NPC's world/npcs/<slug>.md content, pre-fetched for whichever NPCs the
+ * player's action mentions this turn. See findMentionedNpcs. */
+export type NpcDetailLookup = Record<string, string>
+
+function renderNpcDetails(npcDetails: NpcDetailLookup | undefined): string {
+  const entries = Object.entries(npcDetails ?? {}).filter(([, content]) => content.trim())
+  if (!entries.length) return ''
+  return `\n\n## Recalled history for NPCs named in this turn's action (from their detail file)
+${entries.map(([name, content]) => `### ${name}\n${content.trim()}`).join('\n\n')}`
+}
+
+/** Which known NPCs (with a detailFile on record) the player's action names by a simple
+ * case-insensitive substring check — the same trick AI Dungeon's "World Info" system uses, no
+ * embeddings or new infrastructure. Callers fetch each match's detailFile content and pass the
+ * result to buildTurnPrompt as npcDetails. */
+export function findMentionedNpcs(npcs: Npc[], playerAction: string): Npc[] {
+  const lower = playerAction.toLowerCase()
+  return npcs.filter((n) => n.detailFile && n.name.trim() && lower.includes(n.name.trim().toLowerCase()))
+}
+
 export interface BuildPromptInput {
   campaign: CampaignFile
   snapshot: SheetSnapshot
@@ -99,12 +127,18 @@ export interface BuildPromptInput {
   recentTurns: TurnRecord[]
   playerAction: string
   turnNumber: number
+  /** Pre-fetched detail-file content for NPCs the player's action names — see
+   * findMentionedNpcs. Optional and pre-loaded rather than fetched here because Drive reads are
+   * async and this function stays synchronous so manual-paste mode's prompt-building flow is
+   * unaffected; callers that want detail recall fetch it first (see useCampaign.ts's
+   * buildPromptForAction). */
+  npcDetails?: NpcDetailLookup
 }
 
 /** Builds the full, self-contained text block for one turn — what gets copied into
  * claude.ai/chatgpt.com in manual-bridge mode, or sent as-is to an API provider in Phase 3. */
 export function buildTurnPrompt(input: BuildPromptInput): string {
-  const { campaign, snapshot, rollingSummary, recentTurns, playerAction, turnNumber } = input
+  const { campaign, snapshot, rollingSummary, recentTurns, playerAction, turnNumber, npcDetails } = input
 
   return `You are the Dungeon Master and every NPC/creature in a solo, audiobook-style
 adventure. The rules are inspired by tabletop RPGs but are not strictly D&D — stay consistent
@@ -125,7 +159,7 @@ ${rollingSummary.trim() || '(no summary yet)'}
 ${renderRecentTurns(recentTurns)}
 
 ## Current documented state (treat as ground truth — do not contradict it)
-${renderSnapshot(snapshot)}
+${renderSnapshot(snapshot)}${renderNpcDetails(npcDetails)}
 
 ## This turn
 Turn number: ${turnNumber}
