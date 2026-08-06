@@ -89,7 +89,11 @@ export function Header() {
                 <Menu className="size-4" />
               </Button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
+            {/* min-w-52 overrides the primitive's min-w-32 default — this trigger is a small
+                icon-only button, so the shared floor left "Back to campaigns" wrapping to two
+                lines at phone width (flagged in PR #34 review); measured empirically, 160px
+                still wrapped, 208px doesn't. */}
+            <DropdownMenuContent align="end" className="min-w-52">
               {context && (
                 <DropdownMenuItem asChild>
                   <Link to={`/codex/${context.campaignId}`}>
