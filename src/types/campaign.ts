@@ -61,6 +61,10 @@ export interface CampaignSettings {
   sttProvider: SttProvider
   ttsProvider: TtsProvider
   elevenLabsVoiceId?: string
+  /** Which Kokoro voice to use for on-device TTS — see kokoroTts.ts's `listKokoroVoices()`/
+   * `DEFAULT_VOICE`. Undefined means "use DEFAULT_VOICE ('af_heart')", mirroring how a blank
+   * elevenLabsVoiceId falls back to ElevenLabs' own default. */
+  kokoroVoiceId?: string
   summarizationCadence: number
 }
 

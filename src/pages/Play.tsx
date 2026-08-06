@@ -176,8 +176,17 @@ export function Play() {
       }
       ttsProviderRef.current = { kind, provider }
       setPlayingTurn(turn ?? null)
+      // Each provider that supports voice selection keys off its own campaign setting —
+      // elevenLabsVoiceId/kokoroVoiceId are independent choices, not a shared field, since a
+      // campaign can switch providers without losing either one's pick.
+      const voice =
+        kind === 'elevenlabs'
+          ? settings.elevenLabsVoiceId
+          : kind === 'huggingface-local'
+            ? settings.kokoroVoiceId
+            : undefined
       provider
-        .speak(text, { voice: settings.elevenLabsVoiceId })
+        .speak(text, { voice })
         .catch((err) => {
           toast.error(err instanceof Error ? err.message : 'Failed to read this aloud.')
         })

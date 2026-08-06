@@ -28,8 +28,13 @@ import {
  */
 
 const MODEL_ID = 'onnx-community/Kokoro-82M-v1.0-ONNX'
-const DEFAULT_VOICE = 'af_heart'
+/** Exported so Settings can mark this voice as the fallback in the picker without duplicating the
+ * literal, and so createKokoroTtsProvider's own fallback (below) stays the single source of truth. */
+export const DEFAULT_VOICE = 'af_heart'
 const PROGRESS_LABEL = 'voice model'
+/** Fixed phrase for Settings' per-voice preview button — short enough to generate quickly, long
+ * enough to actually hear the voice's character. */
+const PREVIEW_TEXT = 'Hello, this is a preview of my voice.'
 
 /**
  * Safety net for a single sentence long enough to still blow the model's token budget on its own
@@ -155,6 +160,50 @@ export async function removeKokoroModel(): Promise<void> {
  * (and eventual failures) the same way. */
 export function describeKokoroProgress(p: KokoroLoadProgress): string {
   return describeModelDownloadProgress(p, PROGRESS_LABEL)
+}
+
+/** One entry from the loaded model's own voice catalog (`tts.voices`) — kokoro-js's per-voice
+ * metadata varies by voice (e.g. `traits` is only present on some), so everything but the id/name/
+ * language/gender is optional here rather than assumed. */
+export interface KokoroVoice {
+  id: string
+  name: string
+  language: string
+  gender: string
+  traits?: string
+}
+
+/**
+ * Lists the voices the model actually ships with, read from the loaded model's own `voices`
+ * getter rather than a hardcoded catalog here — kokoro-js bundles that catalog as a plain object
+ * (not exported from the package on its own), so getting at it means going through a real
+ * `KokoroTTS` instance, and `KokoroTTS.from_pretrained()` only returns once loading finishes.
+ * Concretely: this triggers the same load-or-reuse path speak() already uses (loadKokoro), so
+ * calling it for the first time in a session downloads the model — Settings surfaces that via
+ * `onProgress`, the same progress plumbing/format as the "download voice model now" card.
+ */
+export async function listKokoroVoices(onProgress?: (p: KokoroLoadProgress) => void): Promise<KokoroVoice[]> {
+  const tts = await loadKokoro(onProgress)
+  return Object.entries(tts.voices).map(([id, voice]) => {
+    const v = voice as { name: string; language: string; gender: string; traits?: string }
+    return { id, name: v.name, language: v.language, gender: v.gender, traits: v.traits }
+  })
+}
+
+/**
+ * Generates a short, fixed preview clip for one voice — used by Settings' per-voice preview
+ * button. Loads the model first if it isn't already resident (same load-or-reuse path as speak()/
+ * listKokoroVoices, so a model already loaded to populate the voice list is reused rather than
+ * loaded twice). An unrecognized voice id falls back to DEFAULT_VOICE, same as speak() does.
+ */
+export async function generateKokoroPreview(
+  voiceId: string,
+  onProgress?: (p: KokoroLoadProgress) => void,
+): Promise<Blob> {
+  const tts = await loadKokoro(onProgress)
+  const voice = voiceId in tts.voices ? voiceId : DEFAULT_VOICE
+  const audio = await tts.generate(PREVIEW_TEXT, { voice })
+  return audio.toBlob()
 }
 
 /** Splits one long sentence on word boundaries when it alone would exceed the token budget. */
