@@ -120,13 +120,22 @@ function renderNpcDetails(npcDetails: NpcDetailLookup | undefined): string {
 ${entries.map(([name, content]) => `### ${name}\n${content.trim()}`).join('\n\n')}`
 }
 
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 /** Which known NPCs (with a detailFile on record) the player's action names by a simple
- * case-insensitive substring check — the same trick AI Dungeon's "World Info" system uses, no
- * embeddings or new infrastructure. Callers fetch each match's detailFile content and pass the
- * result to buildTurnPrompt as npcDetails. */
+ * case-insensitive, word-boundary match — the same trick AI Dungeon's "World Info" system uses,
+ * no embeddings or new infrastructure. Word-boundary, not a plain substring check, so a short
+ * name (e.g. "Al") doesn't false-positive against unrelated text ("the alley") — flagged in
+ * PR #37's review. Callers fetch each match's detailFile content and pass the result to
+ * buildTurnPrompt as npcDetails. */
 export function findMentionedNpcs(npcs: Npc[], playerAction: string): Npc[] {
-  const lower = playerAction.toLowerCase()
-  return npcs.filter((n) => n.detailFile && n.name.trim() && lower.includes(n.name.trim().toLowerCase()))
+  return npcs.filter((n) => {
+    const name = n.name.trim()
+    if (!n.detailFile || !name) return false
+    return new RegExp(`\\b${escapeRegExp(name)}\\b`, 'i').test(playerAction)
+  })
 }
 
 export interface BuildPromptInput {

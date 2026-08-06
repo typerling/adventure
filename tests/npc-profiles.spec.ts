@@ -185,6 +185,31 @@ test.describe('NPC + player character profiles (#30)', () => {
     await expect(promptTextarea).toHaveValue(/Admitted she's been paid to keep strangers out of the crypt\./)
   })
 
+  test('a short NPC name matches whole words only, not as a substring of an unrelated word', async ({ page }) => {
+    // Flagged in PR #37's review: a plain substring check on a short name like "Al" would
+    // false-positive against "alley" and pull in an irrelevant detail file. findMentionedNpcs
+    // uses a word-boundary regex specifically to avoid this.
+    await hideToasts(page)
+    await installGoogleApiMock(page)
+    await createRandomCampaign(page)
+
+    await submitTurnWithDelta(page, 'talk to the dockhand', 'Al leans on a crate, watching the ship unload.', {
+      new_npcs: [{ name: 'Al', description: 'a dockhand', notes_add: 'Owes money to the harbormaster.' }],
+    })
+
+    const promptTextarea = page.locator('textarea[readonly]')
+
+    // Contains "Al" as a substring of "alley," not as the standalone name — should not match.
+    await actAndOpenDialog(page, 'duck into the alley to avoid the crowd')
+    await expect(promptTextarea).not.toHaveValue(/## Recalled history/)
+    await page.getByRole('button', { name: 'Cancel' }).click()
+
+    // Names him as a whole word — should match.
+    await actAndOpenDialog(page, 'ask Al about the harbormaster')
+    await expect(promptTextarea).toHaveValue(/## Recalled history for NPCs named in this turn's action/)
+    await expect(promptTextarea).toHaveValue(/Owes money to the harbormaster\./)
+  })
+
   test('a secret reaches a later turn\'s prompt — manual mode cannot hide it, unlike Play/Codex', async ({ page }) => {
     // A secret only does its job (the DM staying consistent about something it hasn't told the
     // player yet) if the model actually sees it again on a later turn — so unlike the earlier
