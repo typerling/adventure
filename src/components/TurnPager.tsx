@@ -146,11 +146,17 @@ export function TurnPager({ pages, disabled, onCurrentIndexChange, className }: 
 
   // Arrow-key navigation — ignored while focus is in a text field (or contenteditable) so it
   // never hijacks cursor movement in Play.tsx's free-text box, which lives outside this
-  // component entirely but can still hold focus while a page is on screen.
+  // component entirely but can still hold focus while a page is on screen. Also ignored while
+  // focus is anywhere inside an open dialog (Radix's Dialog.Content sets role="dialog" by
+  // default) — otherwise ArrowLeft/Right pressed while, say, the manual-paste dialog's Cancel
+  // button has focus silently paged the *background* content behind the modal (flagged in
+  // PR #38's review, reproduced: focus the dialog's Cancel button, press ArrowLeft, the page
+  // underneath advances even though the dialog visually didn't change).
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       const target = e.target as HTMLElement | null
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
+      if (target?.closest('[role="dialog"]')) return
       if (e.key === 'ArrowRight') {
         e.preventDefault()
         goNext()

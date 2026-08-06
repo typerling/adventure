@@ -141,6 +141,45 @@ test.describe('turn pager', () => {
     await expect(input).toBeVisible()
   })
 
+  test('arrow keys are ignored while an open dialog has focus, not just while a text field does', async ({
+    page,
+  }) => {
+    // Flagged in PR #38's review: the arrow-key handler checked for a focused text field but not
+    // for an open dialog, so pressing ArrowLeft/Right while, say, the manual-paste dialog's
+    // Cancel button had focus silently paged the *background* content behind the modal.
+    await installGoogleApiMock(page)
+    await createRandomCampaign(page)
+
+    await submitFreeTextTurn(page, 'open the gate', 'The gate swings open with a groan.')
+    await expect(page.getByRole('dialog')).toBeHidden()
+    await submitFreeTextTurn(page, 'step through', 'Beyond it, a courtyard overgrown with vines.')
+    await expect(page.getByRole('dialog')).toBeHidden()
+    await waitForCurrentPage(page, 1)
+
+    // Open the dialog again (without submitting) and focus a non-text-field control inside it.
+    await page.getByPlaceholder('Say or do anything…').fill('look around')
+    await page.getByRole('button', { name: 'Act', exact: true }).click()
+    await expect(page.getByRole('dialog')).toBeVisible()
+    const cancelButton = page.getByRole('button', { name: 'Cancel' })
+    await cancelButton.focus()
+    await expect(cancelButton).toBeFocused()
+
+    await page.keyboard.press('ArrowLeft')
+    // The page underneath must not have moved — this is the actual bug: a BUTTON isn't an
+    // INPUT/TEXTAREA, so the original text-field-only check let this fall through. Asserting
+    // toHaveAttribute('data-current-index', '1') *immediately* would be a false green regardless
+    // of whether the bug is fixed: the attribute already reads '1' before any scroll/observer
+    // settling even begins, so an auto-retrying "is it 1" check matches trivially on the starting
+    // value rather than proving it *stayed* 1 (verified the hard way — this test passed even
+    // against the unfixed handler until rewritten this way). Give any wrongly-triggered scroll
+    // time to actually happen and the observer time to confirm it before checking.
+    await page.waitForTimeout(800)
+    await waitForCurrentPage(page, 1)
+
+    await cancelButton.click()
+    await expect(page.getByRole('dialog')).toBeHidden()
+  })
+
   test('a swipe-equivalent scroll to a page updates which page is current, read-only for history', async ({
     page,
   }) => {
