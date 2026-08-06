@@ -13,3 +13,5 @@ playwright/.cache
 
 *storybook.log
 storybook-static
+
+.claude/
