@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link } from 'react-router'
 import { toast } from 'sonner'
 import { ArrowUp, CircleAlert, Loader2, Mic, MicOff, Square, Volume2 } from 'lucide-react'
 import { useCampaign } from '@/hooks/useCampaign'

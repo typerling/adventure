@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { useParams, Link } from "react-router-dom";
+import { useParams, Link } from "react-router";
 import { toast } from "sonner";
 import { ArrowLeft, Loader2, Play, Square } from "lucide-react";
 import {

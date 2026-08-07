@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { Settings as SettingsIcon } from 'lucide-react'
 import { useLibrary } from '@/store/libraryStore'
 import { Button } from '@/components/ui/button'

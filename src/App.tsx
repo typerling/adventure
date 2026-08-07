@@ -1,4 +1,4 @@
-import { BrowserRouter, Route, Routes } from 'react-router-dom'
+import { BrowserRouter, Route, Routes } from 'react-router'
 import { Toaster } from '@/components/ui/sonner'
 import { AuthGate } from '@/components/AuthGate'
 import { Header } from '@/components/Header'

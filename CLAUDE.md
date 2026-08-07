@@ -285,7 +285,7 @@ and Sheets are the actual source of truth, not the in-memory store.
 
 ### Routing / pages
 
-`src/App.tsx` wires `react-router-dom` routes, each backed by one page in `src/pages/`:
+`src/App.tsx` wires `react-router` routes, each backed by one page in `src/pages/`:
 `/` → Dashboard (campaign list), `/new` → NewCampaign (setup wizard), `/play/:campaignId` → Play
 (the turn loop UI), `/codex/:campaignId` → Codex (read-only tabs over sheet data — Inventory,
 Stats/Skills, NPCs, Monsters, Lore, Timeline/Quests), `/settings` and `/settings/:campaignId` →
