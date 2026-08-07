@@ -332,6 +332,56 @@ philosophy as the AI backend. Three implementations exist (Kokoro is TTS-only):
   don't stall. This also avoids `KokoroTTS.stream()`, which builds a `TextSplitterStream` but never
   `close()`s it, so its async iterator blocks forever.
 
+  **Cross-origin isolation for multi-threaded WASM.** ONNX Runtime Web's WASM backend (what
+  `kokoroTts.worker.ts` runs on) can use `SharedArrayBuffer` to run multi-threaded, which speeds up
+  both session init and inference — but only when the page is cross-origin isolated (`COOP:
+  same-origin` + `COEP: require-corp`/`credentialless`), which GitHub Pages can't set as response
+  headers (static hosting only). `public/coi-serviceworker.js` + `src/lib/coiServiceWorker.ts`
+  shim this client-side (the well-known `coi-serviceworker` pattern): the worker rewrites its own
+  same-origin responses to add those headers, and `ensureCrossOriginIsolated()` (called once from
+  `main.tsx`) registers it and reloads exactly once to pick that up, guarded by `sessionStorage` so
+  an environment that can't achieve isolation degrades to "stays single-threaded" rather than
+  reload-looping. This is the **only** service worker the app registers (see DESIGN.md's PWA line —
+  offline/install support, if it's ever added, should extend this worker's fetch handler, not
+  register a second one) and needs no server-side change: ONNX Runtime Web's own WASM env
+  auto-detects `self.crossOriginIsolated` and switches thread count on its own (confirmed by
+  reading the installed `kokoro-js`'s bundled `@huggingface/transformers` v3 source, not assumed —
+  `env.wasmPaths` is the *only* thing that copy's exported `env` shim exposes, same limitation the
+  paragraph above already documents, but thread-count detection doesn't go through that shim at
+  all).
+
+  Cross-origin isolation has a real, confirmed cost: `COOP: same-origin` breaks Google Identity
+  Services' popup-based OAuth flow. Verified by reading GIS's own unminified `gsi/client.js` source
+  (not assumed) and confirmed empirically in real Chromium with a synthetic two-origin
+  popup+`postMessage` test: both interactive sign-in and background silent token refresh
+  (`authStore.ts`) open a popup via `window.open()` whose *own* script relays the result back via
+  `window.opener.postMessage(...)` — and `COOP: same-origin` sets that popup's `window.opener` to
+  `null`, so the message never arrives. GIS's separate "was the popup closed before finishing"
+  detection (unaffected by COOP — it only reads `.closed` on *our* reference to the popup, never
+  the popup's own `opener`) then reports the ordinary-looking error `'popup_closed'`, indistinguishable
+  from the user actually closing it. Swapping `COEP` to `credentialless` does **not** help — this is
+  entirely a `COOP` effect, confirmed the same way. `authStore.ts`'s `isPopupSeveredByIsolation`
+  recognizes this one error id specifically (`'popup_closed'` while `window.crossOriginIsolated`),
+  at every popup call site (interactive `signIn`, `getValidAccessToken`'s silent refresh, and the
+  startup silent-reauth), and calls `disableCrossOriginIsolationAndReload()` instead of surfacing
+  an ordinary auth failure — unregistering the worker, marking isolation disabled for the rest of
+  this tab session (`sessionStorage`, checked by `ensureCrossOriginIsolated()` on every later
+  call so an ordinary reload or PWA relaunch after recovery doesn't immediately re-isolate and
+  re-break the next popup — found missing, and fixed, in independent review), and reloading so
+  sign-in can be retried unisolated instead of failing the same way forever within that session
+  (this app's access tokens are short-lived, so leaving this undetected would eventually break
+  every long play session's background token refresh, not just an explicit sign-in click). A
+  fresh tab/session still retries isolation from scratch, so this is a bounded, per-session
+  opt-out rather than a permanent one.
+
+  For local testing, `vite.config.ts`'s dev/preview servers can set the same headers natively when
+  `VITE_COI_HEADERS=1` is set (off by default, so the normal dev/test workflow matches today's
+  non-isolated baseline) — this is a faithful stand-in for the deployed, worker-isolated site
+  without the register-then-reload dance. `tests/coi-service-worker.spec.ts` covers both the
+  worker's own register → isolate → still-usable-app flow (needs `serviceWorkers: 'allow'`, an
+  override from this suite's default-`'block'` — see `playwright.config.ts`'s comment on why
+  service workers are blocked everywhere else) and the sign-in recovery path.
+
 `getProvider.ts` resolves a `CampaignSettings` provider choice to an implementation, plus
 `isSttProviderAvailable`/`isTtsProviderAvailable` for gating UI before an API key is even needed
 (missing-key errors surface later, as a toast, when actually used — not by hiding controls, since
