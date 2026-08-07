@@ -255,9 +255,10 @@ Everything under `src/lib/google/` is the persistence layer — there is no othe
 - **`sheetSchema.ts`** — the single place mapping typed row objects (`src/types/sheets.ts`) to/from
   raw Sheets rows (`rowCodecs`, `TAB_HEADERS`). Column order here **is** the sheet column order —
   keep both in sync when changing a tab's shape. `SHEET_TABS` in `src/types/sheets.ts` enumerates
-  every tab (Character, Inventory, Skills, NPCs, Monsters, Timeline, Quests, Map, Lore); adding a
-  tab means updating `SHEET_TABS`, `TAB_HEADERS`, `rowCodecs`, and the `loadSheetSnapshot` /
-  `SheetSnapshot` type together.
+  every tab (Character, Inventory, Skills, NPCs, NPCAttributes, Monsters, Timeline, Quests, Map,
+  Lore); adding a tab means updating `SHEET_TABS`, `TAB_HEADERS`, `rowCodecs`, and the
+  `loadSheetSnapshot` / `SheetSnapshot` type together — **and** addressing backward compatibility
+  with data already in a user's Drive, see immediately below.
 - **`campaignRepo.ts`** — the repository layer above raw Drive/Sheets calls: bootstrapping the
   root library folder, listing/creating campaigns, reading/writing `campaign.md` and
   `settings.md` frontmatter, reading/writing the rolling summary, and `loadSheetSnapshot` (one
@@ -269,6 +270,35 @@ Everything under `src/lib/google/` is the persistence layer — there is no othe
   Tabular data (Inventory, NPCs, Monsters, Timeline, Quests, Map, Lore, Character key/values) is
   one Google Sheet per campaign, one tab per entity type — see `DESIGN.md` §4 for the full Drive
   folder layout this code produces.
+
+**Every schema change must keep working against data already sitting in a user's Drive.** There is
+no database to migrate centrally and no way to bulk-update every user's existing files (see "What
+this is" above) — a campaign's Drive folder *is* its only copy of that campaign, forever, unless
+this code keeps reading it. This isn't hypothetical: issue #46 shipped `SHEET_TABS` gaining
+`NPCAttributes` (#30/PR #37) with no migration for spreadsheets that predated it, and nothing in
+the test suite caught it — every existing campaign became permanently unopenable until #47's fix.
+So: any change to `SHEET_TABS`/`TAB_HEADERS`/`rowCodecs` (`sheetSchema.ts` + `src/types/sheets.ts`),
+`CampaignSettings`/`CampaignMeta` (`src/types/campaign.ts`), or the frontmatter shape
+(`src/lib/markdown/frontmatter.ts`) must:
+1. **Keep reading pre-change data correctly** — either the existing coercion pattern already
+   covers it for free (a genuinely *new, appended* column degrades safely via `sheetSchema.ts`'s
+   `str`/`num`/`bool` helpers; a genuinely *new* `CampaignSettings`/`CampaignMeta` field defaults
+   via `{ ...DEFAULT_SETTINGS, ...parsed }`/`String(data.x ?? '')`-style coercion) — or, if it
+   isn't (a tab that can be *missing entirely*, the #46 case; any column *reordered* or repurposed
+   in place, which `rowCodecs`' positional reads cannot detect or default around at all), write a
+   real, tested migration/heal step the way `campaignRepo.ts`'s `loadSheetSnapshot` +
+   `sheetsApi.ts`'s `addMissingTabs` do for a missing tab.
+2. **Ship a fixture proving it**, in `tests/fixtures/backward-compat/` — literal older-shaped
+   data (a spreadsheet missing your new tab, a row in the shape it had immediately before your
+   column change, a `settings.md`/`campaign.md` predating your new field), asserted against by a
+   test in one of the `tests/backward-compat-*.spec.ts` files (`-sheet-tabs`, `-row-shapes`,
+   `-frontmatter` — add a new one only if none fits). See that directory's `README.md` for the
+   fixture format/conventions and why these fixtures don't need updating as the schema keeps
+   growing. This is not optional busywork: it's the only thing standing between "looks right in a
+   fresh campaign created by today's code" and "still works for every campaign that already
+   exists" — the exact gap #46 fell through. These tests run as part of the standard
+   `npm run test:e2e` (no separate/opt-in check), so a schema change that breaks backward
+   compatibility fails the same verification loop every PR already goes through.
 
 **Session persistence in an installed Android app (issue #45).** This app has no backend, so
 staying signed in across a reopen depends entirely on Google Identity Services' `prompt: ''`
