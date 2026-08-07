@@ -171,6 +171,20 @@ function fulfillJson(route: Route, body: unknown) {
   return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) })
 }
 
+/**
+ * The email returned by the fake `/oauth2/v3/userinfo` endpoint (src/lib/google/loginHint.ts's
+ * `fetchAccountEmail`) — set per test via `setMockUserinfoEmail`. Defaults to a fixed address so
+ * tests that don't care about the login_hint mechanism still get a well-formed response.
+ */
+let mockUserinfoEmail: string | null = 'mock-player@example.com'
+
+/** Overrides the email `fetchAccountEmail` resolves to for the rest of this test, or `null` to
+ * make the endpoint behave as if the account has no email (loginHint.ts treats that as "no hint
+ * available" rather than an error). */
+export function setMockUserinfoEmail(email: string | null): void {
+  mockUserinfoEmail = email
+}
+
 async function handleGoogleRequest(route: Route, store: FakeDriveStore): Promise<void> {
   const request = route.request()
   const method = request.method()
@@ -178,6 +192,12 @@ async function handleGoogleRequest(route: Route, store: FakeDriveStore): Promise
   const pathname = url.pathname
 
   try {
+    // ---- OAuth2: userinfo (login_hint capture — see src/lib/google/loginHint.ts) ----
+    if (pathname === '/oauth2/v3/userinfo' && method === 'GET') {
+      await fulfillJson(route, mockUserinfoEmail ? { email: mockUserinfoEmail } : {})
+      return
+    }
+
     // ---- Drive: list children / create folder ----
     if (pathname === '/drive/v3/files' && method === 'GET') {
       const q = url.searchParams.get('q') ?? ''
@@ -403,6 +423,9 @@ async function seedGoogleSession(page: Page): Promise<void> {
  * backed by a fresh in-memory store. Call once per test before navigating. */
 export async function installGoogleApiMock(page: Page): Promise<FakeDriveStore> {
   const store = new FakeDriveStore()
+  // Module state, not per-page — reset per install so one test's setMockUserinfoEmail override
+  // can't leak into the next test sharing this worker process.
+  mockUserinfoEmail = 'mock-player@example.com'
   await seedGoogleSession(page)
   // Defensive stub — should never be hit given the seeded session above, but avoids a real
   // network call to Google if something unexpectedly tries to load the GIS script.

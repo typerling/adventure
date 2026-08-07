@@ -42,6 +42,11 @@ server:
   since it's broader than the Drive-only version of this design — happy to revisit if that's
   a dealbreaker, but there's no narrower official scope that still allows cell-range
   read/write.
+- A third, narrow scope, `userinfo.email`, was added later (issue #45) purely so the app can
+  remember the signed-in account's email as a `login_hint` for a faster *interactive* re-login —
+  it mitigates friction from a known session-persistence limitation in the installed Android app
+  (see CLAUDE.md's "Session persistence in an installed Android app" and `authStore.ts`'s own
+  research summary); it's never used to read Gmail, contacts, or any other profile data.
 - Every full-state read is a single `spreadsheets.values.batchGet` call across all tabs
   (Character, Inventory, NPCs, Monsters, Timeline, Quests, Map, ...) — one HTTP round trip
   regardless of how many tabs exist. Writes from a turn's `state_delta` are batched the same
@@ -60,7 +65,9 @@ one Sheets batch call plus one Drive file read — never an open-ended search.
   Tabs for the Codex, Card for entity entries, Command/Combobox where useful, Sonner for
   toasts on validation errors).
 - **Google Identity Services** for auth; **Drive API v3** (`drive.file`) for folder/file
-  management; **Sheets API v4** (`spreadsheets`) for all tabular reads/writes.
+  management; **Sheets API v4** (`spreadsheets`) for all tabular reads/writes; a narrow
+  `userinfo.email` scope (issue #45) purely to power a `login_hint` mitigation for a known
+  session-persistence limitation in the installed Android app — see §2 and §12.
 - **Zustand** (or plain context) for in-memory session state; Drive/Sheets are the source of
   truth, local state is a cache with optimistic writes reconciled against API responses.
 - **PWA** (manifest, `public/manifest.webmanifest`) — installable on a phone, mic access works
@@ -402,6 +409,13 @@ Sources: [DriveThruRPG — PbtA introduction](https://pages.drivethrurpg.com/pow
 - If you hand-edit a campaign's spreadsheet in the Drive UI while the app is mid-turn, last
   write wins — the app should be treated as the primary writer, with manual edits made between
   turns rather than concurrently.
+- Google sign-in on the app installed to an Android home screen doesn't reliably survive a
+  reopen — silent token restore appears to fail specifically in that installed-standalone context
+  (issue #45; full cited research in `authStore.ts`'s module doc comment). Not fully fixable
+  without a backend this app deliberately doesn't have; a `login_hint` mitigation (the third scope
+  above) reduces the forced re-login to a single tap, and an in-app note explains the limitation
+  rather than hiding it. Unverified against a real device as of this writing — no adb/emulator
+  reachable from the implementing/reviewing environments.
 - `transformers.js` local TTS model choice/size is still to be pinned down in Phase 2 — will
   benchmark a couple of small models for phone feasibility before committing to one.
 - Manual-bridge UX (copy prompt → paste reply) is inherently more friction than a live API
