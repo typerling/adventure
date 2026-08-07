@@ -18,7 +18,7 @@ interface TokenClientConfig {
 }
 
 interface TokenClient {
-  requestAccessToken: (overrideConfig?: { prompt?: string }) => void
+  requestAccessToken: (overrideConfig?: { prompt?: string; login_hint?: string }) => void
 }
 
 interface Window {

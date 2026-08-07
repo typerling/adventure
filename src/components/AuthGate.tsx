@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { useGoogleAuth } from '@/lib/google/authStore'
 import { isGoogleConfigured } from '@/lib/google/config'
+import { isInstalledAndroidApp } from '@/lib/platform'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 
@@ -53,6 +54,14 @@ export function AuthGate({ children }: { children: ReactNode }) {
           </Button>
           {status === 'error' && errorMessage && (
             <p className="text-sm text-destructive">{errorMessage}</p>
+          )}
+          {isInstalledAndroidApp() && (
+            <p className="text-xs text-muted-foreground">
+              Using the app installed to your home screen, you may need to sign in again every
+              time you reopen it — Google's background sign-in doesn't reliably restore inside an
+              installed Android app. This is a known platform limitation, not a bug in this app;
+              it should now be a single tap rather than a full account picker.
+            </p>
           )}
         </CardContent>
       </Card>
