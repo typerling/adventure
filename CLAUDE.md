@@ -270,6 +270,40 @@ Everything under `src/lib/google/` is the persistence layer — there is no othe
   one Google Sheet per campaign, one tab per entity type — see `DESIGN.md` §4 for the full Drive
   folder layout this code produces.
 
+**Session persistence in an installed Android app (issue #45).** This app has no backend, so
+staying signed in across a reopen depends entirely on Google Identity Services' `prompt: ''`
+silent token flow piggybacking on the browser's own Google session — no refresh_token grant is
+possible for a pure client-side SPA. The project owner confirmed that the app installed to an
+Android home screen (a real standalone WebAPK, `display: "standalone"`) forces an interactive
+sign-in on *every* reopen, not just after long gaps — pointing at that silent flow failing
+specifically in the installed-standalone context. `authStore.ts`'s own module doc comment has the
+full, cited research summary (GIS's `prompt: ''` still opens a real popup even when "silent";
+browsers gate `window.open()` behind a user gesture, which an automatic silent request never has;
+an archived `google-api-javascript-client` issue documents the same gap producing no reliable
+callback at all) — none of it verified against a real device, since this environment has no
+adb/emulator (same constraint issue #39 documented). Two mitigations follow:
+- `SILENT_REFRESH_TIMEOUT_MS` (8s) bounds how long a silent (`prompt: ''`) request will wait before
+  treating a request that never calls back as failed, so it can't wedge `authStore.ts`'s
+  single-request `tokenQueue` forever (GIS allows only one in-flight `requestAccessToken` per
+  client) and block a later explicit "Sign in" click behind it. Known tradeoff, not eliminated: a
+  real callback arriving just after the timeout is correctly no-op'd rather than corrupting state,
+  but is also discarded — a legitimately slow-but-successful silent refresh can still end up
+  showing an unnecessary "session expired" prompt. See the constant's own doc comment.
+- `loginHint.ts` (new) captures the signed-in account's email as a `login_hint` for the next
+  *interactive* sign-in, so a forced re-login is a single tap instead of a full account picker —
+  a mitigation for the friction, not a fix for the underlying silent-restore failure. This needed
+  adding `userinfo.email` to `GOOGLE_SCOPES` (`config.ts`), called out there explicitly as
+  deliberate scope creep rather than added quietly; that same comment documents an unsettled
+  migration edge case for a user with a pre-existing session minted under the old, narrower scopes
+  (fails safe either way — see the comment for why).
+
+`src/lib/platform.ts`'s `isInstalledAndroidApp()` (`display-mode: standalone` + an Android user
+-agent check) scopes a short in-app note about this known limitation to `AuthGate.tsx`, shown only
+in the context that actually has it — mirroring issue #39's precedent of documenting a real,
+unfixable platform limitation in-app rather than pretending a partial mitigation is a full fix.
+The project owner still needs to confirm on their real installed app whether the diagnosis and the
+`login_hint` mitigation actually hold up in practice.
+
 ### State management
 
 - **`src/store/libraryStore.ts`** (Zustand) — the campaign *library*: root folder bootstrap,

@@ -179,6 +179,15 @@ let inFlightRefresh: Promise<string> | null = null
  * in-flight `requestAccessToken` per client), silently blocking every later token request too —
  * including an explicit "Sign in" click. This timeout only applies to silent requests; an
  * interactive request legitimately waits on real user input.
+ *
+ * Known tradeoff (found in independent review, not eliminated): if the real GIS callback for a
+ * silent request arrives *after* this timeout has already fired, `settle`'s
+ * `currentTokenHandler !== settle` guard correctly no-ops the late response — no dangling promise,
+ * no queue corruption — but that also means a legitimately slow-but-*successful* silent refresh
+ * gets treated as a failure, forcing an interactive "Session expired" prompt the user didn't
+ * strictly need. 8s is chosen generous enough that this should be rare, but it isn't provably
+ * impossible, and there is no way to distinguish "never responding" from "responding slowly" ahead
+ * of time without a longer wait that would make the original wedged-queue problem worse instead.
  */
 const SILENT_REFRESH_TIMEOUT_MS = 8_000
 

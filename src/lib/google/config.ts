@@ -17,6 +17,16 @@ export const isGoogleConfigured = Boolean(GOOGLE_CLIENT_ID)
  * userinfo fetch, purely to remember the signed-in account's email as GIS's `login_hint` — so that
  * *interactive* fallback becomes a single tap instead of a full account picker. It is never used
  * to read Gmail, contacts, or any other profile data.
+ *
+ * Migration edge case (found in independent review, not settled either way): a user already
+ * signed in before this scope existed holds a token authorized for only the first two scopes
+ * above. Their next silent refresh requests this three-scope union instead — whether GIS's
+ * `prompt: ''` flow silently grants the newly-added, non-sensitive `userinfo.email` scope or
+ * requires one interactive re-consent isn't settled from documentation alone, and wasn't testable
+ * without a real pre-existing session on real Google infrastructure. Either way this fails safe: a
+ * refusal here just routes through the same `res.error` → "session expired" → interactive sign-in
+ * path every other silent-refresh failure already takes, which succeeds — so at worst an existing
+ * user sees one extra interactive prompt the first time, not a break.
  */
 export const GOOGLE_SCOPES = [
   'https://www.googleapis.com/auth/drive.file',
