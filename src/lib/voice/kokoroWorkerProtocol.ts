@@ -10,6 +10,7 @@
  */
 
 import type { ModelDownloadProgress } from '@/lib/modelDownloadProgress'
+import type { KokoroDevice } from './kokoroConstants'
 
 /** One entry from the loaded model's own voice catalog (`tts.voices`) — kept as a plain
  * structured-clonable object so it can cross the worker boundary; see KokoroVoice in kokoroTts.ts
@@ -23,14 +24,20 @@ export interface KokoroWorkerVoice {
 }
 
 export type KokoroWorkerRequest =
-  | { kind: 'load'; requestId: number }
-  | { kind: 'listVoices'; requestId: number }
+  /** `device` is the caller's *preferred* backend, not a guarantee — see kokoroTts.worker.ts's
+   * loadWithFallback: 'webgpu' silently falls back to 'wasm' (reported via a 'backend' response)
+   * if no adapter is available at all, same posture as a mid-generation device loss. */
+  | { kind: 'load'; requestId: number; device: KokoroDevice }
+  | { kind: 'listVoices'; requestId: number; device: KokoroDevice }
   /** Generates every chunk and stitches them into one continuous clip — see kokoroTts.worker.ts's
    * `speak()`. Also how generateKokoroPreview() gets its (single-chunk) clip, rather than a
    * separate 'preview' message kind. `chunks` are pre-split by splitIntoSpeakableChunks on the
    * main thread (pure string processing, no model needed — that function is unaffected by the
    * worker split). `voice` may be empty/unrecognized; the worker falls back to DEFAULT_VOICE. */
-  | { kind: 'speak'; requestId: number; chunks: string[]; voice: string }
+  | { kind: 'speak'; requestId: number; chunks: string[]; voice: string; device: KokoroDevice }
+  /** Drops every loaded backend's reference (both wasm and webgpu, if either is resident) — see
+   * kokoroTts.worker.ts's 'evict' handler for why a single global evict is enough for a
+   * single-model app, unlike localModelWorkerProtocol.ts's per-modelId evict. */
   | { kind: 'evict'; requestId: number }
 
 /**
@@ -46,6 +53,13 @@ export type KokoroWorkerRequestInit = KokoroWorkerRequest extends infer T
 
 export type KokoroWorkerResponse =
   | { kind: 'progress'; progress: ModelDownloadProgress }
+  /** Posted whenever the worker fell back from 'webgpu' to 'wasm' — either because no WebGPU
+   * adapter was available at all when a load was attempted, or because the device was lost
+   * mid-generation. Mirrors localModelWorkerProtocol.ts's identical 'backend' response; kokoroTts.ts
+   * remembers this the same way so later loads start on 'wasm' directly instead of rediscovering
+   * the failure on every turn. Not addressed to a requestId, same reasoning as 'progress': it
+   * describes a backend-wide fact, not one request's result. */
+  | { kind: 'backend'; device: KokoroDevice }
   /** Posted after each chunk finishes generating during a 'speak' job, so the caller can show real
    * progress instead of a frozen "Generating…" for however long the whole turn's pre-generation
    * takes — see kokoroTts.ts's onGenerateProgress. */

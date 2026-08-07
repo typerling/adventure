@@ -4,7 +4,15 @@ import {
   requestPersistentStorage,
   type ModelDownloadProgress,
 } from '@/lib/modelDownloadProgress'
-import { CACHE_NAMES, DEFAULT_VOICE, MAX_CHUNK_CHARS, PREVIEW_TEXT, PROGRESS_LABEL } from './kokoroConstants'
+import {
+  CACHE_NAMES,
+  DEFAULT_VOICE,
+  KOKORO_DTYPE_SUFFIX,
+  MAX_CHUNK_CHARS,
+  PREVIEW_TEXT,
+  PROGRESS_LABEL,
+  type KokoroDevice,
+} from './kokoroConstants'
 import type {
   KokoroWorkerRequest,
   KokoroWorkerRequestInit,
@@ -14,9 +22,24 @@ import type {
 
 /**
  * Kokoro (kokoro-js) — a small, high-quality on-device TTS model, replacing the noticeably
- * robotic default browser SpeechSynthesis voices. No key, no server; runs fully in-browser via
- * WASM (broadly compatible — unlike the local Gemma text model, this doesn't need WebGPU, so
- * there's no hard support gate the way isLocalModelSupported() has for that).
+ * robotic default browser SpeechSynthesis voices. No key, no server; runs fully in-browser, on
+ * WASM by default (broadly compatible — unlike the local Gemma text model, this doesn't *need*
+ * WebGPU, so unlike isLocalModelSupported() there is no hard support gate).
+ *
+ * **WebGPU backend (opt-in, issue #51).** WebGPU is now a selectable, better-when-available
+ * alternative to the default WASM backend — mirroring the local text models' per-model "Run on:
+ * GPU / CPU" Settings toggle (`localModel.ts`'s getLocalModelDevice/setLocalModelDevice), but as a
+ * single global preference rather than one keyed by model id, since Kokoro is exactly one model.
+ * `getKokoroDevice`/`setKokoroDevice` below are that preference's main-thread face;
+ * `kokoroTts.worker.ts` is where the actual WebGPU-vs-WASM dtype choice and the
+ * device-lost/no-adapter fallback live — see that file's doc comment. Default stays `wasm`,
+ * preserving the no-hard-gate guarantee above: a player who never opens Settings, or whose browser
+ * has no WebGPU at all, is unaffected.
+ *
+ * Caveat this default-guarantee doesn't get for free, unlike the local text models: those are only
+ * *usable* once a player deliberately opts into 'local' AI mode in Settings, so there's no risk of
+ * silently defaulting someone into a slow WebGPU load. Kokoro TTS can be selected from Settings the
+ * same way — the WebGPU option there is opt-in, not opt-out, precisely to avoid that.
  *
  * **Model loading and generation run in a dedicated Worker** (`kokoroTts.worker.ts`), mirroring
  * `src/lib/ai/localModel.worker.ts`'s split for the local text models — see that file's doc
@@ -65,8 +88,58 @@ import type {
  */
 
 export { DEFAULT_VOICE }
+export type { KokoroDevice }
 
 export type KokoroLoadProgress = ModelDownloadProgress
+
+/**
+ * Which backend Kokoro TTS runs on, remembered across reloads — mirrors localModel.ts's identical
+ * BACKEND_STORAGE_KEY/preferredDevice/rememberDevice trio, minus the per-model-id map: Kokoro is
+ * exactly one model, so this is a single stored value rather than a `Record<modelId, device>`.
+ * Kept in localStorage rather than settings.md for the same reason as that file: it describes this
+ * *device's* capability, not the campaign, so the same campaign opened on a desktop should still
+ * get WebGPU there even if a phone fell back to WASM.
+ */
+const DEVICE_STORAGE_KEY = 'adventure:kokoro-backend'
+
+function readDevice(): KokoroDevice {
+  try {
+    return localStorage.getItem(DEVICE_STORAGE_KEY) === 'webgpu' ? 'webgpu' : 'wasm'
+  } catch {
+    return 'wasm'
+  }
+}
+
+function rememberDevice(device: KokoroDevice): void {
+  try {
+    localStorage.setItem(DEVICE_STORAGE_KEY, device)
+  } catch {
+    // A full or unavailable localStorage only costs the optimisation, not correctness.
+  }
+}
+
+/** Which backend Kokoro will use for its next load/generate — whether chosen deliberately in
+ * Settings or arrived at by an automatic fallback (kokoroTts.worker.ts's loadWithFallback/doSpeak,
+ * reported back via a 'backend' response, see getWorker()'s message handler below). */
+export function getKokoroDevice(): KokoroDevice {
+  return readDevice()
+}
+
+/**
+ * Pins Kokoro to a backend from Settings — see localModel.ts's setLocalModelDevice for the
+ * identical reasoning, minus the modelId parameter. Drops any loaded copy on both sides: the two
+ * backends are different builds (different dtype, different file), so a session created for one
+ * cannot serve the other, and the in-memory "ready" state has to be re-earned by the next load.
+ * Downloads already on disk for either build are untouched — Cache Storage isn't cleared here.
+ */
+export async function setKokoroDevice(device: KokoroDevice): Promise<void> {
+  if (readDevice() === device) return
+  rememberDevice(device)
+  isReady = false
+  loadPromise = null
+  lastProgress = null
+  if (worker) await send({ kind: 'evict' })
+}
 
 // ---- Worker bridge — mirrors localModel.ts's getWorker()/send() pattern. Kokoro has exactly one
 // model, so (unlike localModel.ts) none of this needs to be keyed by a model id. ----
@@ -100,6 +173,13 @@ function getWorker(): Worker {
       case 'progress':
         lastProgress = message.progress
         for (const listener of progressListeners) listener(message.progress)
+        break
+      case 'backend':
+        // The worker fell back from 'webgpu' to 'wasm' — no adapter available, or the device was
+        // lost mid-generation. Remembered so the *next* load starts on 'wasm' directly instead of
+        // paying for the same failed WebGPU attempt on every turn (same reasoning as
+        // localModel.ts's identical 'backend' handling for the text models).
+        rememberDevice(message.device)
         break
       case 'chunkProgress':
         pending.get(message.requestId)?.onChunkProgress?.(message.completed, message.total)
@@ -158,7 +238,7 @@ function loadKokoro(onProgress?: (p: KokoroLoadProgress) => void): Promise<void>
   if (!loadPromise) {
     // Window-only API, which is part of why this stayed on the main thread.
     requestPersistentStorage()
-    loadPromise = send({ kind: 'load' }).then(() => undefined)
+    loadPromise = send({ kind: 'load', device: readDevice() }).then(() => undefined)
     loadPromise.then(
       () => {
         isReady = true
@@ -186,21 +266,35 @@ export async function preloadKokoroModel(onProgress?: (p: KokoroLoadProgress) =>
 /** Whether the model's files are already cached, regardless of whether this page session has
  * loaded them into memory yet — so Settings shows accurate "downloaded" state on a fresh load.
  * Returns false where Cache Storage is unavailable (plain HTTP), which is accurate: nothing is
- * cached there, see the caching caveat above. */
+ * cached there, see the caching caveat above.
+ *
+ * Scoped to the build the *currently selected* backend needs — the WASM (`q8`,
+ * `model_quantized.onnx`) and WebGPU (`fp32`, `model.onnx`) builds are different files, mirroring
+ * hasDownloadedLocalModel's identical per-backend scoping. `model${suffix}.onnx` distinguishes them
+ * unambiguously in a URL substring check: `'model_quantized.onnx'` does not contain the substring
+ * `'model.onnx'` (there's no `.` immediately after `model`), so the WebGPU check (empty suffix)
+ * can't accidentally match a WASM download and vice versa. */
 export async function hasDownloadedKokoroModel(): Promise<boolean> {
   if (isReady) return true
   if (typeof caches === 'undefined') return false
   try {
     const cache = await caches.open('transformers-cache')
     const entries = await cache.keys()
-    return entries.some((request) => request.url.includes('Kokoro'))
+    const fileName = `model${KOKORO_DTYPE_SUFFIX[readDevice()]}.onnx`
+    return entries.some((request) => request.url.includes('Kokoro') && request.url.includes(fileName))
   } catch {
     return false
   }
 }
 
-/** Removes the downloaded voice model from this device, and resets in-memory state (here and in
- * the worker) so the next use re-downloads from scratch rather than reusing a stale reference. */
+/** Removes the downloaded voice model from this device (both backends' files, regardless of which
+ * is currently selected — a single "Remove" nukes everything Kokoro cached here), and resets
+ * in-memory state (here and in the worker) so the next use re-downloads from scratch rather than
+ * reusing a stale reference. Also resets the backend preference back to the default ('wasm'): the
+ * player may be removing the model specifically to start over, e.g. after an automatic
+ * device-lost fallback silently pinned this device to 'wasm' — same reasoning as
+ * removeLocalModel's identical reset, adapted for Kokoro's WASM-default (rather than
+ * WebGPU-default) posture. */
 export async function removeKokoroModel(): Promise<void> {
   if (typeof caches !== 'undefined') {
     await Promise.all(
@@ -223,6 +317,7 @@ export async function removeKokoroModel(): Promise<void> {
   }
   loadPromise = null
   isReady = false
+  rememberDevice('wasm')
   if (worker) await send({ kind: 'evict' })
 }
 
@@ -257,7 +352,7 @@ export type KokoroVoice = KokoroWorkerVoice
  */
 export async function listKokoroVoices(onProgress?: (p: KokoroLoadProgress) => void): Promise<KokoroVoice[]> {
   await loadKokoro(onProgress)
-  const res = await send({ kind: 'listVoices' })
+  const res = await send({ kind: 'listVoices', device: readDevice() })
   if (res.kind !== 'voices') throw new Error('Unexpected response loading Kokoro voices.')
   return res.voices
 }
@@ -280,7 +375,7 @@ export async function generateKokoroPreview(
   onProgress?: (p: KokoroLoadProgress) => void,
 ): Promise<Blob> {
   await loadKokoro(onProgress)
-  const res = await send({ kind: 'speak', chunks: [PREVIEW_TEXT], voice: voiceId })
+  const res = await send({ kind: 'speak', chunks: [PREVIEW_TEXT], voice: voiceId, device: readDevice() })
   if (res.kind === 'done') throw new Error('Superseded by a newer request before this preview finished generating.')
   if (res.kind !== 'audio') throw new Error('Unexpected response generating a Kokoro voice preview.')
   return res.blob
@@ -395,7 +490,7 @@ export function createKokoroTtsProvider(opts: KokoroTtsOptions = {}): TtsProvide
       // every chunk back-to-back is tens of seconds of unbroken WASM work for a realistic turn
       // (measured — see that worker's doc comment), which would otherwise freeze the main thread
       // for the whole wait.
-      const res = await send({ kind: 'speak', chunks, voice: speakOpts?.voice ?? '' }, (completed, total) => {
+      const res = await send({ kind: 'speak', chunks, voice: speakOpts?.voice ?? '', device: readDevice() }, (completed, total) => {
         // opts.onGenerateProgress is one shared callback across every speak() call on this
         // provider instance (Play.tsx reuses one instance per provider kind — see its
         // ttsProviderRef comment) — without this check, a chunkProgress message from a call

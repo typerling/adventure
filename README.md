@@ -43,7 +43,10 @@ campaign's text-to-speech provider. The model downloads once on first use and th
 on your device; use "Download voice model now" under **Kokoro voice model** in Settings to fetch it
 ahead of time, with a progress bar, and to remove it again later. One caveat: Kokoro relies on the
 browser cache, which requires HTTPS or localhost — served over a plain-HTTP LAN address it still
-works but re-downloads on each page load, and Settings says so inline.
+works but re-downloads on each page load, and Settings says so inline. Kokoro runs on the CPU by
+default (still no WebGPU needed), with an opt-in "Run on: GPU" toggle in that same Settings card
+for a faster, larger download on devices where WebGPU is available — it falls back to the CPU
+automatically if that turns out not to work.
 
 Same pattern for Claude: add your API key in Settings (`localStorage`, never Drive), then
 switch a campaign's AI mode to "Direct API key (Claude)" and pick a model (Sonnet 5 by default,
