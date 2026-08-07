@@ -1,6 +1,11 @@
 import { test, expect, type Page } from "@playwright/test";
 import { installGoogleApiMock } from "./mocks/googleApi";
-import { getKokoroWorker, installFakeKokoroModule } from "./mocks/kokoro";
+import {
+  getKokoroWorker,
+  installControllableWebAudioPlayback,
+  installFakeKokoroModule,
+  waitForKokoroPlaybackToStabilize,
+} from "./mocks/kokoro";
 import { createRandomCampaign, setCampaignVoiceProviders, submitFreeTextTurn } from "./helpers";
 
 /**
@@ -13,52 +18,21 @@ import { createRandomCampaign, setCampaignVoiceProviders, submitFreeTextTurn } f
  * building this feature: `navigator.gpu` stays undefined under headless Chromium here regardless
  * of `--enable-unsafe-webgpu`/`--use-angle=swiftshader`/Vulkan flags, since the container has no
  * `/dev/dri` GPU device nodes whatsoever), so these tests exercise the fallback *logic*
- * (kokoroTts.worker.ts's loadWithFallback/doSpeak) against a fake that can simulate both known
- * WebGPU failure modes on demand, not real WebGPU behavior.
+ * (kokoroTts.worker.ts's loadWithFallback/doSpeak/doSpeakStream) against a fake that can simulate
+ * both known WebGPU failure modes on demand, not real WebGPU behavior.
+ *
+ * Turn playback itself (issue #62) uses installControllableWebAudioPlayback rather than real Web
+ * Audio here — not because real Web Audio doesn't work in this sandbox (it does, see
+ * kokoro-streaming-playback.spec.ts, which uses it deliberately) but because these tests care about
+ * backend-fallback *correctness*, not streaming timing, and the fake kokoro-js module's
+ * near-zero-length generated audio would otherwise finish playing (and resolve speak()) within
+ * microseconds of being scheduled — no stable window to assert "still playing" against. See
+ * installControllableWebAudioPlayback's own doc comment.
  */
 
 async function switchKokoroDevice(page: Page, device: "CPU" | "GPU") {
   await page.locator("#kokoro-device").click();
   await page.getByRole("option", { name: device === "GPU" ? /^GPU/ : /^CPU/ }).click();
-}
-
-/** Like installControllableAudioPlayback (mocks/elevenLabs.ts) — `play()` resolves and never
- * fires `ended` on its own, headless Chromium has no real audio pipeline either way — but also
- * counts constructions on `window`. `new Audio()` is only ever reached from kokoroTts.ts's
- * playBlob(), which only runs *after* a turn's whole clip has finished generating and been
- * returned from the worker — so this is a reliable "generation genuinely completed" signal,
- * unlike Play.tsx's "Stop playback" button label, which flips the instant the button is clicked
- * (well before any async load/generate work has even started — see speakText's synchronous
- * setPlayingTurn call) and so can't distinguish "still generating" from "now actually playing".
- */
-async function installTrackedAudioPlayback(page: Page): Promise<void> {
-  await page.addInitScript(() => {
-    class TrackedAudio {
-      src: string;
-      onended: (() => void) | null = null;
-      onerror: ((event?: unknown) => void) | null = null;
-      constructor(src: string) {
-        this.src = src;
-        const w = window as unknown as { __kokoroAudioConstructedCount?: number };
-        w.__kokoroAudioConstructedCount = (w.__kokoroAudioConstructedCount ?? 0) + 1;
-      }
-      play() {
-        return Promise.resolve();
-      }
-      pause() {}
-    }
-    Object.defineProperty(window, "Audio", { value: TrackedAudio, configurable: true });
-  });
-}
-
-async function waitForGenerationToFinish(page: Page): Promise<void> {
-  await expect
-    .poll(() =>
-      page.evaluate(
-        () => (window as unknown as { __kokoroAudioConstructedCount?: number }).__kokoroAudioConstructedCount ?? 0,
-      ),
-    )
-    .toBeGreaterThan(0);
 }
 
 test("Kokoro's backend can be switched to WebGPU in Settings, and each backend's downloaded-state is scoped to its own file", async ({
@@ -119,7 +93,7 @@ test("selecting WebGPU falls back to WASM automatically when no adapter is avail
   // play — this proves the recovery path, not just that playback works.
   await installGoogleApiMock(page);
   await installFakeKokoroModule(page, { failWebgpuLoad: true });
-  await installTrackedAudioPlayback(page);
+  await installControllableWebAudioPlayback(page);
 
   await createRandomCampaign(page);
   await setCampaignVoiceProviders(page, { tts: "huggingface-local" });
@@ -140,7 +114,7 @@ test("selecting WebGPU falls back to WASM automatically when no adapter is avail
     page.getByRole("button", { name: "Play this turn aloud" }).click(),
   ]);
 
-  await waitForGenerationToFinish(page);
+  await waitForKokoroPlaybackToStabilize(page);
 
   const loadDevices = await worker.evaluate(
     () => (self as unknown as { __kokoroLoadDevices?: string[] }).__kokoroLoadDevices ?? [],
@@ -155,8 +129,8 @@ test("selecting WebGPU falls back to WASM automatically when no adapter is avail
   expect(generateCalls.length).toBeGreaterThan(0);
   expect(generateCalls.every((c) => c.device === "wasm")).toBe(true);
 
-  // Genuinely playing, not just optimistic UI — this stays true because the tracked-audio fake
-  // never fires 'ended' on its own.
+  // Genuinely playing, not just optimistic UI — this stays true because the fake Web Audio
+  // context's scheduled sources never fire 'ended' on their own (installControllableWebAudioPlayback).
   await expect(page.getByRole("button", { name: "Stop playback" })).toBeVisible();
 
   // The fallback is remembered — Settings now shows CPU, not GPU, without needing to fail again.
@@ -169,7 +143,7 @@ test("a WebGPU device lost mid-generation falls back to WASM and restarts the wh
 }) => {
   await installGoogleApiMock(page);
   await installFakeKokoroModule(page, { failWebgpuGenerate: true });
-  await installTrackedAudioPlayback(page);
+  await installControllableWebAudioPlayback(page);
 
   await createRandomCampaign(page);
   await setCampaignVoiceProviders(page, { tts: "huggingface-local" });
@@ -194,7 +168,7 @@ test("a WebGPU device lost mid-generation falls back to WASM and restarts the wh
     page.getByRole("button", { name: "Play this turn aloud" }).click(),
   ]);
 
-  await waitForGenerationToFinish(page);
+  await waitForKokoroPlaybackToStabilize(page);
 
   const attempts = await worker.evaluate(
     () =>
@@ -220,8 +194,86 @@ test("a WebGPU device lost mid-generation falls back to WASM and restarts the wh
   // among the wasm calls that actually produced audio.
   expect(generateCalls.some((c) => c.text === attempts[0].text)).toBe(true);
 
+  // Issue #62: this worker-level restart-from-0 is only half the story — kokoroTts.ts's main-thread
+  // de-duplication (nextExpectedChunkIndex) is what actually keeps the player from *hearing* a
+  // chunk twice. Every wasm call above regenerated a chunk that hadn't been scheduled for playback
+  // yet (webgpu failed on the very first chunk here, before anything reached the main thread), so
+  // every one of them should reach playback exactly once — the count below would exceed
+  // generateCalls.length if any chunk were scheduled twice.
+  const sourceStartCount = await page.evaluate(
+    () => (window as unknown as { __kokoroSourceStarts?: unknown[] }).__kokoroSourceStarts?.length ?? 0,
+  );
+  expect(sourceStartCount).toBe(generateCalls.length);
+
   await expect(page.getByRole("button", { name: "Stop playback" })).toBeVisible();
 
   await page.goto("/settings");
   await expect(page.locator("#kokoro-device")).toContainText("CPU");
+});
+
+test("a WebGPU device lost after several chunks already played does not replay those chunks after the WASM restart", async ({
+  page,
+}) => {
+  // Strengthens the test above for the case it explicitly couldn't cover: failWebgpuGenerate: true
+  // fails on the very first webgpu chunk, so nothing had reached the main thread yet when the
+  // restart happened. Here failWebgpuGenerate is a count (2) instead — the first two chunks
+  // genuinely succeed on webgpu, stream to the main thread, and get scheduled for playback *before*
+  // the third chunk's device-lost failure triggers the WASM restart from chunk 0. This is the
+  // scenario kokoroTts.ts's own doc comment ("De-duplication after a WebGPU-fallback restart")
+  // describes: chunks 0-1 must not play a second time once the WASM restart regenerates them.
+  await installGoogleApiMock(page);
+  await installFakeKokoroModule(page, { failWebgpuGenerate: 2 });
+  await installControllableWebAudioPlayback(page);
+
+  await createRandomCampaign(page);
+  await setCampaignVoiceProviders(page, { tts: "huggingface-local" });
+  const campaignId = page.url().match(/\/play\/([^/?#]+)/)![1];
+
+  await page.goto("/settings");
+  await switchKokoroDevice(page, "GPU");
+
+  await page.goto(`/play/${campaignId}`);
+  await submitFreeTextTurn(
+    page,
+    "look around",
+    "The first room is cold. The second room is silent. The third room is sealed shut.",
+  );
+  await expect(page.getByText("The first room is cold.", { exact: false })).toBeVisible();
+
+  const [worker] = await Promise.all([
+    getKokoroWorker(page),
+    page.getByRole("button", { name: "Play this turn aloud" }).click(),
+  ]);
+
+  await waitForKokoroPlaybackToStabilize(page);
+
+  const attempts = await worker.evaluate(
+    () =>
+      (self as unknown as { __kokoroGenerateAttempts?: { text: string; device: string }[] })
+        .__kokoroGenerateAttempts ?? [],
+  );
+  const generateCalls = await worker.evaluate(
+    () =>
+      (self as unknown as { __kokoroGenerateCalls?: { text: string; device: string }[] })
+        .__kokoroGenerateCalls ?? [],
+  );
+  // Two chunks succeeded on webgpu before the third's device-lost failure (attempts has 2 webgpu
+  // successes plus 1 webgpu failure); the restart then regenerated every chunk on wasm from 0.
+  expect(attempts.filter((a) => a.device === "webgpu")).toHaveLength(3);
+
+  const sourceStartCount = await page.evaluate(
+    () => (window as unknown as { __kokoroSourceStarts?: unknown[] }).__kokoroSourceStarts?.length ?? 0,
+  );
+  // generateCalls includes every *successful* attempt on either backend — the 2 webgpu chunks that
+  // succeeded before the failure, plus every chunk regenerated on wasm after the restart (all of
+  // them, restart-from-0) — so it double-counts the 2 chunks that succeeded twice. The wasm subset
+  // alone is the final, unique chunk count: what the whole turn resolved to. The whole point of
+  // this test: playback count matches *that*, not generateCalls.length (which would mean the first
+  // 2 chunks played twice — once from their webgpu success, once from the wasm restart).
+  const finalChunkCount = generateCalls.filter((c) => c.device === "wasm").length;
+  expect(sourceStartCount).toBe(finalChunkCount);
+  expect(sourceStartCount).toBeLessThan(generateCalls.length);
+  expect(sourceStartCount).toBeLessThan(attempts.length);
+
+  await expect(page.getByRole("button", { name: "Stop playback" })).toBeVisible();
 });

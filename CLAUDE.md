@@ -332,6 +332,25 @@ philosophy as the AI backend. Three implementations exist (Kokoro is TTS-only):
   don't stall. This also avoids `KokoroTTS.stream()`, which builds a `TextSplitterStream` but never
   `close()`s it, so its async iterator blocks forever.
 
+  **Streaming playback (issue #62).** Real turn narration plays continuously as it generates:
+  playback of chunk 1 starts as soon as it's ready, while `kokoroTts.worker.ts` keeps generating
+  chunks 2+ in the background — not (as originally shipped, issue #44) waiting for the whole turn to
+  generate and stitching one continuous clip before any audio plays at all. The worker streams each
+  chunk's *raw* PCM samples back the moment it's done (`speakStream`/`chunkAudio` in
+  `kokoroWorkerProtocol.ts`); `kokoroTts.ts`'s playback engine schedules them on a Web Audio API
+  `AudioContext` with `AudioBufferSourceNode`s timed back-to-back (sample-accurate, unlike
+  sequential `<audio>` elements, which reliably gap) rather than waiting to build one `<audio>`-
+  playable blob. `generateKokoroPreview()` (Settings' short, fixed voice-preview clip) still uses
+  the original non-streaming `'speak'` request — nothing to gain from streaming one short clip.
+  Because chunks can now be scheduled while more are still generating, `kokoroTts.ts`'s `speak()`
+  tracks `nextExpectedChunkIndex` to drop a chunk resent by the WebGPU-fallback restart below if
+  it's already been scheduled once — see that file's doc comment ("De-duplication after a
+  WebGPU-fallback restart") for why a worker-side restart-from-0 is still safe against replaying
+  audio the player already heard. See `kokoroTts.ts`'s and `kokoroTts.worker.ts`'s module doc
+  comments for the full design, including what's verified in this sandbox (real Web Audio API
+  playback, confirmed to work headlessly here despite no real audio hardware) versus what isn't
+  (real-device audio-hardware gaplessness, and background-tab-freeze behavior).
+
   **Cross-origin isolation for multi-threaded WASM.** ONNX Runtime Web's WASM backend (what
   `kokoroTts.worker.ts` runs on) can use `SharedArrayBuffer` to run multi-threaded, which speeds up
   both session init and inference — but only when the page is cross-origin isolated (`COOP:

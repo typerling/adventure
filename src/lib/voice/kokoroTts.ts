@@ -49,30 +49,87 @@ import type {
  * the worker (plus one narrow exception, `splitIntoSpeakableChunks` below, which needs none of the
  * model) and by that worker dynamically, only when Kokoro TTS is actually used.
  *
- * Playback is one continuous clip per turn, matching `elevenLabsTts.ts`'s one-request/one-blob/
- * one-play model exactly (issue #44): `speak()` asks the worker to generate every chunk from
- * `splitIntoSpeakableChunks` and stitch them into one clip *before* any playback starts, trading
- * "starts speaking after the first chunk" for gapless audio and no possibility of a mid-turn stall
- * waiting on the next chunk (the risk the old generate-ahead-then-play loop carried — see this
- * module's git history / issue #44 for that architecture, since removed).
+ * **Streaming playback (issue #62).** Real turn narration plays continuously as it generates,
+ * rather than waiting for the whole turn: `speak()` asks the worker (kokoroTts.worker.ts's
+ * `speakStream()`) to generate every chunk from `splitIntoSpeakableChunks`, and schedules each
+ * chunk's raw audio for playback (via the Web Audio API — see "Playback engine" below) the instant
+ * it arrives, rather than waiting for a final stitched blob. This replaces #44's one-clip-per-turn
+ * design, which traded "starts speaking after the first chunk" for gapless audio and no possibility
+ * of a mid-turn stall waiting on the next chunk — see this module's git history / issue #44 for
+ * that architecture and why it existed, and issue #62 for why the trade was revisited: #44's stall
+ * risk was specifically about generation racing background-tab *timer* throttling on the *main
+ * thread*, which no longer applies now that generation runs in a dedicated Worker (see
+ * kokoroTts.worker.ts's doc comment, and "Backgrounding" below). `generateKokoroPreview()` (used
+ * only by Settings' short, fixed voice-preview clip) still uses the original one-blob 'speak'
+ * request — there's nothing to gain from streaming a single short clip, so it wasn't touched.
  *
- * **Backgrounding, revisited (originally flagged in #39/PR #43):** the specific risk that comment
- * described — a currently-*playing* clip surviving Chrome's background-tab throttling while the
- * *next* chunk's `tts.generate()` call, running on the main thread, might not, leaving a real
- * mid-turn gap once playback caught up to an unready chunk — no longer applies, and this time
- * that's structural, not just measured: there is no "next chunk" moment anymore, since every chunk
- * finishes generating *before* playback of the single stitched clip ever starts. What replaces it
- * is a narrower question — does pre-generation *itself* keep making progress if the player
- * backgrounds the tab immediately after starting a turn, before playback has begun — and this PR
- * does not claim to have verified that on a real device either, same limitation the original
- * comment had. What's true in general on the web platform: a dedicated Worker's own execution
- * isn't subject to the same background-tab *timer* throttling that affects `setTimeout`/
- * `setInterval`/rAF on the main thread, which is a good sign; but Chrome's coarser tab *freezing*
- * (suspending a hidden tab's JS entirely after several minutes) applies to workers too and would
- * still delay when playback can start. If that turns out to matter in practice, it's a much
- * smaller, better-understood problem than the old one (bounded to "pre-generation may pause while
- * hidden," not "audio may silently stall mid-turn") — measuring it for real is future work, not
- * done here.
+ * **Playback engine.** Each chunk arrives as *raw* PCM samples (a `Float32Array` + sample rate),
+ * not an encoded file — kokoroTts.worker.ts skips WAV-encoding entirely for the streaming path (see
+ * its doc comment), since nothing here needs to decode a file, only to schedule already-decoded
+ * samples. This uses the Web Audio API (`AudioContext`/`AudioBuffer`/`AudioBufferSourceNode`)
+ * rather than sequential `HTMLAudioElement`s: an `AudioBufferSourceNode` can be scheduled to start
+ * at a sample-accurate future time on the *same* `AudioContext` clock another node is already
+ * playing against (`source.start(when)`), so consecutive chunks can be queued back-to-back with no
+ * gap from the scheduling itself — unlike sequential `<audio>` elements, which reliably gap (each
+ * one's `play()` call incurs its own decode/output-pipeline startup latency, and nothing schedules
+ * element B to begin at the exact sample element A ends on). `speak()`'s `onChunkAudio` callback
+ * below tracks a running `nextStartTime` cursor (the `AudioContext` clock time the *next* chunk
+ * should begin at)
+ * and clamps it to `max(ctx.currentTime, cursor)`, so a chunk that arrives late (playback caught up
+ * to generation — see "Falling behind" below) still starts as soon as possible instead of trying to
+ * schedule in the past. What this can't fix is any gap or click *baked into the audio itself* —
+ * silence Kokoro renders at a chunk's start/end, independent of scheduling — the same caveat the
+ * issue flagged ("does not have to be as gapless as the current single stitched clip"). This is
+ * genuinely verified, not assumed: `tests/kokoro-streaming-playback.spec.ts` schedules real chunks
+ * through a real (unfaked) `AudioContext` — confirmed to work headlessly in this sandbox, including
+ * `AudioBufferSourceNode.onended` firing at essentially the buffer's exact scheduled duration (see
+ * that spec's own doc comment for the measurement) — and asserts consecutive chunks' actual
+ * `start()` times land exactly at the sample-accurate boundary the scheduling math computes, i.e.
+ * that *this code's own scheduling logic* introduces zero gap. What that test cannot verify is
+ * whether a *real* device's audio output hardware/driver reproduces that scheduling gaplessly in
+ * practice — no more possible to check in this sandbox than the WebGPU-audio-quality question
+ * `kokoroConstants.ts` already documents as unverified here for the same underlying reason (no real
+ * audio/GPU hardware in this container).
+ *
+ * **Falling behind.** If playback catches up to a chunk that hasn't finished generating yet — the
+ * literal stall #44 was written to avoid — `nextStartTime` simply falls behind `ctx.currentTime`
+ * until the next chunk arrives and gets scheduled at "now" instead of the (already-past) cursor:
+ * an audible gap, not a crash or a stuck spinner. Nothing here claims this never happens: unlike
+ * `localModel.worker.ts`'s streamed *text* generation (measured token-by-token against a slower
+ * TTS-narration playback rate elsewhere in this app), no equivalent per-chunk timing comparison for
+ * Kokoro audio generation vs. its own playback duration has been measured in this sandbox (no real
+ * audio hardware to play a chunk's duration against in real time — see "Playback engine" above) —
+ * so whether generation reliably stays ahead once "warmed up" by one chunk, the way the issue
+ * speculates it might, is left unverified rather than assumed true.
+ *
+ * **De-duplication after a WebGPU-fallback restart.** kokoroTts.worker.ts's device-lost/no-adapter
+ * fallback restarts the *whole* job from chunk 0 on WASM (not just the failed chunk) — see that
+ * file's doc comment for why. Streaming means some of chunks 0..N-1 may already have been scheduled
+ * (and be audibly playing) by the time chunk N fails and the restart re-sends chunk 0's audio all
+ * over again. `speak()` tracks `nextExpectedChunkIndex` — the next chunk index it's actually willing
+ * to schedule — and simply ignores a `chunkAudio` message whose `index` doesn't match it: the first
+ * pass's already-accepted chunks 0..N-1 arrive a second time (from the WASM restart) with indices
+ * the tracker has already moved past, so they're silently dropped; only the genuinely-new chunk N
+ * onward (which now arrives at the index the tracker is still waiting on, once the restart reaches
+ * it) gets accepted and scheduled. This needs no special-casing for *which* pass a chunk came from —
+ * ordinary in-order chunk delivery with no restart at all satisfies the exact same check trivially.
+ * `tests/kokoro-webgpu-backend.spec.ts`'s device-lost test asserts on this directly: the number of
+ * chunks actually scheduled for playback equals the turn's real chunk count, not that count plus
+ * however many were redundantly regenerated on the fallback backend.
+ *
+ * **Backgrounding, revisited (originally flagged in #39/PR #43, revisited again by #44 above).**
+ * The risk #39 described — a currently-*playing* clip surviving Chrome's background-tab throttling
+ * while the *next* chunk's `tts.generate()` call, running on the main thread at the time, might
+ * not, leaving a real mid-turn gap once playback caught up to an unready chunk — doesn't apply here
+ * either, but for a different reason than #44's fix: generation now runs in a dedicated Worker (see
+ * kokoroTts.worker.ts's doc comment), so it isn't subject to the same background-tab *timer*
+ * throttling that affects `setTimeout`/`setInterval`/rAF on the main thread. Chrome's coarser tab
+ * *freezing* (suspending a hidden tab's JS entirely after several minutes) still applies to workers
+ * too, and would still pause generation — with streaming playback, that now means "playback falls
+ * behind and gaps," the "Falling behind" case above, rather than #44's "nothing plays until the
+ * freeze ends." Verifying either the freeze behavior itself, or how gracefully falling behind reads
+ * to a real listener, needs a real device/tab-visibility test this sandbox can't run — left
+ * documented as unverified, not assumed fine.
  *
  * Caching caveat: kokoro-js depends on @huggingface/transformers v3, a different major version
  * than this app's own v4, so npm keeps them as two separate installs with two separate `env`
@@ -150,7 +207,11 @@ let nextRequestId = 1
 interface PendingRequest {
   resolve: (message: KokoroWorkerResponse) => void
   reject: (err: Error) => void
-  onChunkProgress?: (completed: number, total: number) => void
+  /** Fires once per 'chunkAudio' response for this request — the streaming 'speakStream' path's
+   * only per-chunk callback (issue #62); replaces the old 'chunkProgress'-only onChunkProgress,
+   * since every progress tick now also carries that chunk's audio. Unused by a plain 'speak'
+   * request (generateKokoroPreview), which has nothing to stream. */
+  onChunkAudio?: (index: number, total: number, audio: Float32Array, samplingRate: number) => void
 }
 const pending = new Map<number, PendingRequest>()
 
@@ -181,8 +242,10 @@ function getWorker(): Worker {
         // localModel.ts's identical 'backend' handling for the text models).
         rememberDevice(message.device)
         break
-      case 'chunkProgress':
-        pending.get(message.requestId)?.onChunkProgress?.(message.completed, message.total)
+      case 'chunkAudio':
+        pending
+          .get(message.requestId)
+          ?.onChunkAudio?.(message.index, message.total, message.audio, message.samplingRate)
         break
       case 'voices':
       case 'audio':
@@ -216,10 +279,26 @@ function getWorker(): Worker {
   return worker
 }
 
-function send(request: KokoroWorkerRequestInit, onChunkProgress?: (completed: number, total: number) => void) {
+function send(request: KokoroWorkerRequestInit) {
   const requestId = nextRequestId++
   return new Promise<KokoroWorkerResponse>((resolve, reject) => {
-    pending.set(requestId, { resolve, reject, onChunkProgress })
+    pending.set(requestId, { resolve, reject })
+    getWorker().postMessage({ ...request, requestId } as KokoroWorkerRequest)
+  })
+}
+
+/** Like send(), but for a 'speakStream' request: `onChunkAudio` fires once per chunk as it
+ * arrives (issue #62), and the returned promise settles once the worker reports 'done' — meaning
+ * *generation* finished, not playback. createKokoroTtsProvider's speak() deliberately does not
+ * resolve its own returned promise from this one; see its own comments for why playback completing
+ * is a separate, later event this function knows nothing about. */
+function sendStream(
+  request: Extract<KokoroWorkerRequestInit, { kind: 'speakStream' }>,
+  onChunkAudio: (index: number, total: number, audio: Float32Array, samplingRate: number) => void,
+): Promise<void> {
+  const requestId = nextRequestId++
+  return new Promise<void>((resolve, reject) => {
+    pending.set(requestId, { resolve: () => resolve(), reject, onChunkAudio })
     getWorker().postMessage({ ...request, requestId } as KokoroWorkerRequest)
   })
 }
@@ -328,10 +407,11 @@ export function describeKokoroProgress(p: KokoroLoadProgress): string {
 }
 
 /** Shared with Play.tsx's `voiceLoadMessage` — the same progress-message convention as
- * describeKokoroProgress (model download), reused for per-turn generation now that playback waits
- * for the whole clip to finish generating before it can start (issue #44). `completed`/`total` are
- * chunk counts, not bytes/percent — for a single-chunk job (e.g. a voice preview) this reads as a
- * plain "Generating…" rather than a redundant "part 1 of 1". */
+ * describeKokoroProgress (model download), reused for per-turn generation: playback now starts as
+ * soon as the first chunk is ready (issue #62), so this describes generation progress that overlaps
+ * with — rather than strictly precedes — playback. `completed`/`total` are chunk counts, not
+ * bytes/percent — for a single-chunk job (e.g. a voice preview) this reads as a plain "Generating…"
+ * rather than a redundant "part 1 of 1". */
 export function describeKokoroGenerateProgress(completed: number, total: number): string {
   return total <= 1 ? 'Generating narration…' : `Generating narration — part ${completed} of ${total}…`
 }
@@ -362,13 +442,17 @@ export async function listKokoroVoices(onProgress?: (p: KokoroLoadProgress) => v
  * button. Loads the model first if it isn't already resident (same load-or-reuse path as speak()/
  * listKokoroVoices, so a model already loaded to populate the voice list is reused rather than
  * loaded twice). An unrecognized voice id falls back to DEFAULT_VOICE, resolved worker-side, same
- * as speak() does. Goes through the same 'speak' worker request as a real turn (a one-chunk job),
- * rather than a separate code path, so there's only one place that generates and encodes audio —
- * which also means a preview can be superseded (worker-side `'done'` instead of `'audio'`, see
- * kokoroTts.worker.ts's speak()) by a newer preview or a real turn starting playback while this
- * one is still generating, not just by kokoroPreviewTokenRef's own staleness check in Settings.tsx
- * (which still runs after this resolves — this rejection is the same "not current anymore" case,
- * caught there and correctly not toasted for a choice the player has already moved past).
+ * as speak() does. Goes through the worker's original (non-streaming) 'speak' request — issue #62's
+ * streaming path exists for real turn narration, where starting playback sooner actually matters;
+ * a preview is one short, fixed clip with nothing to gain from that, so it still just waits for the
+ * (almost always one-chunk) result and plays it as a single Blob, the same shape kokoroTts.worker.ts
+ * uses for that request either way. A preview can still be superseded (worker-side `'done'` instead
+ * of `'audio'`, see kokoroTts.worker.ts's doSpeak()) by a newer preview or a real turn starting
+ * playback while this one is still generating — both share the same shared model instance/queue on
+ * the worker side, see its doc comment — not just by kokoroPreviewTokenRef's own staleness check in
+ * Settings.tsx (which still runs after this resolves — this rejection is the same "not current
+ * anymore" case, caught there and correctly not toasted for a choice the player has already moved
+ * past).
  */
 export async function generateKokoroPreview(
   voiceId: string,
@@ -419,7 +503,9 @@ function splitLongSentence(sentence: string): string[] {
  * Runs on the main thread, not in kokoroTts.worker.ts: it's pure string processing with no model
  * involved (`TextSplitterStream` needs no `from_pretrained()` call at all), so there's nothing to
  * gain from moving it, and it's exported for tests on that basis — this runs with no model
- * download, so the splitting is verifiable on its own.
+ * download, so the splitting is verifiable on its own. The chunks it produces are simply what gets
+ * generated — see this module's doc comment for what happens to each one after that (streamed to
+ * playback as it's ready for a real turn, issue #62; generated fully and stitched for a preview).
  */
 export async function splitIntoSpeakableChunks(text: string): Promise<string[]> {
   const { TextSplitterStream } = await import('kokoro-js')
@@ -432,48 +518,68 @@ export interface KokoroTtsOptions {
   /** Called while the model downloads/initializes — only ever fires on the first speak() of a
    * session (or after removeKokoroModel()), since the loaded model is reused after that. */
   onLoadProgress?: (p: KokoroLoadProgress) => void
-  /** Called while a turn's audio is generating, once per finished chunk — every speak() call
-   * reports this, since playback now waits for the whole clip to finish generating before it can
-   * start (issue #44). Pass completed/total to describeKokoroGenerateProgress for a ready-made
-   * label, the same convention describeKokoroProgress already establishes for download progress. */
+  /** Called once per chunk as it finishes generating (issue #62: this now overlaps with playback
+   * of earlier chunks rather than strictly preceding it — Play.tsx's status line just keeps
+   * describing "how much of this turn has been generated so far," which stays meaningful either
+   * way). Pass completed/total to describeKokoroGenerateProgress for a ready-made label, the same
+   * convention describeKokoroProgress already establishes for download progress. */
   onGenerateProgress?: (completed: number, total: number) => void
 }
 
 export function createKokoroTtsProvider(opts: KokoroTtsOptions = {}): TtsProvider {
-  let currentAudio: HTMLAudioElement | null = null
-  /** Bumped by stop() and by each new speak(), so an in-flight generate-then-play call can tell
-   * it's been superseded and bail out instead of playing over whatever replaced it. Generation
-   * already under way in the worker when that happens isn't cancelled (kokoro-js has no abort
-   * primitive for a `generate()` call in flight, and neither does localModel.worker.ts's
-   * equivalent) — its result just arrives and is discarded once isStale() is true. */
+  /** Bumped by stop() and by each new speak(), so anything belonging to a superseded call — a
+   * still-in-flight worker generation, a late 'chunkAudio' message, code about to schedule a node —
+   * can tell it's been superseded and bail out instead of acting on behalf of a call that's no
+   * longer current. Generation already under way in the worker when that happens isn't cancelled
+   * (kokoro-js has no abort primitive for a `generate()` call in flight, and neither does
+   * localModel.worker.ts's equivalent) — its result just arrives and is discarded once isStale()
+   * is true. */
   let playToken = 0
-  /** Settles the in-flight clip when stop() interrupts it. `pause()` fires neither 'ended' nor
-   * 'error', so without this the promise never settles: the blob URL is never revoked, and
-   * playBlob's own isStale()-adjacent cleanup never runs. */
+  /** Settles the current speak() call's promise when stop() interrupts it. Needed independent of
+   * any AudioBufferSourceNode's own 'ended' event because stop() can land before the very first
+   * chunk has even been scheduled (still generating) — there may be no node to fire 'ended' at all
+   * yet. Mirrors the pre-#62 single-clip provider's identical settleCurrent, generalized to not
+   * depend on one specific node existing. */
   let settleCurrent: (() => void) | null = null
 
-  function playBlob(blob: Blob): Promise<void> {
-    const url = URL.createObjectURL(blob)
-    const audio = new Audio(url)
-    currentAudio = audio
-    return new Promise<void>((resolve, reject) => {
-      settleCurrent = resolve
-      audio.onended = () => resolve()
-      audio.onerror = () => reject(new Error('Audio playback failed.'))
-      audio.play().catch(reject)
-    }).finally(() => {
-      settleCurrent = null
-      URL.revokeObjectURL(url)
-      if (currentAudio === audio) currentAudio = null
-    })
+  /** Lazily constructed, then kept for this provider instance's lifetime — Play.tsx caches one
+   * provider instance per provider *kind* (see its ttsProviderRef comment), so this AudioContext
+   * is reused across every turn's playback rather than rebuilt each time; browsers also cap how
+   * many AudioContexts can exist at once, another reason not to churn through them. */
+  let audioCtx: AudioContext | null = null
+  function getAudioContext(): AudioContext {
+    if (!audioCtx) audioCtx = new AudioContext()
+    return audioCtx
+  }
+
+  /** Every AudioBufferSourceNode scheduled by the current (or a not-yet-superseded) speak() call,
+   * in schedule order — stop() (and a fresh speak() superseding an old one) iterates this to
+   * silence everything immediately, including a node scheduled to start in the future that hasn't
+   * actually begun sounding yet. Reset at the start of each speak() call. */
+  let scheduledSources: AudioBufferSourceNode[] = []
+
+  /** Immediately silences every node this provider currently has scheduled/playing and forgets
+   * them — called both by stop() and by a new speak() call superseding whatever came before it
+   * (mirroring the old single-clip provider's `currentAudio?.pause()` at the top of speak()). */
+  function stopScheduledSources(): void {
+    for (const source of scheduledSources) {
+      // Always safe to call, even on a node whose scheduled time hasn't arrived yet or that has
+      // already ended on its own: per the Web Audio API spec, AudioScheduledSourceNode.stop() is a
+      // no-op (not an error) once a node has already stopped, and start() having already been
+      // called (see speak()'s onChunkAudio callback below — every node here had start() called the
+      // instant it was created, even for a future startTime) means stop() is always valid to call,
+      // never "hasn't started yet." A stale assumption here would mean this throwing instead of
+      // silencing playback, so this was checked against the spec, not assumed.
+      source.stop()
+    }
+    scheduledSources = []
   }
 
   return {
     async speak(text, speakOpts) {
       const token = ++playToken
       const isStale = () => token !== playToken
-      currentAudio?.pause()
-      currentAudio = null
+      stopScheduledSources()
 
       await loadKokoro(opts.onLoadProgress)
       if (isStale()) return
@@ -483,30 +589,77 @@ export function createKokoroTtsProvider(opts: KokoroTtsOptions = {}): TtsProvide
       const chunks = await splitIntoSpeakableChunks(text)
       if (isStale() || chunks.length === 0) return
 
-      // Generate every chunk up front and stitch them into one continuous clip before any playback
-      // starts, matching ElevenLabs' one-request/one-blob/one-play model (issue #44) — trading
-      // "starts speaking after the first chunk" for gapless playback and no possibility of a
-      // mid-turn stall waiting on the next chunk. This runs in kokoroTts.worker.ts: pre-generating
-      // every chunk back-to-back is tens of seconds of unbroken WASM work for a realistic turn
-      // (measured — see that worker's doc comment), which would otherwise freeze the main thread
-      // for the whole wait.
-      const res = await send({ kind: 'speak', chunks, voice: speakOpts?.voice ?? '', device: readDevice() }, (completed, total) => {
-        // opts.onGenerateProgress is one shared callback across every speak() call on this
-        // provider instance (Play.tsx reuses one instance per provider kind — see its
-        // ttsProviderRef comment) — without this check, a chunkProgress message from a call
-        // that's since been superseded would still overwrite the *current* call's progress text.
-        if (!isStale()) opts.onGenerateProgress?.(completed, total)
-      })
+      const ctx = getAudioContext()
+      // A fresh (or long-idle) AudioContext can start/settle 'suspended' pending a user gesture on
+      // some browsers (notably Safari) — resume() is a harmless no-op if it's already running.
+      // speak() is only ever reached from a click handler (Play.tsx's play/read-aloud controls), so
+      // there's always a gesture available here for resume() to use.
+      if (ctx.state === 'suspended') await ctx.resume()
       if (isStale()) return
-      if (res.kind !== 'audio') throw new Error('Unexpected response generating narration.')
 
-      await playBlob(res.blob)
+      // See this module's doc comment ("De-duplication after a WebGPU-fallback restart") for why a
+      // 'chunkAudio' message whose index doesn't match this is dropped rather than scheduled again.
+      let nextExpectedChunkIndex = 0
+      // The AudioContext-clock time the next scheduled chunk should begin at — see "Playback
+      // engine" above. Clamped against ctx.currentTime on every chunk (not just initialized once),
+      // so a chunk that arrives late doesn't try to schedule in the past (see "Falling behind").
+      let nextStartTime = ctx.currentTime
+
+      await new Promise<void>((resolve, reject) => {
+        settleCurrent = resolve
+        sendStream(
+          { kind: 'speakStream', chunks, voice: speakOpts?.voice ?? '', device: readDevice() },
+          (index, total, audio, samplingRate) => {
+            if (isStale()) return
+            // Reported even for a chunk about to be dropped as a duplicate below — a long
+            // WebGPU-fallback restart (kokoroTts.worker.ts's doSpeakStream) re-generates chunks
+            // 0..N-1 for real before reaching the genuinely new chunk N, and the player should see
+            // that work reflected as progress, not a status line stuck on the pre-restart count.
+            opts.onGenerateProgress?.(index + 1, total)
+            if (index !== nextExpectedChunkIndex) return // duplicate resend — see doc comment above
+            nextExpectedChunkIndex++
+
+            // createBuffer's sampleRate need not match ctx's own hardware rate — the Web Audio API
+            // resamples during playback automatically (verified against the spec: AudioBuffer's
+            // sampleRate is independent of its BaseAudioContext's), so no manual resampling here.
+            const buffer = ctx.createBuffer(1, audio.length, samplingRate)
+            // getChannelData(0).set(...) rather than copyToChannel(audio, 0) — equivalent for a
+            // single-channel buffer, but avoids a strict-typed-array generic mismatch
+            // (Float32Array<ArrayBufferLike> vs. the DOM lib's Float32Array<ArrayBuffer>) that
+            // copyToChannel's stricter parameter type doesn't accept without an unsafe cast.
+            buffer.getChannelData(0).set(audio)
+            const source = ctx.createBufferSource()
+            source.buffer = buffer
+            source.connect(ctx.destination)
+            const startTime = Math.max(ctx.currentTime, nextStartTime)
+            nextStartTime = startTime + buffer.duration
+            scheduledSources.push(source)
+            if (index === total - 1) {
+              // The last chunk's natural end is this speak() call's natural end too. A concurrent
+              // stop() also resolves this same promise (via settleCurrent) — whichever fires
+              // first wins; resolving an already-settled promise a second time is a no-op, so
+              // there's no race to guard against here.
+              source.onended = () => resolve()
+            }
+            source.start(startTime)
+          },
+        ).catch((err: unknown) => {
+          // A genuine generation failure (not a supersession) after some chunks already played:
+          // deliberately does *not* stop those already-scheduled chunks — cutting off audio mid-
+          // sentence over an error the player may not even need to see reads worse than just
+          // letting whatever narration exists finish, at the cost of the "Stop playback" UI state
+          // reverting slightly before the audio actually stops (Play.tsx's speakText.finally runs
+          // on this rejection). Rejecting still surfaces the error as a toast either way.
+          if (!isStale()) reject(err instanceof Error ? err : new Error(String(err)))
+        })
+      }).finally(() => {
+        settleCurrent = null
+      })
     },
     stop() {
       playToken++
-      currentAudio?.pause()
-      currentAudio = null
-      // Resolve (not reject) the in-flight clip: a deliberate stop isn't a failure, and callers
+      stopScheduledSources()
+      // Resolve (not reject) the in-flight call: a deliberate stop isn't a failure, and callers
       // treat a rejection as an error worth toasting.
       settleCurrent?.()
       settleCurrent = null

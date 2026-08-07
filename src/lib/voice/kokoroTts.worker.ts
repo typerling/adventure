@@ -5,19 +5,32 @@
  * competes with React rendering and locks up the UI for the duration, including whatever's meant
  * to show it's still alive).
  *
- * This didn't used to matter as much for Kokoro: the old per-chunk generate-ahead-then-play loop
- * (see kokoroTts.ts's git history / issue #44) interleaved one `tts.generate()` call at a time with
- * real `<audio>` playback in between, which incidentally gave the main thread breathing room every
- * sentence. Generating a whole turn's narration up front — so it can be stitched into one
- * continuous clip and played gaplessly, matching ElevenLabs — means running every chunk's
- * `tts.generate()` back-to-back with nothing interleaved at all. Measured (not assumed) against a
- * representative ~700-character turn on this model's `q8` build: tens of seconds of unbroken
- * CPU-bound inference — comfortably enough to freeze the whole UI for the entire pre-generation
- * wait if left on the main thread. (Measured via kokoro-js's Node/onnxruntime-node CPU backend,
- * not literally in-browser WASM — kokoro-js's Node build only supports the `cuda`/`cpu` devices,
- * not `wasm`, so an exact in-browser number wasn't obtained; native CPU execution is generally at
- * least as fast as WASM, so this is a conservative lower bound on the real blocking time, not an
- * overstated one. See the PR this shipped in for the actual numbers.)
+ * This didn't used to matter as much for Kokoro: the original per-chunk generate-ahead-then-play
+ * loop (predating even issue #44, back when this all ran on the main thread) interleaved one
+ * `tts.generate()` call at a time with real `<audio>` playback in between, which incidentally gave
+ * the main thread breathing room every sentence. Issue #44 then moved to generating a whole turn's
+ * narration up front — every chunk's `tts.generate()` back-to-back with nothing interleaved at all,
+ * so it could be stitched into one continuous clip and played gaplessly, matching ElevenLabs.
+ * Measured (not assumed) against a representative ~700-character turn on this model's `q8` build:
+ * tens of seconds of unbroken CPU-bound inference — comfortably enough to freeze the whole UI for
+ * the entire pre-generation wait if left on the main thread. (Measured via kokoro-js's
+ * Node/onnxruntime-node CPU backend, not literally in-browser WASM — kokoro-js's Node build only
+ * supports the `cuda`/`cpu` devices, not `wasm`, so an exact in-browser number wasn't obtained;
+ * native CPU execution is generally at least as fast as WASM, so this is a conservative lower bound
+ * on the real blocking time, not an overstated one. See the PR this shipped in for the actual
+ * numbers.) That tens-of-seconds figure is exactly the wait issue #62 (below) shortens — it hasn't
+ * gotten any *faster* to generate a whole turn, but the player no longer has to wait for all of it
+ * before hearing anything.
+ *
+ * **Streaming playback (issue #62).** `doSpeak()`/`speak()` below are the *original* #44
+ * generate-everything-then-stitch-one-blob path — kept only for generateKokoroPreview()'s short,
+ * fixed preview text, where "wait for the whole (one-chunk) clip" costs nothing extra anyway.
+ * Real turn narration now goes through `doSpeakStream()`/`speakStream()` instead: each chunk's raw
+ * audio is posted back (`chunkAudio`) the moment it's generated, so kokoroTts.ts can start playing
+ * chunk 1 while this worker is still generating chunk 2 and beyond — see that file's doc comment
+ * for the playback side. This doesn't change *why* generation needs to stay off the main thread
+ * (it's still the same tens-of-seconds of unbroken inference, just reported incrementally instead
+ * of all at the end) — only what happens to each chunk's result once it's ready.
  *
  * kokoroTts.ts keeps the UI-facing state (progress listeners, load status) and talks to this over
  * the protocol in kokoroWorkerProtocol.ts. Nothing here may touch `window` or the DOM —
@@ -29,8 +42,8 @@
  * local text models). WebGPU is now a selectable, opt-in-in-Settings alternative
  * (kokoroConstants.ts's KokoroDevice), default still `wasm`. Unlike localModel.worker.ts, there is
  * no modelId dimension to key by — Kokoro is exactly one model — so `ttsPromises` is keyed by
- * device alone, and loadWithFallback()/doSpeak() below mirror that file's device-lost-mid-generation
- * fallback logic without the per-model bookkeeping.
+ * device alone, and loadWithFallback()/doSpeak()/doSpeakStream() below mirror that file's
+ * device-lost-mid-generation fallback logic without the per-model bookkeeping.
  */
 
 import { createProgressAggregator } from '@/lib/modelDownloadProgress'
@@ -41,12 +54,14 @@ import type { KokoroWorkerRequest, KokoroWorkerResponse, KokoroWorkerVoice } fro
 // pull the WorkerGlobalScope lib into a project otherwise compiled against the DOM lib and produce
 // conflicting global declarations — same reasoning as localModel.worker.ts's identical `ctx`.
 const ctx = self as unknown as {
-  postMessage(message: KokoroWorkerResponse): void
+  postMessage(message: KokoroWorkerResponse, transfer?: Transferable[]): void
   addEventListener(type: 'message', handler: (event: MessageEvent<KokoroWorkerRequest>) => void): void
 }
 
-function post(message: KokoroWorkerResponse): void {
-  ctx.postMessage(message)
+/** `transfer` moves a chunkAudio message's sample buffer instead of structured-cloning it (see
+ * generateChunks' postChunk) — everything else posts with no transfer list, same as before. */
+function post(message: KokoroWorkerResponse, transfer?: Transferable[]): void {
+  ctx.postMessage(message, transfer)
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -194,27 +209,43 @@ async function listVoices(requestId: number, device: KokoroDevice): Promise<void
   post({ kind: 'voices', requestId, voices })
 }
 
-/** The most recent 'speak' request kokoroTts.ts actually wants — set synchronously the instant a
- * new 'speak' message arrives, not when its turn in speakQueue comes up. Lets doSpeak notice it's
- * been superseded (a newer turn started playing before this one finished) and bail without either
- * running a pointless generation or posting a result nothing will use. */
+/** The most recent 'speak'/'speakStream' request kokoroTts.ts actually wants — set synchronously
+ * the instant a new request arrives, not when its turn in speakQueue comes up. Lets doSpeak/
+ * doSpeakStream notice it's been superseded (a newer turn started playing before this one
+ * finished) and bail without either running a pointless generation or posting a result nothing
+ * will use. */
 let currentSpeakRequestId: number | null = null
-/** Serializes 'speak' jobs — kokoro-js's WASM session isn't verified safe for concurrent
+/** Serializes speak-family jobs ('speak' and 'speakStream' alike, since both drive the same
+ * shared model instance) — kokoro-js's WASM session isn't verified safe for concurrent
  * generate() calls (nothing in its source or docs promises reentrancy), and issue #44 was
  * explicit about not assuming that without checking. Without this, clicking a different turn's
- * play button while an earlier turn's pre-generation is still running (now tens of seconds, not
- * the second or two the old per-chunk-interleaved-with-playback design left as a window) would
- * dispatch a second 'speak' job straight into the same shared model instance. */
+ * play button while an earlier turn's generation is still running would dispatch a second job
+ * straight into the same shared model instance. */
 let speakQueue: Promise<void> = Promise.resolve()
 
+/** Queues `job` behind whatever speak-family work is already in flight, keeping the queue itself
+ * alive even when a job rejects so one failed/superseded turn doesn't permanently wedge every
+ * request queued after it — the rejection still propagates to this call's own caller (the message
+ * handler's `.catch(fail)`) via the returned promise, just not the queue. */
+function runSpeakJob(job: () => Promise<void>): Promise<void> {
+  const wrapped = speakQueue.then(job)
+  speakQueue = wrapped.catch(() => {})
+  return wrapped
+}
+
 /** `null` return means superseded (see doSpeak's staleness checks) — distinct from an empty array,
- * which can't happen since kokoroTts.ts never sends an empty `chunks` list. */
+ * which can't happen since kokoroTts.ts never sends an empty `chunks` list. `onChunk`, when given,
+ * fires synchronously right after each chunk succeeds — doSpeakStream (issue #62) uses it to post
+ * that chunk's audio immediately instead of waiting for the whole loop to finish; doSpeak (used
+ * only for generateKokoroPreview's short, almost-always-one-chunk clip) passes none, since there's
+ * nothing worth streaming ahead of for that case. */
 async function generateChunks(
   requestId: number,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   tts: any,
   chunks: string[],
   voice: string,
+  onChunk?: (index: number, audio: Float32Array, samplingRate: number) => void,
 ): Promise<{ audio: Float32Array; sampling_rate: number }[] | null> {
   const resolvedVoice = resolveVoice(tts, voice)
   const generated: { audio: Float32Array; sampling_rate: number }[] = []
@@ -224,14 +255,16 @@ async function generateChunks(
     if (requestId !== currentSpeakRequestId) return null
     const audio = await tts.generate(chunks[i], { voice: resolvedVoice })
     generated.push({ audio: audio.audio, sampling_rate: audio.sampling_rate })
-    post({ kind: 'chunkProgress', requestId, completed: i + 1, total: chunks.length })
+    onChunk?.(i, audio.audio, audio.sampling_rate)
   }
   return requestId === currentSpeakRequestId ? generated : null
 }
 
 /**
- * Generates every chunk, then stitches them into one continuous clip — the whole point of #44.
- * `chunks` is always non-empty here; kokoroTts.ts skips sending the request at all for empty text.
+ * Generates every chunk, then stitches them into one continuous clip for generateKokoroPreview()'s
+ * benefit — a single, almost always one-chunk preview clip has nothing to gain from streaming (see
+ * doSpeakStream for the real turn-narration path, issue #62). `chunks` is always non-empty here;
+ * kokoroTts.ts skips sending the request at all for empty text.
  *
  * WebGPU fallback (issue #51) has two separate places it can trigger, both handled here rather
  * than only in loadWithFallback: no adapter at all surfaces the moment `loadWithFallback` tries to
@@ -274,14 +307,64 @@ async function doSpeak(requestId: number, chunks: string[], voice: string, prefe
   post({ kind: 'audio', requestId, blob: stitchAudio(generated) })
 }
 
+/**
+ * Generates every chunk, posting each one's raw audio (`chunkAudio`) the instant it's ready
+ * instead of waiting for the whole turn and stitching a blob (issue #62, replacing #44's
+ * wait-for-everything design now that pre-generation genuinely runs off the main thread — see this
+ * file's doc comment for what changed since #44). `chunks` is always non-empty here; kokoroTts.ts
+ * skips sending the request at all for empty text.
+ *
+ * WebGPU fallback (issue #51) restarts the whole job from chunk 0 on WASM exactly like doSpeak's —
+ * see that function's doc comment for why. The difference here is that some of chunks 0..N-1 may
+ * already have been posted — and be playing — by the time chunk N fails on the GPU: this still
+ * re-generates and re-posts *every* chunk from 0 on WASM rather than resuming from N, same
+ * "restart, don't resume" posture as the non-streaming path (and the same one
+ * kokoro-webgpu-backend.spec.ts already asserts on at the generation level). The de-duplication
+ * that keeps already-heard chunks from playing twice lives on the *main thread*
+ * (kokoroTts.ts's nextExpectedChunkIndex) — this worker has no visibility into playback at all, so
+ * it can't be the one to skip a resend.
+ */
+async function doSpeakStream(
+  requestId: number,
+  chunks: string[],
+  voice: string,
+  preferredDevice: KokoroDevice,
+): Promise<void> {
+  // Same "always settle the request" reasoning as doSpeak.
+  if (requestId !== currentSpeakRequestId) {
+    post({ kind: 'done', requestId })
+    return
+  }
+  const { tts, device } = await loadWithFallback(preferredDevice)
+  const postChunk = (index: number, audio: Float32Array, samplingRate: number) => {
+    // Transfers the sample buffer rather than structured-cloning it — a chunk can be a few hundred
+    // KB of Float32 samples, and nothing on this side reads it again after posting.
+    post({ kind: 'chunkAudio', requestId, index, total: chunks.length, audio, samplingRate }, [audio.buffer])
+  }
+  try {
+    await generateChunks(requestId, tts, chunks, voice, postChunk)
+  } catch (err) {
+    if (device !== 'webgpu' || !isWebgpuFailure(err)) throw err
+    ttsPromises.delete('webgpu')
+    const wasmTts = await loadTts('wasm')
+    await generateChunks(requestId, wasmTts, chunks, voice, postChunk)
+    // Posted only once the WASM retry has actually produced a result — see doSpeak's identical fix.
+    post({ kind: 'backend', device: 'wasm' })
+  }
+  // Reached whether generateChunks completed normally or bailed out early as superseded (`null`)
+  // — either way there's nothing more to post for this requestId, matching doSpeak's identical
+  // "'done' is a safe stand-in" reasoning.
+  post({ kind: 'done', requestId })
+}
+
 function speak(requestId: number, chunks: string[], voice: string, device: KokoroDevice): Promise<void> {
   currentSpeakRequestId = requestId
-  const job = speakQueue.then(() => doSpeak(requestId, chunks, voice, device))
-  // Keep the queue itself alive even when a job rejects, so one failed/superseded turn doesn't
-  // permanently wedge every 'speak' request queued after it — the rejection still propagates to
-  // this call's own caller (the message handler's `.catch(fail)`) via `job`, just not the queue.
-  speakQueue = job.catch(() => {})
-  return job
+  return runSpeakJob(() => doSpeak(requestId, chunks, voice, device))
+}
+
+function speakStream(requestId: number, chunks: string[], voice: string, device: KokoroDevice): Promise<void> {
+  currentSpeakRequestId = requestId
+  return runSpeakJob(() => doSpeakStream(requestId, chunks, voice, device))
 }
 
 ctx.addEventListener('message', (event) => {
@@ -304,6 +387,9 @@ ctx.addEventListener('message', (event) => {
       break
     case 'speak':
       speak(message.requestId, message.chunks, message.voice, message.device).catch(fail)
+      break
+    case 'speakStream':
+      speakStream(message.requestId, message.chunks, message.voice, message.device).catch(fail)
       break
     case 'evict':
       // Drops every loaded backend's reference so the next load/speak starts genuinely fresh —

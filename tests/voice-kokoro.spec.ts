@@ -4,7 +4,11 @@ import {
   installControllableAudioPlayback,
   installFakeAudioPlayback,
 } from "./mocks/elevenLabs";
-import { getKokoroWorker, installFakeKokoroModule } from "./mocks/kokoro";
+import {
+  getKokoroWorker,
+  installControllableWebAudioPlayback,
+  installFakeKokoroModule,
+} from "./mocks/kokoro";
 import {
   createRandomCampaign,
   setCampaignVoiceProviders,
@@ -387,11 +391,15 @@ test.describe("Kokoro voice picker", () => {
   }) => {
     // #39: the Media Session wiring is provider-agnostic (driven from Play.tsx's single
     // speakText, not per-provider) — confirm it actually engages for Kokoro too, not just the
-    // browser provider covered in depth by media-session.spec.ts. Not the auto-ending audio
-    // fake — this needs a stable window where playback is still genuinely "playing".
+    // browser provider covered in depth by media-session.spec.ts. Not the auto-ending fake — this
+    // needs a stable window where playback is still genuinely "playing". installControllableAudioPlayback
+    // (a `new Audio()` fake) no longer does anything for Kokoro turn playback since issue #62 moved
+    // it onto the Web Audio API — installControllableWebAudioPlayback is its equivalent for that:
+    // real Web Audio genuinely works headlessly here, but the fake kokoro-js module's near-zero-length
+    // generated audio would otherwise finish playing within microseconds of being scheduled.
     await installGoogleApiMock(page);
     await installFakeKokoroModule(page);
-    await installControllableAudioPlayback(page);
+    await installControllableWebAudioPlayback(page);
 
     await createRandomCampaign(page);
     await setCampaignVoiceProviders(page, { tts: "huggingface-local" });
@@ -421,7 +429,11 @@ test.describe("Kokoro voice picker", () => {
     // supersede it after only its first chunk is in flight.
     await installGoogleApiMock(page);
     await installFakeKokoroModule(page);
-    await installControllableAudioPlayback(page);
+    // See the Media Session test above for why this (not installControllableAudioPlayback) is the
+    // right fake now — real turn playback needs a stable "still playing" window for turn 2's
+    // assertions below, same reasoning, applied here on top of the generate()-gating this test
+    // already does for turn 1's supersession.
+    await installControllableWebAudioPlayback(page);
 
     await createRandomCampaign(page);
     await setCampaignVoiceProviders(page, { tts: "huggingface-local" });
