@@ -29,12 +29,20 @@ export type KokoroWorkerRequest =
    * if no adapter is available at all, same posture as a mid-generation device loss. */
   | { kind: 'load'; requestId: number; device: KokoroDevice }
   | { kind: 'listVoices'; requestId: number; device: KokoroDevice }
-  /** Generates every chunk and stitches them into one continuous clip — see kokoroTts.worker.ts's
-   * `speak()`. Also how generateKokoroPreview() gets its (single-chunk) clip, rather than a
-   * separate 'preview' message kind. `chunks` are pre-split by splitIntoSpeakableChunks on the
-   * main thread (pure string processing, no model needed — that function is unaffected by the
-   * worker split). `voice` may be empty/unrecognized; the worker falls back to DEFAULT_VOICE. */
+  /** Generates every chunk and stitches them into one continuous clip, replying with a single
+   * final 'audio' — see kokoroTts.worker.ts's `speak()`. Used only by generateKokoroPreview() for
+   * its short, fixed-text (almost always one-chunk) clip, where there's nothing to gain from
+   * streaming. `chunks` are pre-split by splitIntoSpeakableChunks on the main thread (pure string
+   * processing, no model needed — that function is unaffected by the worker split). `voice` may be
+   * empty/unrecognized; the worker falls back to DEFAULT_VOICE. */
   | { kind: 'speak'; requestId: number; chunks: string[]; voice: string; device: KokoroDevice }
+  /** Like 'speak', but replies with one 'chunkAudio' per chunk *as soon as that chunk finishes
+   * generating* instead of waiting for the whole job and stitching a final blob — see
+   * kokoroTts.worker.ts's `speakStream()`/`doSpeakStream()` (issue #62). Used by
+   * createKokoroTtsProvider's real turn-narration speak(), which schedules each chunk's raw audio
+   * for playback the moment it arrives rather than waiting on every chunk. Same `chunks`/`voice`/
+   * `device` shape as 'speak' — only the response shape differs. */
+  | { kind: 'speakStream'; requestId: number; chunks: string[]; voice: string; device: KokoroDevice }
   /** Drops every loaded backend's reference (both wasm and webgpu, if either is resident) — see
    * kokoroTts.worker.ts's 'evict' handler for why a single global evict is enough for a
    * single-model app, unlike localModelWorkerProtocol.ts's per-modelId evict. */
@@ -60,13 +68,29 @@ export type KokoroWorkerResponse =
    * the failure on every turn. Not addressed to a requestId, same reasoning as 'progress': it
    * describes a backend-wide fact, not one request's result. */
   | { kind: 'backend'; device: KokoroDevice }
-  /** Posted after each chunk finishes generating during a 'speak' job, so the caller can show real
-   * progress instead of a frozen "Generating…" for however long the whole turn's pre-generation
-   * takes — see kokoroTts.ts's onGenerateProgress. */
-  | { kind: 'chunkProgress'; requestId: number; completed: number; total: number }
+  /** Posted once per finished chunk during a 'speakStream' job (issue #62) — carries that chunk's
+   * *raw* samples (not yet WAV-encoded; see kokoroTts.ts's playback engine, which builds an
+   * AudioBuffer straight from these rather than decoding an encoded file) so the caller can start
+   * playing it immediately instead of waiting for the whole turn. `index` is 0-based and, together
+   * with `total`, doubles as this job's progress reporting (see kokoroTts.ts's onGenerateProgress)
+   * — a dedicated 'chunkProgress' response existed before this shipped but is redundant with this
+   * one now that every progress tick already carries a chunk's audio. `index` also lets the caller
+   * de-duplicate a chunk resent after a WebGPU-fallback restart (kokoroTts.worker.ts's doSpeak/
+   * doSpeakStream restart generation from chunk 0 on the fallback backend rather than resuming —
+   * see that file's doc comment — so a chunk already accepted once must not be scheduled again).
+   * `audio`'s underlying buffer is transferred, not cloned (see kokoroTts.worker.ts's postChunk) —
+   * nothing on the worker side reads it again after posting. */
+  | { kind: 'chunkAudio'; requestId: number; index: number; total: number; audio: Float32Array; samplingRate: number }
   | { kind: 'voices'; requestId: number; voices: KokoroWorkerVoice[] }
   /** The stitched (or, for a single-chunk preview, lone) clip — one continuous audio/wav Blob.
-   * Blobs are structured-clonable across a worker boundary with no manual transfer needed. */
+   * Blobs are structured-clonable across a worker boundary with no manual transfer needed. Only
+   * ever sent for a 'speak' request (generateKokoroPreview) — a 'speakStream' job's completion is
+   * signalled by 'done' instead, since it has no single blob to hand back. */
   | { kind: 'audio'; requestId: number; blob: Blob }
+  /** Signals a request is finished with nothing further coming — either a genuinely completed
+   * 'speakStream' job (every chunk already delivered via 'chunkAudio'), or any request (either
+   * kind) that turned out to be superseded before/while running — see kokoroTts.worker.ts's
+   * doSpeak/doSpeakStream for why 'done' doubles as the safe "nothing to report" reply in the
+   * superseded case. */
   | { kind: 'done'; requestId: number }
   | { kind: 'error'; requestId: number; message: string }

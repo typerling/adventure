@@ -69,19 +69,42 @@ export async function installFakeKokoroModule(
      * kokoroTts.worker.ts's loadWithFallback has something realistic to detect and recover from.
      * `device: 'wasm'` loads are unaffected. */
     failWebgpuLoad?: boolean;
-    /** Simulates a WebGPU device lost *after* a successful load — every `generate()` call against
-     * an instance loaded with `device: 'webgpu'` throws a device-lost-shaped error; a `'wasm'`-
-     * loaded instance is unaffected. Every call (successful or not) is still recorded onto
-     * `self.__kokoroGenerateAttempts` before the throw, so a test can see the failed webgpu
-     * attempt as well as the (wasm) calls that actually produced audio. */
-    failWebgpuGenerate?: boolean;
+    /** Simulates a WebGPU device lost *after* a successful load. `true` fails every `generate()`
+     * call against a `device: 'webgpu'` instance (device lost on the very first chunk); a number N
+     * instead lets the first N webgpu calls succeed and fails only the (N+1)th — for issue #62's
+     * streaming de-duplication tests, which need some chunks to have genuinely succeeded (and been
+     * streamed to the main thread, and scheduled for playback) on webgpu *before* the device is
+     * lost, so there's something for the WASM restart to risk re-playing. A `'wasm'`-loaded
+     * instance is never affected either way. Every attempt (successful or not) is still recorded
+     * onto `self.__kokoroGenerateAttempts` before a throw, so a test can see the failed webgpu
+     * attempt(s) as well as the (wasm) calls that actually produced audio. */
+    failWebgpuGenerate?: boolean | number;
+    /** Seconds of (silent) audio each generated chunk contains — default 2 samples (~0ms), enough
+     * for a valid playable buffer but not enough to schedule/measure real playback duration against.
+     * kokoro-streaming-playback.spec.ts's gapless-scheduling test sets this to something non-trivial
+     * so consecutive chunks' computed AudioContext start times are far enough apart to assert on
+     * without floating-point noise. */
+    chunkDurationSec?: number;
+    /** Hangs the (0-based) `callIndex`th `generate()` call indefinitely until
+     * `self.__releaseKokoroGenerate()` is called — baked into the module at install time (unlike
+     * `self.__kokoroGeneratePause`, a plain runtime flag) specifically so there's no race between a
+     * test setting the gate and the worker racing ahead of it: the worker doesn't even exist until
+     * the first call that needs Kokoro, so a runtime flag can't reliably be set before generation
+     * starts without first waiting for calls before the one being targeted, which the caller may not
+     * want to let run unthrottled. Lets a test allow earlier chunks (e.g. chunk 0) to generate and
+     * play for real, deterministically, while halting at a specific later chunk. */
+    pauseAtCallIndex?: number;
   } = {},
 ): Promise<void> {
   const voices = opts.voices ?? FAKE_KOKORO_VOICES;
   const fakeModule = `
     const VOICES = ${JSON.stringify(voices)}
     const FAIL_WEBGPU_LOAD = ${opts.failWebgpuLoad ? "true" : "false"}
-    const FAIL_WEBGPU_GENERATE = ${opts.failWebgpuGenerate ? "true" : "false"}
+    const FAIL_WEBGPU_GENERATE = ${JSON.stringify(opts.failWebgpuGenerate ?? false)}
+    const PAUSE_AT_CALL_INDEX = ${JSON.stringify(opts.pauseAtCallIndex ?? null)}
+    const SAMPLE_RATE = 24000
+    const CHUNK_LENGTH = Math.max(2, Math.round(${opts.chunkDurationSec ?? 0} * SAMPLE_RATE))
+    let webgpuSuccessCount = 0
     export class KokoroTTS {
       constructor(device) { this.device = device }
       static async from_pretrained(modelId, options) {
@@ -103,27 +126,39 @@ export async function installFakeKokoroModule(
       async generate(text, options) {
         self.__kokoroGenerateAttempts = self.__kokoroGenerateAttempts || []
         self.__kokoroGenerateAttempts.push({ text, device: this.device })
-        if (FAIL_WEBGPU_GENERATE && this.device === 'webgpu') {
+        const shouldFailNow =
+          this.device === 'webgpu' &&
+          (FAIL_WEBGPU_GENERATE === true ||
+            (typeof FAIL_WEBGPU_GENERATE === 'number' && webgpuSuccessCount === FAIL_WEBGPU_GENERATE))
+        if (shouldFailNow) {
           // Shaped like ONNX Runtime's real "device lost" C++ message — see
           // kokoroTts.worker.ts's isWebgpuFailure doc comment for why this specific wording.
           throw new Error('Device is lost: reason unknown [reset] - description not available')
         }
+        if (this.device === 'webgpu') webgpuSuccessCount++
         const voice = (options && options.voice) || 'af_heart'
         self.__kokoroGenerateCalls = self.__kokoroGenerateCalls || []
+        const callIndex = self.__kokoroGenerateCalls.length
         self.__kokoroGenerateCalls.push({ text, voice, device: this.device })
-        // Recorded before this optional gate, so a test can observe the call happened while still
+        // Recorded before either gate below, so a test can observe the call happened while still
         // controlling exactly when it resolves — lets a test simulate acting (selecting a voice,
-        // closing the dialog) while a preview is still in flight, deterministically.
+        // closing the dialog) while a preview is still in flight, or asserting mid-turn streaming
+        // state, deterministically.
         if (self.__kokoroGeneratePause) await self.__kokoroGeneratePause
-        // audio/sampling_rate: what kokoroTts.worker.ts's stitchAudio() actually reads off the
-        // real RawAudio-shaped return value (see its doc comment) — a couple of silent samples is
-        // enough for a valid, playable (silent) clip without faking real speech synthesis. No
-        // toBlob() here (unlike the real RawAudio) — production code only ever reads .audio/
-        // .sampling_rate directly and builds its own WAV, so a fake toBlob would just be unused
-        // surface implying an API nothing calls.
+        // See PAUSE_AT_CALL_INDEX's doc comment above for why this is baked in at install time
+        // rather than a runtime-settable flag like the gate above.
+        if (PAUSE_AT_CALL_INDEX === callIndex) {
+          await new Promise((resolve) => { self.__releaseKokoroGenerate = resolve })
+        }
+        // audio/sampling_rate: what kokoroTts.worker.ts's doSpeak/doSpeakStream actually read off
+        // the real RawAudio-shaped return value (see stitchAudio's doc comment) — a couple of
+        // silent samples is enough for a valid, playable (silent) chunk without faking real speech
+        // synthesis. No toBlob() here (unlike the real RawAudio) — production code only ever reads
+        // .audio/.sampling_rate directly, so a fake toBlob would just be unused surface implying an
+        // API nothing calls.
         return {
-          audio: new Float32Array([0, 0]),
-          sampling_rate: 24000,
+          audio: new Float32Array(CHUNK_LENGTH),
+          sampling_rate: SAMPLE_RATE,
         }
       }
     }
@@ -153,4 +188,156 @@ export async function installFakeKokoroModule(
   // network, hanging/timing out rather than giving a clear "mock didn't intercept" failure.
   // Aborting the real endpoints turns that into an immediate, obvious test failure instead.
   await page.route(/huggingface\.co|hf\.co/, (route) => route.abort("failed"));
+}
+
+/**
+ * Instruments the *real* Web Audio API (kept genuinely functional — see
+ * kokoro-streaming-playback.spec.ts's doc comment for why headless Chromium in this sandbox
+ * actually runs it, unlike a real audio device) rather than replacing it, so a test can observe
+ * exactly when kokoroTts.ts's playback engine calls `AudioBufferSourceNode.start()`/`.stop()`
+ * without altering real scheduling/timing behavior at all. Records each call's `performance.now()`
+ * onto `window.__kokoroSourceStarts`/`__kokoroSourceStops` (chronological order), the Web-Audio
+ * equivalent of the old per-turn `new Audio()`-construction counter this replaces — proof that a
+ * chunk genuinely reached playback, not just that the "Stop playback" button's optimistic UI state
+ * flipped (see kokoroTts.ts's own doc comment on why that button alone can't tell "still
+ * generating" from "now actually playing").
+ */
+export async function installKokoroSourceTracking(page: Page): Promise<void> {
+  await page.addInitScript(() => {
+    const proto = AudioBufferSourceNode.prototype;
+    const originalStart = proto.start;
+    const originalStop = proto.stop;
+    const w = window as unknown as {
+      __kokoroSourceStarts?: { at: number; when: number }[];
+      __kokoroSourceStops?: { at: number }[];
+    };
+    w.__kokoroSourceStarts = [];
+    w.__kokoroSourceStops = [];
+    proto.start = function (this: AudioBufferSourceNode, ...args: Parameters<typeof originalStart>) {
+      w.__kokoroSourceStarts!.push({ at: performance.now(), when: args[0] ?? 0 });
+      return originalStart.apply(this, args);
+    };
+    proto.stop = function (this: AudioBufferSourceNode, ...args: Parameters<typeof originalStop>) {
+      w.__kokoroSourceStops!.push({ at: performance.now() });
+      return originalStop.apply(this, args);
+    };
+  });
+}
+
+/**
+ * Fully fakes the Web Audio surface kokoroTts.ts's streaming playback uses (`AudioContext`/
+ * `AudioBuffer`/`AudioBufferSourceNode`) — for tests that need a *stable* "still playing" window
+ * rather than real timing. Real Web Audio genuinely works headlessly here (see
+ * kokoro-streaming-playback.spec.ts), but the fake `kokoro-js` module above generates
+ * near-zero-length audio (two samples), so a *real* scheduled buffer would fire 'ended' within
+ * microseconds — no usable window for a test to assert "genuinely still playing" against before it
+ * naturally ends. Mirrors installFakeAudioPlayback/installControllableAudioPlayback's dual
+ * auto-end/never-end split for the old `new Audio()`-per-turn model, applied to the Web Audio
+ * surface instead: `autoEnd: true` fires 'ended' on the next macrotask after `start()` (like
+ * installFakeAudioPlayback); the default, `autoEnd: false`, never fires it on its own (like
+ * installControllableAudioPlayback) — a scheduled source stays "playing" until the test's own
+ * assertions are done or the page navigates away, and `.stop()` still fires 'ended' explicitly (a
+ * real AudioBufferSourceNode does the same), so kokoroTts.ts's stop()-path resolution still works.
+ * Every started source is still recorded onto `window.__kokoroSourceStarts`, same shape as
+ * installKokoroSourceTracking, so assertions written against one work against the other.
+ */
+async function installFakeWebAudio(page: Page, autoEnd: boolean): Promise<void> {
+  await page.addInitScript((autoEnd: boolean) => {
+    class FakeAudioBuffer {
+      numberOfChannels: number;
+      length: number;
+      sampleRate: number;
+      private data: Float32Array;
+      constructor(numberOfChannels: number, length: number, sampleRate: number) {
+        this.numberOfChannels = numberOfChannels;
+        this.length = length;
+        this.sampleRate = sampleRate;
+        this.data = new Float32Array(length);
+      }
+      get duration() {
+        return this.length / this.sampleRate;
+      }
+      getChannelData() {
+        return this.data;
+      }
+      copyToChannel(source: Float32Array) {
+        this.data.set(source);
+      }
+    }
+    class FakeSourceNode extends EventTarget {
+      buffer: FakeAudioBuffer | null = null;
+      onended: (() => void) | null = null;
+      private startedAt: number | null = null;
+      connect() {}
+      start(when?: number) {
+        this.startedAt = performance.now();
+        const w = window as unknown as { __kokoroSourceStarts?: { at: number; when: number }[] };
+        w.__kokoroSourceStarts = w.__kokoroSourceStarts ?? [];
+        w.__kokoroSourceStarts.push({ at: this.startedAt, when: when ?? 0 });
+        if (autoEnd) setTimeout(() => this.onended?.(), 0);
+      }
+      stop() {
+        // Real AudioBufferSourceNode.stop() dispatches 'ended' even when called before the node's
+        // scheduled time arrives — mirrored here so kokoroTts.ts's stop()-triggered resolution path
+        // (which relies on that for a node that hasn't audibly started yet) works against this fake
+        // too, not just against real Web Audio.
+        if (this.startedAt !== null) this.onended?.();
+      }
+    }
+    class FakeAudioContext {
+      state = "running";
+      currentTime = 0;
+      destination = {};
+      createBuffer(numberOfChannels: number, length: number, sampleRate: number) {
+        return new FakeAudioBuffer(numberOfChannels, length, sampleRate);
+      }
+      createBufferSource() {
+        return new FakeSourceNode();
+      }
+      resume() {
+        this.state = "running";
+        return Promise.resolve();
+      }
+    }
+    Object.defineProperty(window, "AudioContext", { value: FakeAudioContext, configurable: true });
+    Object.defineProperty(window, "webkitAudioContext", { value: FakeAudioContext, configurable: true });
+  }, autoEnd);
+}
+
+/** Like installFakeAudioPlayback, but for kokoroTts.ts's Web Audio-based turn playback — fires
+ * 'ended' on every scheduled chunk almost immediately. */
+export async function installFakeWebAudioPlayback(page: Page): Promise<void> {
+  await installFakeWebAudio(page, true);
+}
+
+/** Like installControllableAudioPlayback, but for kokoroTts.ts's Web Audio-based turn playback —
+ * a scheduled chunk never fires 'ended' on its own. */
+export async function installControllableWebAudioPlayback(page: Page): Promise<void> {
+  await installFakeWebAudio(page, false);
+}
+
+/**
+ * Waits until no *new* chunk has reached playback (`window.__kokoroSourceStarts` — see
+ * installKokoroSourceTracking/installControllableWebAudioPlayback) for a short stretch, then
+ * returns however many have. Streaming (issue #62) means a turn's audio is no longer signalled
+ * "fully generated" by one single event a test can await (the old model's one `new Audio()`
+ * construction, after the whole stitched clip was ready) — a genuinely-complete WebGPU-fallback
+ * job in particular streams chunks across *two* generation passes (the failed webgpu attempt(s),
+ * then a full WASM restart — see kokoroTts.worker.ts's doSpeakStream), so polling for "at least
+ * one chunk started" alone would race a still-in-flight restart. This polls at a fixed, short
+ * interval instead of a single blind wait, so it settles as soon as generation genuinely stops
+ * producing new chunks rather than always waiting a fixed worst-case duration.
+ */
+export async function waitForKokoroPlaybackToStabilize(page: Page): Promise<number> {
+  let last = -1;
+  let stableRounds = 0;
+  while (stableRounds < 3) {
+    const count = await page.evaluate(
+      () => (window as unknown as { __kokoroSourceStarts?: unknown[] }).__kokoroSourceStarts?.length ?? 0,
+    );
+    stableRounds = count === last && count > 0 ? stableRounds + 1 : 0;
+    last = count;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return last;
 }
