@@ -106,6 +106,12 @@ async function loadWithFallback(preferred: KokoroDevice): Promise<{ tts: unknown
   } catch (err) {
     if (!isWebgpuFailure(err)) throw err
     ttsPromises.delete('webgpu')
+    // Post the fallback notice only once the WASM load has actually succeeded — matches
+    // localModel.worker.ts's generate(), which reports its own CPU fallback only after the CPU
+    // run has actually produced a reply, not before attempting it; found (and originally missed
+    // here) in independent review of the PR this shipped in. A WASM load failure right after a
+    // WebGPU one should surface as its own error, not pin the UI to a backend that never actually
+    // came up.
     const tts = await loadTts('wasm')
     post({ kind: 'backend', device: 'wasm' })
     return { tts, device: 'wasm' }
@@ -254,8 +260,12 @@ async function doSpeak(requestId: number, chunks: string[], voice: string, prefe
     if (device !== 'webgpu' || !isWebgpuFailure(err)) throw err
     ttsPromises.delete('webgpu')
     const wasmTts = await loadTts('wasm')
-    post({ kind: 'backend', device: 'wasm' })
+    // Posted only once the WASM retry has actually produced a result (matching
+    // loadWithFallback's identical fix, and localModel.worker.ts's pattern this mirrors) — not
+    // before attempting it, so a second, genuine failure on WASM propagates as a normal error
+    // instead of a UI that already claims the fallback backend is in use.
     generated = await generateChunks(requestId, wasmTts, chunks, voice)
+    post({ kind: 'backend', device: 'wasm' })
   }
   if (generated === null) {
     post({ kind: 'done', requestId })
