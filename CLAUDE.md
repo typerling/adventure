@@ -382,6 +382,50 @@ philosophy as the AI backend. Three implementations exist (Kokoro is TTS-only):
   override from this suite's default-`'block'` — see `playwright.config.ts`'s comment on why
   service workers are blocked everywhere else) and the sign-in recovery path.
 
+  **Opt-in WebGPU backend.** Kokoro also has a selectable WebGPU backend now (issue #51),
+  layered on top of the cross-origin-isolated multi-threaded WASM above rather than replacing it:
+  default stays `wasm` (`kokoroConstants.ts`'s `KokoroDevice`), preserving the no-hard-gate
+  guarantee this section opened with — WebGPU is a better-when-available opt-in, picked per device
+  in Settings' "Kokoro voice model" card ("Run on: CPU / GPU"), mirroring the local text models'
+  identical toggle (`localModel.ts`'s `getLocalModelDevice`/`setLocalModelDevice`) but as a single
+  global preference rather than one keyed by model id — Kokoro is exactly one model, unlike the
+  text-model catalog. `kokoroTts.worker.ts`'s `loadWithFallback`/`doSpeak` mirror
+  `localModel.worker.ts`'s device-lost-mid-generation fallback: WebGPU failing to load at all (no
+  adapter) or losing the device mid-turn both fall back to WASM once, restarting the *whole* turn's
+  chunks there rather than resuming — the failed chunk is retried too, not skipped — and the
+  fallback is remembered (`localStorage`, reset by "Remove") so a device that can't sustain WebGPU
+  doesn't rediscover that the expensive way on every turn. `tests/kokoro-webgpu-backend.spec.ts`
+  covers both fallback paths against a fake `kokoro-js` that can simulate either failure on demand
+  (see `tests/mocks/kokoro.ts`'s `failWebgpuLoad`/`failWebgpuGenerate`).
+
+  **Dtype-on-WebGPU finding.** `kokoro-js`'s README recommends `dtype: 'fp32'` for `device:
+  'webgpu'` — 326 MB, versus the WASM path's 92.4 MB `q8` (`model_quantized.onnx`). Before
+  accepting that 3.5x download increase at face value, the two smaller quantized candidates on
+  `onnx-community/Kokoro-82M-v1.0-ONNX` were checked against the *installed* kokoro-js@1.2.1 (its
+  own bundled `@huggingface/transformers` **v3.8.1**, a separate copy from this app's own v4 — see
+  the caching-caveat paragraph above): `q8f16` (86 MB) is not a valid dtype **at all** in this
+  version — its `DATA_TYPES` table (`utils/dtypes.js`) has no `q8f16` entry, and the shared
+  `getSession()` every `from_pretrained()` call goes through (confirmed for
+  `StyleTextToSpeech2Model`, kokoro-js's own model class, not assumed) throws `Invalid dtype:
+  q8f16...` for anything not in that table — this rules it out by code inspection, not a quality
+  judgment. `q4f16` (155 MB) *is* valid, and is exactly what this app's local text models already
+  request for their own WebGPU path (`LOCAL_MODEL_GPU_DTYPE`) — a real precedent for this dtype on
+  this onnxruntime-web/transformers stack, but for a text decoder's logits, not a vocoder's raw
+  waveform — quantization artifacts are a different failure mode for audio, so that precedent
+  doesn't settle whether `q4f16` *sounds* fine here. A real listen test was the plan, but this
+  environment has no WebGPU available to run it: headless Chromium here reports `navigator.gpu` as
+  `undefined` regardless of `--enable-unsafe-webgpu`, `--enable-unsafe-swiftshader`,
+  `--use-angle=swiftshader`, `--ignore-gpu-blocklist`, or Vulkan-backend variants — the container
+  has no `/dev/dri` GPU device nodes at all, confirmed by checking for them directly, one step
+  further than the "headless Chromium crashes on large WASM/WebGPU payloads" limitation the
+  cross-origin-isolation work above hit (there, a context existed to attempt generation in; here,
+  no WebGPU context can be obtained in the first place). Given that — "don't just guess" — this
+  ships `fp32` (`KOKORO_WEBGPU_DTYPE` in `kokoroConstants.ts`) as the safe default, deferring to
+  kokoro-js's own tested README recommendation rather than shipping an unverified-for-audio
+  quantization. `q4f16` is left documented as the next thing to verify on real WebGPU hardware —
+  swap that one constant if a real listen test confirms it holds up; it would be a strict win
+  (155 MB vs 326 MB, still faster than WASM).
+
 `getProvider.ts` resolves a `CampaignSettings` provider choice to an implementation, plus
 `isSttProviderAvailable`/`isTtsProviderAvailable` for gating UI before an API key is even needed
 (missing-key errors surface later, as a toast, when actually used — not by hiding controls, since

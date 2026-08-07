@@ -60,24 +60,57 @@ export const FAKE_KOKORO_VOICES: Record<string, FakeKokoroVoice> = {
 
 export async function installFakeKokoroModule(
   page: Page,
-  opts: { voices?: Record<string, FakeKokoroVoice> } = {},
+  opts: {
+    voices?: Record<string, FakeKokoroVoice>;
+    /** Simulates "no WebGPU adapter available at all" (issue #51's opt-in WebGPU backend) —
+     * `KokoroTTS.from_pretrained()` rejects for `device: 'webgpu'` with the exact message
+     * onnxruntime-web uses for that case (verified against the installed package's bundled
+     * source, see kokoroTts.worker.ts's isWebgpuFailure doc comment), so
+     * kokoroTts.worker.ts's loadWithFallback has something realistic to detect and recover from.
+     * `device: 'wasm'` loads are unaffected. */
+    failWebgpuLoad?: boolean;
+    /** Simulates a WebGPU device lost *after* a successful load — every `generate()` call against
+     * an instance loaded with `device: 'webgpu'` throws a device-lost-shaped error; a `'wasm'`-
+     * loaded instance is unaffected. Every call (successful or not) is still recorded onto
+     * `self.__kokoroGenerateAttempts` before the throw, so a test can see the failed webgpu
+     * attempt as well as the (wasm) calls that actually produced audio. */
+    failWebgpuGenerate?: boolean;
+  } = {},
 ): Promise<void> {
   const voices = opts.voices ?? FAKE_KOKORO_VOICES;
   const fakeModule = `
     const VOICES = ${JSON.stringify(voices)}
+    const FAIL_WEBGPU_LOAD = ${opts.failWebgpuLoad ? "true" : "false"}
+    const FAIL_WEBGPU_GENERATE = ${opts.failWebgpuGenerate ? "true" : "false"}
     export class KokoroTTS {
+      constructor(device) { this.device = device }
       static async from_pretrained(modelId, options) {
         self.__kokoroLoadCalls = (self.__kokoroLoadCalls || 0) + 1
+        const device = (options && options.device) || 'wasm'
+        self.__kokoroLoadDevices = self.__kokoroLoadDevices || []
+        self.__kokoroLoadDevices.push(device)
+        if (FAIL_WEBGPU_LOAD && device === 'webgpu') {
+          // The exact string onnxruntime-web throws when device: 'webgpu' is requested with no
+          // usable adapter — see ort.webgpu.mjs / ort.all.mjs's shared backend-registration check.
+          throw new Error('WebGPU is not supported in current environment')
+        }
         if (options && options.progress_callback) {
           options.progress_callback({ status: 'ready' })
         }
-        return new KokoroTTS()
+        return new KokoroTTS(device)
       }
       get voices() { return VOICES }
       async generate(text, options) {
+        self.__kokoroGenerateAttempts = self.__kokoroGenerateAttempts || []
+        self.__kokoroGenerateAttempts.push({ text, device: this.device })
+        if (FAIL_WEBGPU_GENERATE && this.device === 'webgpu') {
+          // Shaped like ONNX Runtime's real "device lost" C++ message — see
+          // kokoroTts.worker.ts's isWebgpuFailure doc comment for why this specific wording.
+          throw new Error('Device is lost: reason unknown [reset] - description not available')
+        }
         const voice = (options && options.voice) || 'af_heart'
         self.__kokoroGenerateCalls = self.__kokoroGenerateCalls || []
-        self.__kokoroGenerateCalls.push({ text, voice })
+        self.__kokoroGenerateCalls.push({ text, voice, device: this.device })
         // Recorded before this optional gate, so a test can observe the call happened while still
         // controlling exactly when it resolves — lets a test simulate acting (selecting a voice,
         // closing the dialog) while a preview is still in flight, deterministically.

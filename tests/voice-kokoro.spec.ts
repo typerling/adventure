@@ -94,10 +94,13 @@ test("an already-downloaded Kokoro voice model shows as ready and can be removed
   // 'transformers-cache' bucket, keyed by the model's download URL) rather than performing a real
   // download of actual ONNX weights, which a test can't fake. This exercises the same
   // hasDownloadedKokoroModel()/removeKokoroModel() paths a genuine download leaves behind.
+  // `model_quantized.onnx` is the real filename the default 'wasm'/`q8` backend downloads (issue
+  // #51's KOKORO_DTYPE_SUFFIX) — hasDownloadedKokoroModel() is now scoped to the selected
+  // backend's own file, so this has to match exactly, not just contain "Kokoro" anywhere.
   await page.evaluate(async () => {
     const cache = await caches.open("transformers-cache");
     await cache.put(
-      "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/onnx/model_q8.onnx",
+      "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/onnx/model_quantized.onnx",
       new Response(new ArrayBuffer(8)),
     );
   });
@@ -519,7 +522,7 @@ test.describe("Kokoro voice picker", () => {
     await page.evaluate(async () => {
       const cache = await caches.open("transformers-cache");
       await cache.put(
-        "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/onnx/model_q8.onnx",
+        "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/onnx/model_quantized.onnx",
         new Response(new ArrayBuffer(8)),
       );
     });

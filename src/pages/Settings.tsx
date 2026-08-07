@@ -75,11 +75,14 @@ import {
   DEFAULT_VOICE as KOKORO_DEFAULT_VOICE,
   describeKokoroProgress,
   generateKokoroPreview,
+  getKokoroDevice,
   getKokoroLoadState,
   hasDownloadedKokoroModel,
   listKokoroVoices,
   preloadKokoroModel,
   removeKokoroModel,
+  setKokoroDevice,
+  type KokoroDevice,
   type KokoroVoice,
 } from "@/lib/voice/kokoroTts";
 
@@ -147,6 +150,12 @@ export function Settings() {
     number | null
   >(null);
   const [removingVoiceModel, setRemovingVoiceModel] = useState(false);
+  // Which backend Kokoro TTS runs on — seeded from storage when this screen mounts and updated
+  // when changed here, same "an automatic fallback happens outside React, so it shows up next
+  // time Settings is opened rather than live" caveat as LocalModelRowState.device.
+  const [voiceDevice, setVoiceDevice] = useState<KokoroDevice>(() =>
+    getKokoroDevice(),
+  );
   const [voicePickerOpen, setVoicePickerOpen] = useState(false);
   const [voices, setVoices] = useState<ElevenLabsVoice[]>([]);
   const [voicesLoadState, setVoicesLoadState] = useState<
@@ -576,6 +585,9 @@ export function Settings() {
     try {
       await removeKokoroModel();
       setVoiceLoadState("unloaded");
+      // removeKokoroModel() resets the backend preference to 'wasm' — mirror that here so the
+      // "Run on" selector doesn't keep showing a stale 'webgpu' after Remove.
+      setVoiceDevice("wasm");
       // The voice picker's own list is now stale (it belonged to the model instance that just got
       // evicted) — reset it back to idle so reopening "Browse voices" triggers a real reload
       // (with visible progress) instead of silently reusing a list from a model no longer resident,
@@ -589,6 +601,19 @@ export function Settings() {
     } finally {
       setRemovingVoiceModel(false);
     }
+  }
+
+  /** Switching backends means a different build of the model, so "downloaded" has to be asked
+   * again rather than carried over — same reasoning as changeModelDevice for the local text
+   * models. */
+  async function changeVoiceDevice(device: KokoroDevice) {
+    await setKokoroDevice(device);
+    setVoiceDevice(device);
+    setVoiceLoadState("unloaded");
+    setVoiceStatusMessage("");
+    setVoiceDownloadProgress(null);
+    const downloaded = await hasDownloadedKokoroModel().catch(() => false);
+    setVoiceLoadState(downloaded ? "ready" : "unloaded");
   }
 
   return (
@@ -1195,13 +1220,52 @@ export function Settings() {
           <CardTitle>Kokoro voice model</CardTitle>
           <CardDescription>
             Used by any campaign set to "Kokoro (on-device, runs locally)" for
-            text-to-speech — no key, no server, and no WebGPU needed. Downloads
-            once, then generates speech entirely on this device. Download it
-            ahead of time here so the first turn read aloud doesn't have to wait
-            on it.
+            text-to-speech — no key, no server. Runs on the CPU by default, so
+            no WebGPU is needed; WebGPU below is an optional, opt-in
+            alternative that's faster where it's supported. Downloads once,
+            then generates speech entirely on this device. Download it ahead
+            of time here so the first turn read aloud doesn't have to wait on
+            it.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
+          {/* Offered up front for the same reason the local text models' identical control is:
+              on a device whose WebGPU can't sustain Kokoro, waiting for the automatic fallback
+              costs a wasted generation every time it's rediscovered. */}
+          <div className="flex items-center gap-2">
+            <Label
+              className="text-xs text-muted-foreground"
+              htmlFor="kokoro-device"
+            >
+              Run on
+            </Label>
+            <Select
+              value={voiceDevice}
+              onValueChange={(v) => void changeVoiceDevice(v as KokoroDevice)}
+              // Switching mid-download would leave the in-flight load fetching the build for the
+              // backend just switched away from, whose completion would then mark the row ready
+              // for a backend whose files were never fetched.
+              disabled={voiceLoadState === "loading" || removingVoiceModel}
+            >
+              <SelectTrigger id="kokoro-device" className="h-8 w-[260px] text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="wasm">CPU — default, broadly compatible</SelectItem>
+                <SelectItem value="webgpu">
+                  GPU — faster where supported, larger download
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          {voiceDevice === "webgpu" && (
+            <p className="text-xs text-muted-foreground">
+              Uses a separate, larger download from the CPU version. Falls
+              back to the CPU automatically if this browser/device can't
+              sustain WebGPU (and remembers that, so it won't keep retrying
+              WebGPU on every turn).
+            </p>
+          )}
           {voiceLoadState === "ready" ? (
             <>
               <p className="text-sm text-muted-foreground">
