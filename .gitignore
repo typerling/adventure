@@ -15,5 +15,8 @@ playwright/.cache
 storybook-static
 
 # Local tooling state — background subagents (e.g. issue implementers spawned from planning
-# sessions) work in isolated git worktrees under .claude/worktrees/, not repo content.
-.claude
+# sessions) work in isolated git worktrees under .claude/worktrees/, not repo content. Local,
+# machine-specific settings aren't repo content either. .claude/skills/ (and anything else under
+# .claude/) IS repo content and should be tracked — e.g. the pm-workflow skill.
+.claude/worktrees/
+.claude/settings.local.json
