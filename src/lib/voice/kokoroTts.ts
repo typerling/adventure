@@ -580,6 +580,15 @@ export function createKokoroTtsProvider(opts: KokoroTtsOptions = {}): TtsProvide
       const token = ++playToken
       const isStale = () => token !== playToken
       stopScheduledSources()
+      // A new speak() call supersedes whatever call preceded it, same as stop() — settle that
+      // older call's own returned promise now. Without this, an old call's onChunkAudio callback
+      // just bails out via isStale() on every future chunk without ever reaching the resolve()
+      // that would otherwise settle it (that only happens for the *last* chunk, and only when not
+      // stale), leaving the promise pending forever whenever one turn's playback is superseded by
+      // another before its last chunk starts — the routine case for switching turns or
+      // auto-narrating a new turn over one still playing (found in independent review of #62).
+      settleCurrent?.()
+      settleCurrent = null
 
       await loadKokoro(opts.onLoadProgress)
       if (isStale()) return

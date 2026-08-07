@@ -224,3 +224,86 @@ test("consecutive chunks are scheduled back-to-back with no gap in the AudioCont
     expect(starts[i].when - starts[i - 1].when).toBeCloseTo(0.5, 5);
   }
 });
+
+test("speak() settles a superseded call's own promise instead of leaving it pending forever", async ({
+  page,
+}) => {
+  // Found in independent review of this issue's PR: a speak() call superseded by a *new* speak()
+  // call (not stop()) — the routine case for switching turns, since Play.tsx's speakText() never
+  // calls stop() before starting a new one, see its own comments — left its own returned promise
+  // pending forever. Its onChunkAudio callback bails out via isStale() on every later chunk
+  // without ever reaching the resolve() that only fires for the (here, never-reached, since
+  // superseded) last chunk, and settleCurrent — the mechanism meant to catch exactly this — was
+  // silently overwritten by the newer call's own assignment before the older call got a chance to
+  // use it. Exercised directly against the provider (bypassing Play.tsx) since the hang itself has
+  // no UI-visible symptom — Play.tsx's own `.finally()` side effects are already token-guarded
+  // against a stale call taking effect, so this is a resource leak, not a rendering bug; the only
+  // way to observe it is to hold a reference to the call's own promise, same as this test does.
+  await installGoogleApiMock(page);
+  await installFakeKokoroModule(page, { pauseAtCallIndex: 1 });
+
+  await page.goto("/");
+  const workerPromise = getKokoroWorker(page);
+
+  // Chunk 1 (index 1) of a two-sentence turn hangs indefinitely — call 1's own last chunk, so its
+  // promise cannot ever settle "naturally," isolating this test from any race with call 1
+  // finishing on its own before call 2 below has a chance to supersede it.
+  await page.evaluate(async () => {
+    const mod = await import("/src/lib/voice/kokoroTts.ts");
+    const w = window as unknown as {
+      __kokoroTestProvider?: ReturnType<typeof mod.createKokoroTtsProvider>;
+      __kokoroTestFirstSettled?: boolean;
+    };
+    const provider = mod.createKokoroTtsProvider();
+    w.__kokoroTestProvider = provider;
+    w.__kokoroTestFirstSettled = false;
+    provider.speak("First sentence stays. Second sentence stays stuck.", {}).finally(() => {
+      w.__kokoroTestFirstSettled = true;
+    });
+  });
+
+  const worker = await workerPromise;
+  // Call 1's first chunk has genuinely started generating — proof its own speak() call has
+  // already progressed past its two synchronous-ish isStale() checks and into its Promise
+  // executor (settleCurrent assigned to call 1's own resolve) before call 2 below supersedes it,
+  // not raced ahead of it.
+  await expect
+    .poll(() =>
+      worker.evaluate(
+        () => (self as unknown as { __kokoroGenerateCalls?: unknown[] }).__kokoroGenerateCalls?.length ?? 0,
+      ),
+    )
+    .toBeGreaterThanOrEqual(1);
+
+  // Confirms it genuinely hasn't settled yet, so the poll below is proving something rather than
+  // observing an already-true value.
+  expect(
+    await page.evaluate(
+      () => (window as unknown as { __kokoroTestFirstSettled?: boolean }).__kokoroTestFirstSettled,
+    ),
+  ).toBe(false);
+
+  // Supersede call 1 with a second, unrelated speak() call before its own last chunk ever reaches
+  // playback.
+  await page.evaluate(() => {
+    const w = window as unknown as {
+      __kokoroTestProvider?: { speak: (text: string, opts: Record<string, never>) => Promise<void> };
+    };
+    void w.__kokoroTestProvider?.speak("Unrelated second turn.", {});
+  });
+
+  // The core assertion: call 1's promise settles promptly once it's superseded, rather than
+  // hanging until this poll's default timeout is exhausted.
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as unknown as { __kokoroTestFirstSettled?: boolean }).__kokoroTestFirstSettled,
+      ),
+    )
+    .toBe(true);
+
+  // Release chunk 1's gate so nothing is left permanently hung in the worker after the test ends.
+  await worker.evaluate(() =>
+    (self as unknown as { __releaseKokoroGenerate?: () => void }).__releaseKokoroGenerate?.(),
+  );
+});
