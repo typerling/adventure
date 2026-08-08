@@ -228,6 +228,8 @@ export function Settings() {
       campaignName,
       showReadAloudToggle: false,
       turnLabel: null,
+      recapSummary: null,
+      activeQuests: [],
     });
     return () => setHeaderContext(null);
   }, [campaignId, campaignName, setHeaderContext]);

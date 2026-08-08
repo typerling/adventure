@@ -12,6 +12,10 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { usePlayHeaderStore } from '@/store/playHeaderStore'
 
+/** Max active quests listed before collapsing the rest into a "+N more" line — this dialog is a
+ * quick glance to re-orient after stepping away, not a full quest log (that's the Codex). */
+const RECAP_QUEST_DISPLAY_LIMIT = 5
+
 /**
  * The app's persistent top bar. This is the header's *only* nav treatment now, at every viewport
  * width — there used to be two parallel systems (this header's Codex/Settings icons, visible only
@@ -25,6 +29,16 @@ import { usePlayHeaderStore } from '@/store/playHeaderStore'
  * read-aloud toggle and the turn/location info button stay as their own standalone icons next to
  * the trigger, not folded into the menu — both get used repeatedly mid-session, unlike the menu's
  * one-shot navigation actions.
+ *
+ * The info button's dialog (issue #24) is a "quick recap" for re-orienting after stepping away
+ * from a campaign: current location (the original, pre-#24 content) plus a short excerpt of the
+ * rolling summary and a compact list of active quests, both sourced from
+ * `usePlayHeaderStore`'s context — which Play.tsx populates entirely from data `useCampaign`
+ * already has loaded for the session (rolling summary, sheet snapshot), so opening this dialog
+ * never triggers a fresh Drive/Sheets read. Deliberately left out for this first pass: recently
+ * encountered NPCs and notable inventory changes (also floated in the issue) — kept out to keep
+ * this a quick glance rather than a full recap page; see the issue/PR for the reasoning and to
+ * ask for a follow-up if that call should go the other way.
  */
 export function Header() {
   const context = usePlayHeaderStore((s) => s.context)
@@ -128,9 +142,39 @@ export function Header() {
         <Dialog open={turnInfoOpen} onOpenChange={setTurnInfoOpen}>
           <DialogContent className="sm:max-w-sm">
             <DialogHeader>
-              <DialogTitle>Where you are</DialogTitle>
+              <DialogTitle>Recap</DialogTitle>
               <DialogDescription>{context.turnLabel}</DialogDescription>
             </DialogHeader>
+            {/* Both sections are optional — a brand-new campaign has no rolling summary yet and
+                may have no active quests, so this can render as just the location above (the
+                dialog's pre-issue-#24 behavior) with nothing empty-looking below it. */}
+            {(context.recapSummary || context.activeQuests.length > 0) && (
+              <div className="space-y-4 text-sm">
+                {context.recapSummary && (
+                  <div>
+                    <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">So far</h3>
+                    <p className="mt-1 text-foreground">{context.recapSummary}</p>
+                  </div>
+                )}
+                {context.activeQuests.length > 0 && (
+                  <div>
+                    <h3 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                      Active quests
+                    </h3>
+                    <ul className="mt-1 list-disc space-y-1 pl-4 text-foreground">
+                      {context.activeQuests.slice(0, RECAP_QUEST_DISPLAY_LIMIT).map((quest) => (
+                        <li key={quest.id}>{quest.title}</li>
+                      ))}
+                    </ul>
+                    {context.activeQuests.length > RECAP_QUEST_DISPLAY_LIMIT && (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        +{context.activeQuests.length - RECAP_QUEST_DISPLAY_LIMIT} more — see the Codex
+                      </p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
           </DialogContent>
         </Dialog>
       )}

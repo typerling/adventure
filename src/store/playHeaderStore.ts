@@ -9,6 +9,14 @@ export interface CampaignHeaderContext {
   /** "Turn N · <location>" — only Play.tsx sets this (null on Codex/Settings). Shown as a small
    * icon button (a toast on click) instead of as page body text. */
   turnLabel: string | null
+  /** A short excerpt of the rolling summary (see src/lib/recap.ts's buildRecapSummary), for the
+   * "quick recap" info dialog (issue #24). Only Play.tsx sets this non-null — Codex/Settings have
+   * nothing to show it against since their turnLabel is also null, which is what actually gates
+   * whether the dialog renders at all (see Header.tsx). */
+  recapSummary: string | null
+  /** Currently-active (not completed/failed) quests, for the same recap dialog — see
+   * src/lib/recap.ts's getActiveQuests. Always [] on Codex/Settings, same reasoning as above. */
+  activeQuests: { id: string; title: string }[]
 }
 
 interface PlayHeaderState {

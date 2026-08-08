@@ -27,6 +27,12 @@ import type {
 
 export const ROOT_FOLDER_NAME = 'Adventure'
 
+/** rolling.md's content immediately after campaign creation, before any turn has appended a
+ * `summary_update` to it. Exported so callers that want to distinguish "no story yet" from a real
+ * (if short) summary — e.g. the header's recap dialog, issue #24 — can do it by comparing against
+ * this exact string rather than duplicating the literal. */
+export const EMPTY_ROLLING_SUMMARY_PLACEHOLDER = '_No story yet — this campaign has not started._'
+
 export interface Library {
   rootId: string
   campaignsFolderId: string
@@ -132,7 +138,7 @@ export async function createCampaign(
   const storyFolder = await ensureFolder('story', folder.id)
   await ensureFolder('log', storyFolder.id)
   const summaryFolder = await ensureFolder('summary', storyFolder.id)
-  await ensureTextFile(summaryFolder.id, 'rolling.md', '_No story yet — this campaign has not started._')
+  await ensureTextFile(summaryFolder.id, 'rolling.md', EMPTY_ROLLING_SUMMARY_PLACEHOLDER)
 
   const characterRows: CharacterRow[] = input.character.filter((r) => r.key.trim())
   if (characterRows.length) {
