@@ -478,7 +478,17 @@ export function Play() {
               setStreamPreview(soFar)
             },
           })
-        : await generateClaudeReply(promptText, settings?.claudeModel ?? 'claude-sonnet-5')
+        : await generateClaudeReply(promptText, settings?.claudeModel ?? 'claude-sonnet-5', {
+            // Claude has no separate "loading" phase the way a local model does (no download to
+            // wait on), so this only ever narrates the same "Generating your turn…" status this
+            // branch already started with — kept here (rather than left implicit) so a future
+            // status change to that initial message can't silently drift out of sync between the
+            // two modes.
+            onToken: (soFar) => {
+              setStatusMessage('Generating your turn…')
+              setStreamPreview(soFar)
+            },
+          })
       setReply(text)
       await handleSubmitReply(text)
     } catch (err) {
@@ -648,8 +658,14 @@ export function Play() {
                 <div className="flex flex-col gap-2">
                   <p className="text-sm text-muted-foreground">{statusMessage}</p>
                   {downloadProgress !== null && <Progress value={downloadProgress} />}
-                  {isLocalMode && streamPreview && (
-                    <Textarea readOnly value={streamPreview} rows={6} className="font-mono text-xs" />
+                  {streamPreview && (
+                    <Textarea
+                      readOnly
+                      value={streamPreview}
+                      rows={6}
+                      aria-label="Streaming narrative preview"
+                      className="font-mono text-xs"
+                    />
                   )}
                 </div>
               )
