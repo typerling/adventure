@@ -154,6 +154,54 @@ function isPopupSeveredByIsolation(res: TokenResponse): boolean {
  * code level (tests/google-session-restore.spec.ts, tests/google-login-hint.spec.ts), but the
  * actual root-cause diagnosis and the fix's real-world effect both still need the project owner's
  * own device to confirm.
+ *
+ * **Reopen update (real-device evidence came back negative for PR #64's first attempt):** the
+ * project owner reported a real, visible accounts.google.com chooser opening automatically before
+ * they touched the app's own UI, listing all six stored accounts unnarrowed. Re-reading the code
+ * confirmed a real, previously-missed gap: `login_hint` was wired only into the manual `signIn()`
+ * call below, never into the two *automatic* silent-refresh call sites (this section's startup
+ * reauth, and getValidAccessToken's refresh) — both now pass it too, sourced from the same
+ * `getStoredLoginHint()`. GIS's reference docs describe `login_hint` as a property of the
+ * `requestAccessToken`/token-client config itself ("When successful, account selection is
+ * skipped"), with no restriction to interactive requests, so this should narrow/skip the chooser
+ * on the silent path the same way it already did for the manual button — that reasoning is
+ * unverified against a real device, same as everything else in this comment.
+ *
+ * Separately investigated, at the project owner's request, whether two `requestToken({prompt:''})`
+ * calls could genuinely race within one page load and produce the reported "flickers twice, then
+ * settles." Traced every caller: `getValidAccessToken`'s `inFlightRefresh` and the synchronous
+ * (no-`await`-before-check) guard in front of it mean concurrent callers within one tick
+ * coalesce into one request (tests/google-session-restore.spec.ts's "parallel calls" test proves
+ * this against an async fake GIS); the startup reauth below only ever runs once per module
+ * load; and `AuthGate`'s `'restoring'` gate keeps every Drive/Sheets-calling child (the only other
+ * caller of `getValidAccessToken`) unmounted until that startup request has already settled — so
+ * within a *single, uninterrupted* page load there's no code path that fires two silent requests
+ * concurrently. tests/google-login-hint.spec.ts's new "no duplicate silent request" coverage
+ * exercises this directly against a call-counting fake GIS.
+ *
+ * That doesn't leave the flicker unexplained, though — it more likely points at reload, not
+ * concurrency, within one *cold start*: `src/lib/coiServiceWorker.ts`'s `ensureCrossOriginIsolated`
+ * (called unconditionally on every app boot from main.tsx) reloads the page once to pick up newly
+ * active Cross-Origin-Isolation, and `isPopupSeveredByIsolation`'s recovery
+ * (`disableCrossOriginIsolationAndReload`) reloads *again* if that isolation then severs this very
+ * startup reauth's popup — each reload restarts this module fresh, so each one fires its own new
+ * `requestToken({prompt:''})`, and a popup opened across a reload can plausibly read as the same
+ * chooser window flickering/refreshing rather than a new one appearing. Both reload guards
+ * (`RELOAD_GUARD_KEY`, `ISOLATION_DISABLED_KEY` in coiServiceWorker.ts) are deliberately
+ * `sessionStorage`-scoped — "a fresh tab/session still retries isolation from scratch" is called
+ * out as intentional in that file's own doc comment — so if an Android WebAPK's full close+reopen
+ * resets `sessionStorage` the way it's already confirmed *not* to reset `localStorage` (point 3
+ * above, and `SESSION_STORAGE_KEY`'s own comment recounts hitting exactly this distinction before),
+ * this whole isolate → sever → recover → reload cycle could replay on every single reopen — which
+ * would also explain the original "every single reopen," not just the new flicker report. This is
+ * a real, code-traceable mechanism, not a guess, but it rests on one assumption this sandbox
+ * cannot check: whether `sessionStorage` actually clears on an installed Android WebAPK's full
+ * close+reopen (no adb/emulator here, same constraint as everywhere else in this comment). No fix
+ * was shipped for it here — durably disabling isolation recovery across app closes (e.g. moving
+ * those two keys to `localStorage`) would trade away Kokoro's multi-threaded speed permanently the
+ * first time a popup gets severed, which is a real product tradeoff, not a mechanical bug fix, and
+ * deserves its own scoped decision rather than riding in on this issue. Flagged to the project
+ * owner as the strongest lead for next time either symptom recurs.
  */
 
 /** Serialized queue tail. GIS allows only one outstanding request per client, and its callback is
@@ -321,7 +369,17 @@ export const useGoogleAuth = create<AuthState>((set, get) => ({
 
     const refresh = (async () => {
       // Silent refresh (no consent prompt) — piggybacks on Google's own cookie session.
-      const res = await requestToken({ prompt: '' })
+      //
+      // login_hint (issue #45, extended after the reopen's real-device evidence): the account
+      // chooser the project owner saw appeared *before* they ever touched the app's own sign-in
+      // card, and this automatic path — not the manual signIn() button below, which already had
+      // the hint — is the one PR #64 missed. GIS documents login_hint as skipping account
+      // selection for *any* requestAccessToken call, not just an interactive one (there's no
+      // prompt-specific carve-out in its reference docs), so it should narrow/skip the chooser
+      // here exactly as it does for the manual button. undefined (today's behavior) whenever
+      // nothing has been captured yet — see getStoredLoginHint's doc comment for why that's fine.
+      const hint = getStoredLoginHint()
+      const res = await requestToken(hint ? { prompt: '', login_hint: hint } : { prompt: '' })
       if (isPopupSeveredByIsolation(res)) {
         // Don't report this as a normal expired session: it isn't one, and "sign in again" would
         // just fail the same way while still isolated. Step out of isolation and reload instead —
@@ -367,7 +425,13 @@ useGoogleAuth.subscribe((state, prevState) => {
 // AuthGate holds children back during 'restoring' so nothing calls getValidAccessToken() and
 // races this request (GIS only supports one in-flight requestAccessToken per client anyway).
 if (isGoogleConfigured && !restoredSession) {
-  requestToken({ prompt: '' })
+  // login_hint here too (issue #45's reopen) — this is the *very first* silent attempt on a
+  // fresh load, and per the reopen's evidence it's the leading candidate for the unnarrowed,
+  // automatically-appearing chooser the project owner saw before touching any app UI. Same
+  // reasoning as getValidAccessToken's refresh above: only present after a prior successful
+  // sign-in captured one, so a device's first-ever launch is unaffected either way.
+  const startupHint = getStoredLoginHint()
+  requestToken(startupHint ? { prompt: '', login_hint: startupHint } : { prompt: '' })
     .then((res) => {
       // See isPopupSeveredByIsolation's doc comment - this is the same recovery as
       // getValidAccessToken's silent refresh, just for the very first load's reauth attempt.
