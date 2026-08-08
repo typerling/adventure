@@ -136,7 +136,11 @@ test.describe('Claude direct API mode', () => {
 
   test('a validation failure surfaces issues, and Retry sends a correction prompt', async ({ page }) => {
     await installGoogleApiMock(page)
+    // chunkCount > 1 (issue #29): the invalid reply genuinely arrives split across several SSE
+    // content_block_delta events and is reassembled client-side before validation ever sees it —
+    // confirms streaming doesn't weaken or bypass the same validation a non-streamed reply gets.
     const claude = await installClaudeApiMock(page, {
+      chunkCount: 4,
       reply: (_prompt, callIndex) =>
         callIndex === 0
           ? // References an item that cannot exist in a freshly created campaign — always invalid.
@@ -165,5 +169,53 @@ test.describe('Claude direct API mode', () => {
 
     expect(claude.requests).toHaveLength(2)
     expect(claude.requests[1].prompt).toContain('Your previous reply had these problems')
+  })
+
+  test('narrative text streams into a live preview before the turn is applied (issue #29)', async ({ page }) => {
+    await installGoogleApiMock(page)
+    const narrative =
+      'Word-one word-two word-three word-four word-five word-six word-seven word-eight word-nine word-ten reaches the door.'
+    // Real, timed gaps between chunks (not an instant mock response) — genuinely exercises the
+    // "partial text visible, then finalized" UI state rather than asserting on a race.
+    const claude = await installClaudeApiMock(page, {
+      reply: defaultValidReply(narrative),
+      chunkCount: 6,
+      chunkDelayMs: 250,
+    })
+
+    await createRandomCampaign(page)
+    await setCampaignAiMode(page, 'api')
+    const campaignId = campaignIdFromUrl(page)
+    await saveClaudeKey(page, campaignId, 'sk-ant-test-12345')
+    await page.goto(`/play/${campaignId}`)
+
+    await actAndOpenDialog(page, 'search the room')
+    // Auto mode doesn't pop the dialog open on its own while generating (see startTurn) — click
+    // the small status line to open it and see the live preview, same as the "no copy/paste step"
+    // test above.
+    const statusLine = page.getByText('Generating your turn…')
+    await expect(statusLine).toBeVisible()
+    await statusLine.click()
+
+    const preview = page.getByLabel('Streaming narrative preview')
+    // The very start of the narrative arrives in the first chunk and should show up well before
+    // the whole ~1.5s stream finishes.
+    await expect(preview).toContainText('Word-one word-two', { timeout: 5000 })
+    // Still mid-stream at this point (the trailing ```state fence is only ever in a late chunk,
+    // after all the narrative words) — the live preview is genuinely partial, not the final text,
+    // and critically: nothing has parsed/applied a state block yet, because there isn't a complete
+    // one to parse. If parsing ran against this partial text it would either throw or apply
+    // nothing, not silently wait — the dialog staying open with no error is itself part of the
+    // assertion.
+    await expect(preview).not.toContainText('```state')
+    await expect(page.getByText("This reply doesn't match the documented state:")).toHaveCount(0)
+    await expect(page.getByRole('dialog')).toBeVisible()
+
+    // Once the stream completes, parseTurnReply/validateStateDelta/applyStateDelta run against the
+    // full, complete reply — same pipeline, same result as a non-streamed turn — and the dialog
+    // closes on success exactly like today.
+    await expect(page.getByText(narrative)).toBeVisible({ timeout: 10_000 })
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    expect(claude.requests).toHaveLength(1)
   })
 })

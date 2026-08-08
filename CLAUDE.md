@@ -150,7 +150,7 @@ the player submits a turn."
 `CampaignSettings.aiMode` (`'manual' | 'api' | 'local'`) picks how stage 1's prompt reaches an
 actual AI reply.
 
-- **`'api'`** — `src/lib/ai/claudeProvider.ts`'s `generateClaudeReply(prompt, model)` calls
+- **`'api'`** — `src/lib/ai/claudeProvider.ts`'s `generateClaudeReply(prompt, model, opts)` calls
   `POST https://api.anthropic.com/v1/messages` with a plain `fetch` — no `@anthropic-ai/sdk`
   dependency, matching this repo's established thin-fetch-client convention (same as
   `driveApi.ts`/`sheetsApi.ts` and the ElevenLabs voice providers) and DESIGN.md §11's explicit "no
@@ -161,6 +161,27 @@ actual AI reply.
   (`src/lib/ai/claudeKey.ts`) is `localStorage`-only, same reasoning as `elevenLabsKey.ts`; the
   model choice (`CampaignSettings.claudeModel`, one of `CLAUDE_MODELS`, default `claude-sonnet-5`)
   is per-campaign like `elevenLabsVoiceId`.
+
+  **Streaming (issue #29).** The request sets `"stream": true` and the reply arrives as Server-Sent
+  Events, hand-parsed by `readSseStream` in the same file — no SDK stream helper exists here for
+  the same "no vendor SDK" reason above, so this is a small, purpose-built reader for exactly the
+  event shapes the Messages API sends (`content_block_delta` for text, `message_delta` for the
+  final `stop_reason`, an `error` event for a mid-stream failure), not a generic SSE client. Each
+  `content_block_delta` text chunk is appended and handed to `opts.onToken(textSoFar)` — mirroring
+  `generateLocalReply`'s own `onToken` shape/naming (see `'local'` below) so `Play.tsx` can treat
+  both auto modes' live preview identically, reusing the same `streamPreview` state/UI rather than
+  building a second parallel one. Critically, `generateClaudeReply` itself still only *returns*
+  (resolves) once the stream is fully done: the trailing ` ```state ` fenced block can't be parsed
+  until its fence actually closes, so `onToken` is the only thing that ever sees partial text —
+  `parseTurnReply`/`validateStateDelta`/`applyStateDelta` (via `Play.tsx`'s `handleSubmitReply`)
+  still only ever run once, against this function's complete return value, byte-for-byte the same
+  contract as the pre-streaming implementation. A request that fails before streaming begins at all
+  (bad key, rate limit, …) still comes back as one ordinary JSON error body, not SSE, so that path
+  is unchanged. `tests/mocks/claude.ts`'s doc comment explains why testing this needed replacing
+  `window.fetch` itself rather than the usual `page.route` interception every other mock in that
+  directory uses: a `route.fulfill`-served body — confirmed empirically, regardless of size —
+  always arrives at the page as a single `ReadableStream` read, so there's no way to make a routed
+  mock response arrive in genuinely separate, timed chunks the way a real streamed reply does.
 - **`'local'`** — `src/lib/ai/localModel.ts`'s `generateLocalReply(modelId, prompt, opts)` runs one
   of several small instruction-tuned models entirely in-browser via `@huggingface/transformers`
   over WebGPU — no key, no server. `LOCAL_MODELS` is the catalog (Hugging Face repo ID → display
@@ -239,9 +260,14 @@ failure surfaces the same `ValidationIssue[]` either way; in both auto modes the
 "Retry" button that re-sends a correction-augmented prompt (built once via `buildCorrectionPrompt`,
 shared with manual mode's "Copy correction prompt" button) rather than DESIGN.md's
 originally-envisioned fully-automatic retry — spending another generation always requires an
-explicit click. Local mode additionally streams tokens as they generate (`onToken`) into a
-read-only preview in the dialog, since on-device generation on a phone GPU can take a while and a
-frozen "Generating…" spinner with no feedback reads as broken.
+explicit click. Both auto modes stream tokens as they generate (`onToken`) into the same read-only
+`streamPreview` textarea in the dialog (`aria-label="Streaming narrative preview"`) — local mode
+since on-device generation on a phone GPU can take a while and a frozen "Generating…" spinner with
+no feedback reads as broken, Claude API mode since issue #29 for the same reason (plus reducing
+perceived latency generally: the player sees narrative appear as it's written instead of waiting
+for the whole reply). The dialog itself doesn't pop open automatically in either auto mode (see
+`startTurn`), so the live preview is only visible if the player clicks the small status line to
+look — generation itself, and the eventual parse/validate/apply, proceed identically either way.
 
 ### Google Drive/Sheets as the only backend
 
