@@ -97,3 +97,23 @@ export const MAX_CHUNK_CHARS = 320
  * shared between the main thread and any Worker on that origin, so these buckets are the same
  * whether the download happened via the worker (kokoroTts.worker.ts) or were seeded any other way. */
 export const CACHE_NAMES = ['kokoro-voices', 'transformers-cache']
+
+/**
+ * How many chunks kokoroTts.ts's speak() buffers (generated but not yet scheduled) before starting
+ * playback of a turn — issue #68's follow-up to #62's "start on chunk 1" design, a deliberate
+ * middle ground between #44's "wait for the whole turn" and #62's "wait for nothing." See
+ * kokoroTts.ts's "Startup playback buffer" doc comment section for the full reasoning and the real
+ * (unfaked) generation-speed measurement this value is based on. 2, not more: issue #68's own probe
+ * (real Kokoro CPU inference in this sandbox, onnx-community/Kokoro-82M-v1.0-ONNX q8) measured
+ * generation taking ~0.7x of each chunk's own audio duration — i.e. only a ~30% margin over
+ * real-time even on a backend documented elsewhere in this codebase as a *conservative lower bound*
+ * on in-browser WASM's real cost (native CPU execution, not literally WASM). A margin that thin
+ * evaporating on a slower/mobile browser is the most plausible explanation this investigation could
+ * find for reported playback artifacts, once real generated audio ruled out a chunk-boundary
+ * silence-padding defect (see kokoroTts.ts) — one chunk of head start (today's implicit buffer of
+ * 1, since nothing plays before chunk 0 finishes) leaves no margin at all for chunk 1 to keep up
+ * with chunk 0's own playback; 2 buffered chunks means chunk 2 has an entire chunk 0 playback
+ * duration's worth of extra generation time before it's needed, without reintroducing anything close
+ * to #44's tens-of-seconds full-turn wait (this sandbox's own measurement: ~1.3-1.8s per chunk).
+ */
+export const KOKORO_PLAYBACK_BUFFER_CHUNKS = 2

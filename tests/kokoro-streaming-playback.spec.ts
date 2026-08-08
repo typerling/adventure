@@ -4,12 +4,15 @@ import { getKokoroWorker, installFakeKokoroModule, installKokoroSourceTracking }
 import { createRandomCampaign, setCampaignVoiceProviders, submitFreeTextTurn } from "./helpers";
 
 /**
- * Issue #62: Kokoro TTS now plays a turn's narration continuously as it generates — chunk 1 starts
- * playing as soon as it's ready, while later chunks keep generating in the worker, instead of
- * waiting for the whole turn (issue #44's original design) before any audio plays at all. See
+ * Issue #62: Kokoro TTS now plays a turn's narration continuously as it generates, instead of
+ * waiting for the whole turn (issue #44's original design) before any audio plays at all. Issue #68
+ * (investigating reported playback artifacts) refined this further: rather than scheduling chunk 1
+ * the instant it arrives, `speak()` now buffers the first `KOKORO_PLAYBACK_BUFFER_CHUNKS` (2)
+ * generated chunks before starting playback, giving generation a head start over playback — see
  * kokoroTts.ts's module doc comment for the full design (playback engine, falling-behind handling,
- * WebGPU-restart de-duplication) — this spec exercises the actual behavior change plus the
- * guarantees that behavior change put at risk (stop() truly silencing everything immediately).
+ * the startup buffer, WebGPU-restart de-duplication) — this spec exercises the actual behavior
+ * change plus the guarantees that behavior change put at risk (stop() truly silencing everything
+ * immediately).
  *
  * Unlike every other Kokoro spec, these tests deliberately use *real*, unfaked Web Audio
  * (`installKokoroSourceTracking` only instruments `AudioBufferSourceNode.start()`/`.stop()`, it
@@ -25,22 +28,23 @@ import { createRandomCampaign, setCampaignVoiceProviders, submitFreeTextTurn } f
  * scheduling gaplessly — see kokoroTts.ts's doc comment for that documented limitation.
  */
 
-test("playback of chunk 1 starts while chunk 2 is still generating", async ({ page }) => {
-  // Chunk 1 (call index 0) generates and resolves for real, at full (fake) speed; chunk 2 (call
-  // index 1) hangs indefinitely until explicitly released — baked in at install time so there's no
-  // race between setting this up and the worker racing ahead of it (see pauseAtCallIndex's doc
-  // comment). If chunk 1 only started playing *after* the whole turn finished generating (issue
-  // #44's old, now-replaced behavior), nothing would ever play at all here, since chunk 2 never
-  // finishes in this test.
+test("playback of chunks 1-2 starts while chunk 3 is still generating", async ({ page }) => {
+  // Chunks 1-2 (call indices 0-1) generate and resolve for real, at full (fake) speed — filling
+  // issue #68's startup buffer (KOKORO_PLAYBACK_BUFFER_CHUNKS = 2); chunk 3 (call index 2) hangs
+  // indefinitely until explicitly released — baked in at install time so there's no race between
+  // setting this up and the worker racing ahead of it (see pauseAtCallIndex's doc comment). If
+  // chunks 1-2 only started playing *after* the whole turn finished generating (issue #44's old
+  // behavior), nothing would ever play at all here, since chunk 3 never finishes in this test.
   await installGoogleApiMock(page);
-  await installFakeKokoroModule(page, { pauseAtCallIndex: 1 });
+  await installFakeKokoroModule(page, { pauseAtCallIndex: 2 });
   await installKokoroSourceTracking(page);
 
   await createRandomCampaign(page);
   await setCampaignVoiceProviders(page, { tts: "huggingface-local" });
 
   // Two prose sentences plus the spoken options trailer (see turnBlocks.ts's blockToSpokenText)
-  // guarantee at least 3 chunks — comfortably more than the 2 this test needs to distinguish.
+  // guarantee at least 3 chunks — exactly what this test needs to distinguish the buffered pair
+  // from the still-generating third chunk.
   await submitFreeTextTurn(page, "look around", "The hallway is silent. A door stands ajar.");
   await expect(page.getByText("The hallway is silent.", { exact: false })).toBeVisible();
 
@@ -49,9 +53,9 @@ test("playback of chunk 1 starts while chunk 2 is still generating", async ({ pa
     page.getByRole("button", { name: "Play this turn aloud" }).click(),
   ]);
 
-  // Chunk 1 has finished generating and its AudioBufferSourceNode has been scheduled — this can
-  // only happen while chunk 2 is (permanently, in this test) still generating, since nothing else
-  // is holding it up.
+  // Both buffered chunks have finished generating and been scheduled together — this can only
+  // happen while chunk 3 is (permanently, in this test) still generating, since nothing else is
+  // holding it up.
   await expect
     .poll(
       () =>
@@ -60,15 +64,15 @@ test("playback of chunk 1 starts while chunk 2 is still generating", async ({ pa
         ),
       { timeout: 10_000 },
     )
-    .toBeGreaterThanOrEqual(1);
+    .toBeGreaterThanOrEqual(2);
 
-  // The core assertion: chunk 1 reached playback while chunk 2 is confirmed still generating, not
-  // finished — proving playback started *before* the whole turn was ready, not after (issue #44's
-  // old, now-replaced behavior, where nothing would ever reach playback in this test at all since
-  // chunk 2 never finishes here). __kokoroGenerateCalls records a call the instant it *starts* (see
-  // the fake's own comment on why, and pauseAtCallIndex), so a count of 2 here means "chunk 2's
-  // generate() has started" — proving the worker is genuinely working ahead — not "chunk 2 is
-  // done"; the progress text is what proves chunk 2 hasn't actually completed/reached playback yet.
+  // The core assertion: chunks 1-2 reached playback while chunk 3 is confirmed still generating,
+  // not finished — proving playback started *before* the whole turn was ready, not after (issue
+  // #44's old behavior, where nothing would ever reach playback in this test at all since chunk 3
+  // never finishes here). __kokoroGenerateCalls records a call the instant it *starts* (see the
+  // fake's own comment on why, and pauseAtCallIndex), so a count of 3 here means "chunk 3's
+  // generate() has started" — proving the worker is genuinely working ahead — not "chunk 3 is
+  // done"; the progress text is what proves chunk 3 hasn't actually completed/reached playback yet.
   const [generateCallCount, sourceStartCount] = await Promise.all([
     worker.evaluate(
       () => (self as unknown as { __kokoroGenerateCalls?: unknown[] }).__kokoroGenerateCalls?.length ?? 0,
@@ -77,14 +81,15 @@ test("playback of chunk 1 starts while chunk 2 is still generating", async ({ pa
       () => (window as unknown as { __kokoroSourceStarts?: unknown[] }).__kokoroSourceStarts?.length ?? 0,
     ),
   ]);
-  expect(generateCallCount).toBe(2);
-  expect(sourceStartCount).toBe(1);
+  expect(generateCallCount).toBe(3);
+  expect(sourceStartCount).toBe(2);
   // Play.tsx's generation-progress status line (describeKokoroGenerateProgress) only advances once
-  // a chunk is actually accepted for playback (kokoroTts.ts's onChunkAudio handler) — still reading
-  // "part 1" confirms chunk 2 hasn't reached that point, independent of the worker-side call count.
-  await expect(page.getByText("Generating narration — part 1 of", { exact: false })).toBeVisible();
+  // a chunk is actually accepted (kokoroTts.ts's onChunkAudio handler, which now runs on arrival —
+  // before scheduling — for a buffered chunk too) — still reading "part 2" confirms chunk 3 hasn't
+  // reached that point, independent of the worker-side call count.
+  await expect(page.getByText("Generating narration — part 2 of", { exact: false })).toBeVisible();
 
-  // Release chunk 2 so the turn (and the test) can finish cleanly rather than leaving the worker
+  // Release chunk 3 so the turn (and the test) can finish cleanly rather than leaving the worker
   // permanently hung for the rest of the suite.
   await worker.evaluate(() =>
     (self as unknown as { __releaseKokoroGenerate?: () => void }).__releaseKokoroGenerate?.(),
@@ -92,12 +97,12 @@ test("playback of chunk 1 starts while chunk 2 is still generating", async ({ pa
 });
 
 test("stop() immediately silences playback and no further chunk starts afterward", async ({ page }) => {
-  // Deterministic, not timing-based (see the previous test's identical reasoning): chunk 1
-  // generates and plays for real; chunk 2 hangs indefinitely at the gate until explicitly released,
-  // well after stop() has already been clicked — so there's no window in which chunk 2 could
-  // legitimately race stop() by finishing first.
+  // Deterministic, not timing-based (see the previous test's identical reasoning): chunks 1-2
+  // generate and play for real (filling issue #68's startup buffer); chunk 3 hangs indefinitely at
+  // the gate until explicitly released, well after stop() has already been clicked — so there's no
+  // window in which chunk 3 could legitimately race stop() by finishing first.
   await installGoogleApiMock(page);
-  await installFakeKokoroModule(page, { pauseAtCallIndex: 1 });
+  await installFakeKokoroModule(page, { pauseAtCallIndex: 2 });
   await installKokoroSourceTracking(page);
 
   await createRandomCampaign(page);
@@ -122,9 +127,9 @@ test("stop() immediately silences playback and no further chunk starts afterward
         ),
       { timeout: 10_000 },
     )
-    .toBe(1);
-  // Confirms chunk 2's generate() call has genuinely started (and is now hung on the gate) before
-  // stop() below — otherwise a slow chunk 2 could still be queued up *behind* stop() rather than
+    .toBe(2);
+  // Confirms chunk 3's generate() call has genuinely started (and is now hung on the gate) before
+  // stop() below — otherwise a slow chunk 3 could still be queued up *behind* stop() rather than
   // actually racing it, which would prove less.
   await expect
     .poll(() =>
@@ -132,27 +137,27 @@ test("stop() immediately silences playback and no further chunk starts afterward
         () => (self as unknown as { __kokoroGenerateCalls?: unknown[] }).__kokoroGenerateCalls?.length ?? 0,
       ),
     )
-    .toBe(2);
+    .toBe(3);
 
   await page.getByRole("button", { name: "Stop playback" }).click();
   // The UI reverts immediately — stop() doesn't wait on anything async.
   await expect(page.getByRole("button", { name: "Play this turn aloud" })).toBeVisible();
 
-  // The one node that had actually started was told to stop — silenced immediately, not left
-  // playing out to its own natural end.
+  // The nodes that had actually started were told to stop — silenced immediately, not left
+  // playing out to their own natural end.
   await expect
     .poll(() =>
       page.evaluate(
         () => (window as unknown as { __kokoroSourceStops?: unknown[] }).__kokoroSourceStops?.length ?? 0,
       ),
     )
-    .toBeGreaterThanOrEqual(1);
+    .toBeGreaterThanOrEqual(2);
 
-  // Now release chunk 2 — generation in the worker isn't cancelled by stop() (kokoro-js has no
+  // Now release chunk 3 — generation in the worker isn't cancelled by stop() (kokoro-js has no
   // abort primitive — see kokoroTts.ts's doc comment; stop() itself never even messages the
-  // worker), so it — and chunk 3 behind it — finish and are posted to the main thread regardless.
+  // worker), so it — and chunk 4 behind it — finish and are posted to the main thread regardless.
   // This is the literal risk the issue called out: a queued next chunk starting playback after
-  // stop() was already called. Waiting for the worker to report all 3 chunks done proves the main
+  // stop() was already called. Waiting for the worker to report all chunks done proves the main
   // thread had every opportunity to (wrongly) schedule the rest, not just that it didn't get around
   // to it yet.
   await worker.evaluate(() =>
@@ -176,7 +181,7 @@ test("stop() immediately silences playback and no further chunk starts afterward
   const finalSourceStartCount = await page.evaluate(
     () => (window as unknown as { __kokoroSourceStarts?: unknown[] }).__kokoroSourceStarts?.length ?? 0,
   );
-  expect(finalSourceStartCount).toBe(1);
+  expect(finalSourceStartCount).toBe(2);
   // The button stays reverted too — a late chunk didn't quietly resurrect "Stop playback".
   await expect(page.getByRole("button", { name: "Play this turn aloud" })).toBeVisible();
 });
@@ -306,4 +311,121 @@ test("speak() settles a superseded call's own promise instead of leaving it pend
   await worker.evaluate(() =>
     (self as unknown as { __releaseKokoroGenerate?: () => void }).__releaseKokoroGenerate?.(),
   );
+});
+
+/**
+ * Issue #68: reported Kokoro playback artifacts, investigated as a possible consequence of #62's
+ * "start on chunk 1" design falling behind generation. Real (unfaked) Kokoro CPU inference in this
+ * sandbox (kokoro-js's Node/onnxruntime-node backend — see kokoroTts.ts's "Startup playback buffer"
+ * doc comment) found every generated chunk already has a clean silent taper at both ends — ruling
+ * out an in-model boundary defect — and only a ~30% generation-speed margin over real-time even on
+ * that favorable backend, making "falling behind" the most plausible surviving explanation. The fix:
+ * `speak()` now buffers the first `KOKORO_PLAYBACK_BUFFER_CHUNKS` (2) generated chunks before
+ * starting playback, rather than scheduling chunk 0 the instant it arrives, giving generation a real
+ * head start. These tests prove that buffering behavior directly, the same way the tests above prove
+ * the pre-buffer streaming/stop() guarantees — real, unfaked Web Audio scheduling.
+ */
+test("playback buffers two chunks before starting, instead of starting on chunk 1 alone", async ({
+  page,
+}) => {
+  // Chunk 0 (call index 0) generates and resolves for real; chunk 1 (call index 1) hangs
+  // indefinitely until released. If #62's original "start on chunk 1" behavior were still in
+  // effect, chunk 0 alone finishing would already have scheduled and started playback — the whole
+  // point of this test is proving that no longer happens.
+  await installGoogleApiMock(page);
+  await installFakeKokoroModule(page, { pauseAtCallIndex: 1 });
+  await installKokoroSourceTracking(page);
+
+  await createRandomCampaign(page);
+  await setCampaignVoiceProviders(page, { tts: "huggingface-local" });
+
+  await submitFreeTextTurn(page, "look around", "The hallway is silent. A door stands ajar.");
+  await expect(page.getByText("The hallway is silent.", { exact: false })).toBeVisible();
+
+  const [worker] = await Promise.all([
+    getKokoroWorker(page),
+    page.getByRole("button", { name: "Play this turn aloud" }).click(),
+  ]);
+
+  // Chunk 1's generate() call has genuinely started (and is now hung on the gate) — proof chunk 0
+  // has already finished and its audio has already reached the main thread's onChunkAudio handler,
+  // not just that the turn hasn't gotten far enough yet to say anything either way.
+  await expect
+    .poll(() =>
+      worker.evaluate(
+        () => (self as unknown as { __kokoroGenerateCalls?: unknown[] }).__kokoroGenerateCalls?.length ?? 0,
+      ),
+    )
+    .toBe(2);
+
+  // The core regression assertion: chunk 0's audio arrived, but nothing has been scheduled for
+  // playback yet, because the startup buffer is still waiting on chunk 1. Held for a short stretch
+  // (not just checked once) so a delayed-but-still-happening schedule wouldn't be missed.
+  for (let i = 0; i < 5; i++) {
+    const count = await page.evaluate(
+      () => (window as unknown as { __kokoroSourceStarts?: unknown[] }).__kokoroSourceStarts?.length ?? 0,
+    );
+    expect(count).toBe(0);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+
+  // Releasing chunk 1 lets the buffer fill — both chunk 0 and chunk 1 should now be scheduled
+  // together, back-to-back, in the same flush.
+  await worker.evaluate(() =>
+    (self as unknown as { __releaseKokoroGenerate?: () => void }).__releaseKokoroGenerate?.(),
+  );
+  await expect
+    .poll(
+      () =>
+        page.evaluate(
+          () => (window as unknown as { __kokoroSourceStarts?: unknown[] }).__kokoroSourceStarts?.length ?? 0,
+        ),
+      { timeout: 10_000 },
+    )
+    .toBeGreaterThanOrEqual(2);
+
+  const starts = await page.evaluate(
+    () => (window as unknown as { __kokoroSourceStarts?: { at: number }[] }).__kokoroSourceStarts ?? [],
+  );
+  // Both chunks were scheduled essentially simultaneously (the same synchronous flush), not one
+  // waiting on the other's playback to begin first — proof they were flushed together, not that
+  // chunk 1 merely followed chunk 0 the normal (post-buffer) way.
+  expect(starts[1].at - starts[0].at).toBeLessThan(50);
+});
+
+test("a turn with fewer chunks than the startup buffer still plays once it's fully ready", async ({
+  page,
+}) => {
+  // Exercised directly against the provider (like the "settles a superseded call" test above) so a
+  // genuinely single-chunk turn can be produced without turnBlocks.ts's options-trailer sentences
+  // pushing the chunk count up — the point here is proving flushPending's min(bufferSize, total)
+  // logic doesn't wait forever for a second chunk a one-chunk turn will never produce.
+  await installGoogleApiMock(page);
+  await installFakeKokoroModule(page);
+  await installKokoroSourceTracking(page);
+
+  await page.goto("/");
+  const workerPromise = getKokoroWorker(page);
+
+  await page.evaluate(async () => {
+    const mod = await import("/src/lib/voice/kokoroTts.ts");
+    const w = window as unknown as { __kokoroTestSettled?: boolean };
+    w.__kokoroTestSettled = false;
+    mod.createKokoroTtsProvider().speak("Just one short sentence with no other sentences", {}).finally(() => {
+      w.__kokoroTestSettled = true;
+    });
+  });
+  await workerPromise;
+
+  // Plays (and the call settles) without waiting on a second chunk that was never going to arrive.
+  await expect
+    .poll(() =>
+      page.evaluate(
+        () => (window as unknown as { __kokoroSourceStarts?: unknown[] }).__kokoroSourceStarts?.length ?? 0,
+      ),
+    )
+    .toBe(1);
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { __kokoroTestSettled?: boolean }).__kokoroTestSettled))
+    .toBe(true);
 });
