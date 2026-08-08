@@ -161,3 +161,16 @@
     @apply font-sans;
   }
 }
+
+/* Hides a scrollable container's native scrollbar chrome while leaving scrolling itself (touch
+   swipe, trackpad, programmatic scrollTo, keyboard) fully functional — for containers like
+   TurnPager's snap-scroll pager and Codex's tab strip, which already have their own real
+   navigation affordances (buttons, tabs) and don't need the browser's scrollbar as a second one
+   (issue #69). `scrollbar-width: none` covers Firefox/modern Chromium; the `::-webkit-scrollbar`
+   rule covers WebKit/older Chromium — together, standard cross-browser coverage with no JS. */
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}

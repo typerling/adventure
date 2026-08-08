@@ -254,7 +254,7 @@ export function TurnPager({ pages, disabled, onCurrentIndexChange, className }: 
         role="group"
         aria-label={`Turn ${currentIndex + 1} of ${pages.length}`}
         tabIndex={0}
-        className="flex snap-x snap-mandatory overflow-x-auto overflow-y-hidden overscroll-x-contain outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+        className="scrollbar-none flex snap-x snap-mandatory overflow-x-auto overflow-y-hidden overscroll-x-contain outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
       >
         {pages.map((page, i) => (
           <div
