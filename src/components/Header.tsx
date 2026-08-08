@@ -10,6 +10,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { LogoMark } from '@/components/LogoMark'
 import { usePlayHeaderStore } from '@/store/playHeaderStore'
 
 /**
@@ -42,7 +43,7 @@ export function Header() {
                   next to each other, and the campaign name is the more useful thing to keep. The
                   dropdown's "Back to campaigns" item is the labeled equivalent of this link. */}
               <Link to="/" className="shrink-0" title="Adventure" aria-label="Adventure">
-                <img src={`${import.meta.env.BASE_URL}favicon-32.png`} alt="" className="size-7 rounded-md" />
+                <LogoMark className="size-7" />
               </Link>
               <Link
                 to={`/play/${context.campaignId}`}
@@ -54,7 +55,7 @@ export function Header() {
             </>
           ) : (
             <Link to="/" className="flex shrink-0 items-center gap-1.5 font-heading text-lg font-medium text-foreground">
-              <img src={`${import.meta.env.BASE_URL}favicon-32.png`} alt="" className="size-7 rounded-md" />
+              <LogoMark className="size-7" />
               Adventure
             </Link>
           )}
