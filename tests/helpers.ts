@@ -147,6 +147,21 @@ export async function recordToasts(page: Page): Promise<void> {
   });
 }
 
+/**
+ * Expands one of Settings' collapsible download-management cards ("Local AI models" / "Kokoro
+ * voice model", issue #22) if it isn't already open — both default collapsed except when the
+ * currently open campaign already uses that mode (see CollapsibleSettingsCard.tsx and
+ * Settings.tsx's `localModelsDefaultOpen`/`kokoroModelDefaultOpen`). `testId` is the card's own
+ * `data-testid` (e.g. `"local-models-card"`); the toggle carries `data-testid="{testId}-toggle"`.
+ * Safe to call even when the card is already expanded.
+ */
+export async function expandSettingsCard(page: Page, testId: string): Promise<void> {
+  const toggle = page.getByTestId(`${testId}-toggle`);
+  if ((await toggle.getAttribute("aria-expanded")) === "true") return;
+  await toggle.click();
+  await expect(toggle).toHaveAttribute("aria-expanded", "true");
+}
+
 /** Every toast text seen so far, in first-appearance order. Requires recordToasts() first. */
 export async function getRecordedToasts(page: Page): Promise<string[]> {
   return page.evaluate(

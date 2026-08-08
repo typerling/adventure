@@ -6,7 +6,12 @@ import {
   installFakeKokoroModule,
   waitForKokoroPlaybackToStabilize,
 } from "./mocks/kokoro";
-import { createRandomCampaign, setCampaignVoiceProviders, submitFreeTextTurn } from "./helpers";
+import {
+  createRandomCampaign,
+  expandSettingsCard,
+  setCampaignVoiceProviders,
+  submitFreeTextTurn,
+} from "./helpers";
 
 /**
  * Issue #51: Kokoro TTS gained an opt-in WebGPU backend alongside its original (and still
@@ -30,7 +35,11 @@ import { createRandomCampaign, setCampaignVoiceProviders, submitFreeTextTurn } f
  * installControllableWebAudioPlayback's own doc comment.
  */
 
+// This file only ever visits the *global* Settings page (no campaign open), where the Kokoro
+// voice model card starts collapsed (issue #22) — every call re-expands it, since a
+// page.goto/page.reload is a fresh page load that resets that component-local state.
 async function switchKokoroDevice(page: Page, device: "CPU" | "GPU") {
+  await expandSettingsCard(page, "kokoro-model-card");
   await page.locator("#kokoro-device").click();
   await page.getByRole("option", { name: device === "GPU" ? /^GPU/ : /^CPU/ }).click();
 }
@@ -40,6 +49,7 @@ test("Kokoro's backend can be switched to WebGPU in Settings, and each backend's
 }) => {
   await installGoogleApiMock(page);
   await page.goto("/settings");
+  await expandSettingsCard(page, "kokoro-model-card");
 
   await expect(page.locator("#kokoro-device")).toContainText("CPU");
   await expect(page.getByRole("button", { name: "Download voice model now" })).toBeVisible();
@@ -53,6 +63,7 @@ test("Kokoro's backend can be switched to WebGPU in Settings, and each backend's
     );
   });
   await page.reload();
+  await expandSettingsCard(page, "kokoro-model-card");
   await expect(
     page.getByText("Voice model downloaded and ready — playback starts instantly."),
   ).toBeVisible();
@@ -74,6 +85,7 @@ test("Kokoro's backend can be switched to WebGPU in Settings, and each backend's
     );
   });
   await page.reload();
+  await expandSettingsCard(page, "kokoro-model-card");
   await expect(
     page.getByText("Voice model downloaded and ready — playback starts instantly."),
   ).toBeVisible();
@@ -135,6 +147,7 @@ test("selecting WebGPU falls back to WASM automatically when no adapter is avail
 
   // The fallback is remembered — Settings now shows CPU, not GPU, without needing to fail again.
   await page.goto("/settings");
+  await expandSettingsCard(page, "kokoro-model-card");
   await expect(page.locator("#kokoro-device")).toContainText("CPU");
 });
 
@@ -208,6 +221,7 @@ test("a WebGPU device lost mid-generation falls back to WASM and restarts the wh
   await expect(page.getByRole("button", { name: "Stop playback" })).toBeVisible();
 
   await page.goto("/settings");
+  await expandSettingsCard(page, "kokoro-model-card");
   await expect(page.locator("#kokoro-device")).toContainText("CPU");
 });
 
