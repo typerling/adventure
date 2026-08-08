@@ -331,8 +331,29 @@ adb/emulator (same constraint issue #39 documented). Two mitigations follow:
 -agent check) scopes a short in-app note about this known limitation to `AuthGate.tsx`, shown only
 in the context that actually has it — mirroring issue #39's precedent of documenting a real,
 unfixable platform limitation in-app rather than pretending a partial mitigation is a full fix.
-The project owner still needs to confirm on their real installed app whether the diagnosis and the
-`login_hint` mitigation actually hold up in practice.
+
+**Reopen: `login_hint` was missing from the automatic paths.** The first fix above (PR #64) didn't
+hold up on the project owner's real device: a real, visible `accounts.google.com` account chooser
+appeared automatically, before any app UI, listing all six stored accounts unnarrowed, then landed
+on the in-app sign-in card. Root cause was a real gap, not the platform limitation itself:
+`login_hint` had only ever been wired into the manual `signIn()` button, never into either
+*automatic* silent-refresh call site (the startup reauth, `getValidAccessToken`'s refresh) — the
+path the reported ordering pointed straight at. Both now source the same `getStoredLoginHint()`.
+Also investigated (separately, since the report also described the chooser flickering/refreshing
+twice): traced every caller of `requestToken`/`getValidAccessToken` and found no code path where
+two silent requests can genuinely race *within one page load* — `AuthGate`'s `'restoring'` gate and
+`getValidAccessToken`'s `inFlightRefresh` coalescing already prevent that (regression-tested in
+`tests/google-login-hint.spec.ts`). The stronger lead, documented in `authStore.ts`'s module doc
+comment rather than fixed here: `src/lib/coiServiceWorker.ts`'s isolation-registration reload and
+`isPopupSeveredByIsolation`'s recovery reload can each independently restart this module and its
+startup reauth *within one cold start*, and both reload guards are `sessionStorage`-scoped —
+plausible to reset on an Android WebAPK's full close+reopen the same way `localStorage` is already
+confirmed not to (see `SESSION_STORAGE_KEY`'s own comment for that exact lesson learned once
+already). Not fixed here: making that durable across app closes (e.g. moving those keys to
+`localStorage`) would permanently trade away Kokoro's multi-threaded speed the first time a popup
+gets severed — a real product tradeoff needing its own scoped decision, not a mechanical bug fix.
+The project owner still needs to confirm on their real installed app whether the extended
+`login_hint` fix narrows the chooser and whether the flicker actually stops.
 
 ### State management
 
