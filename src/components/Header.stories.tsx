@@ -9,6 +9,14 @@ const DEMO_CONTEXT = {
   campaignName: 'Dust and Ninety Miles',
   showReadAloudToggle: true,
   turnLabel: 'Turn 4 · The saloon at the edge of Redrock',
+  recapSummary:
+    'You rode into Redrock chasing rumors of a stolen railroad ledger. The sheriff turned out to ' +
+    'be in on it, and the real ledger is hidden somewhere behind the saloon.',
+  activeQuests: [
+    { id: 'q1', title: 'Find the stolen railroad ledger' },
+    { id: 'q2', title: "Earn the bartender's trust" },
+    { id: 'q3', title: 'Track down the missing deputy' },
+  ],
 }
 
 const meta = {
@@ -128,4 +136,60 @@ export const CampaignContextMenuOpenDesktop: Story = {
   globals: { viewport: { value: 'desktop' } },
   loaders: CampaignContextMenuOpenMobile.loaders,
   play: CampaignContextMenuOpenMobile.play,
+}
+
+/** The info button's "quick recap" dialog (issue #24), opened — location plus a rolling-summary
+ * excerpt plus a compact active-quests list, all from DEMO_CONTEXT's representative content. */
+export const RecapDialogOpenMobile: Story = {
+  loaders: [
+    async () => {
+      usePlayHeaderStore.setState({ context: DEMO_CONTEXT, readAloud: false })
+      return {}
+    },
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByRole('button', { name: DEMO_CONTEXT.turnLabel }))
+
+    const body = within(canvasElement.ownerDocument.body)
+    await waitFor(() => expect(body.getByRole('heading', { name: 'Recap' })).toBeVisible())
+    await expect(body.getByText(DEMO_CONTEXT.turnLabel)).toBeVisible()
+    await expect(body.getByText('So far')).toBeVisible()
+    await expect(body.getByText(DEMO_CONTEXT.recapSummary)).toBeVisible()
+    await expect(body.getByText('Active quests')).toBeVisible()
+    for (const quest of DEMO_CONTEXT.activeQuests) {
+      await expect(body.getByText(quest.title)).toBeVisible()
+    }
+  },
+}
+
+export const RecapDialogOpenDesktop: Story = {
+  globals: { viewport: { value: 'desktop' } },
+  loaders: RecapDialogOpenMobile.loaders,
+  play: RecapDialogOpenMobile.play,
+}
+
+/** A brand-new campaign with no rolling summary yet and no active quests — the dialog degrades to
+ * exactly its pre-#24 content (just the location), with no empty "So far"/"Active quests"
+ * headings rendered underneath it. */
+export const RecapDialogEmptyMobile: Story = {
+  loaders: [
+    async () => {
+      usePlayHeaderStore.setState({
+        context: { ...DEMO_CONTEXT, recapSummary: null, activeQuests: [] },
+        readAloud: false,
+      })
+      return {}
+    },
+  ],
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.click(canvas.getByRole('button', { name: DEMO_CONTEXT.turnLabel }))
+
+    const body = within(canvasElement.ownerDocument.body)
+    await waitFor(() => expect(body.getByRole('heading', { name: 'Recap' })).toBeVisible())
+    await expect(body.getByText(DEMO_CONTEXT.turnLabel)).toBeVisible()
+    expect(body.queryByText('So far')).not.toBeInTheDocument()
+    expect(body.queryByText('Active quests')).not.toBeInTheDocument()
+  },
 }

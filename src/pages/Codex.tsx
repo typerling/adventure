@@ -17,7 +17,14 @@ export function Codex() {
   // See Play.tsx for why this goes through a shared store rather than props/context.
   useEffect(() => {
     if (!campaignId || !campaignName) return
-    setHeaderContext({ campaignId, campaignName, showReadAloudToggle: false, turnLabel: null })
+    setHeaderContext({
+      campaignId,
+      campaignName,
+      showReadAloudToggle: false,
+      turnLabel: null,
+      recapSummary: null,
+      activeQuests: [],
+    })
     return () => setHeaderContext(null)
   }, [campaignId, campaignName, setHeaderContext])
 

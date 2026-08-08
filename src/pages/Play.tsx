@@ -31,6 +31,7 @@ import { generateClaudeReply } from '@/lib/ai/claudeProvider'
 import { describeLocalModelProgress, generateLocalReply } from '@/lib/ai/localModel'
 import { buildSpokenScript, splitNarrativeIntoBlocks } from '@/lib/ai/turnBlocks'
 import { TurnPager, type TurnPagerPage } from '@/components/TurnPager'
+import { buildRecapSummary, getActiveQuests } from '@/lib/recap'
 
 type DialogStage = 'closed' | 'prompt'
 
@@ -52,7 +53,8 @@ function blocksForTurn(turn: TurnRecord, interactive: boolean, optionsOverride?:
 export function Play() {
   const { campaignId } = useParams<{ campaignId: string }>()
   const data = useCampaign(campaignId)
-  const { status, errorMessage, campaign, snapshot, recentTurns, settings, buildPromptForAction, submitReply } = data
+  const { status, errorMessage, campaign, snapshot, rollingSummary, recentTurns, settings, buildPromptForAction, submitReply } =
+    data
 
   const [freeText, setFreeText] = useState('')
   /** The action awaiting a reply. A ref, not state, because auto modes kick off generation in the
@@ -147,16 +149,26 @@ export function Play() {
   const isAutoMode = isApiMode || isLocalMode
   const campaignName = campaign?.meta.name
   const turnLabel = campaign ? `Turn ${campaign.meta.currentTurn} · ${campaign.meta.currentLocation}` : null
+  // Quick-recap content for the header's info dialog (issue #24) — both sourced entirely from
+  // data useCampaign already loaded for this session (rollingSummary, snapshot.Quests), so
+  // opening the dialog never triggers a fresh Drive/Sheets read.
+  const recapSummary = buildRecapSummary(rollingSummary)
+  const activeQuests = getActiveQuests(snapshot?.Quests ?? []).map((q) => ({ id: q.id, title: q.title }))
 
   // The top-bar header (src/App.tsx) is a sibling, not a parent, of this page — it can't read
   // props from here, so this pushes what it needs (title, Codex/Settings links, whether to show
-  // the Read-aloud toggle, the turn/location line) into a shared store instead. Cleared on
-  // unmount so navigating away doesn't leave a stale campaign context showing on Dashboard.
+  // the Read-aloud toggle, the turn/location line, the recap content) into a shared store
+  // instead. Cleared on unmount so navigating away doesn't leave a stale campaign context showing
+  // on Dashboard.
   useEffect(() => {
     if (!campaignId || !campaignName) return
-    setHeaderContext({ campaignId, campaignName, showReadAloudToggle: ttsAvailable, turnLabel })
+    setHeaderContext({ campaignId, campaignName, showReadAloudToggle: ttsAvailable, turnLabel, recapSummary, activeQuests })
     return () => setHeaderContext(null)
-  }, [campaignId, campaignName, ttsAvailable, turnLabel, setHeaderContext])
+    // activeQuests is a fresh array every render (mapped from snapshot.Quests) — depending on
+    // snapshot itself instead avoids re-running this effect every render for a value that's only
+    // ever derived from it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [campaignId, campaignName, ttsAvailable, turnLabel, recapSummary, snapshot, setHeaderContext])
 
   useEffect(() => {
     if (spokenTurnRef.current === null && campaign) {

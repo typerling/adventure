@@ -104,7 +104,10 @@ test.describe('the top-bar header merges campaign navigation', () => {
     await turnButton.click()
     const dialog = page.getByRole('dialog')
     await expect(dialog).toBeVisible()
-    await expect(dialog.getByText('Where you are', { exact: true })).toBeVisible()
+    // "Recap" as of issue #24 (was "Where you are" — the dialog grew a rolling-summary excerpt
+    // and active quests alongside the location line; see tests/header-recap.spec.ts for coverage
+    // of that added content).
+    await expect(dialog.getByText('Recap', { exact: true })).toBeVisible()
     await expect(dialog.getByText(label ?? '', { exact: true })).toBeVisible()
     // No toast — this used to just fire a Sonner toast instead of a dismissable dialog. Asserted
     // against the recorded history rather than a live locator: `toHaveCount(0)` auto-retries and
