@@ -160,4 +160,53 @@ test.describe("Settings restructure (issue #22)", () => {
     await expect(downloadButton).toBeVisible({ timeout: 15_000 });
     await expect(downloadButton).toBeEnabled();
   });
+
+  test("manually collapsing the Local AI models card survives editing the AI-mode dropdown in the same visit", async ({
+    page,
+  }) => {
+    // Found in independent review of #76: CollapsibleSettingsCard's remount key was originally
+    // derived from `localModelsDefaultOpen` itself (i.e. from `settings?.aiMode === 'local'`
+    // directly) — the same live value the "This campaign" section's own AI-mode dropdown edits in
+    // real time, with no Save required. Editing that dropdown therefore changed the key too,
+    // forcing an unwanted remount that silently threw away whatever the player had just manually
+    // toggled. The fix keys on "has settings finished its async load" instead, which only changes
+    // once per campaign — this reproduces the exact scenario the fix is for.
+    await installGoogleApiMock(page);
+    await createRandomCampaign(page);
+    await setCampaignAiMode(page, "local");
+    const campaignId = page.url().match(/\/play\/([^/?#]+)/)![1];
+    await page.goto(`/settings/${campaignId}`);
+
+    // Campaign uses local mode, so the card starts expanded (its documented default).
+    await expect(page.getByTestId("local-models-card-toggle")).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+
+    // Player manually collapses it.
+    await page.getByTestId("local-models-card-toggle").click();
+    await expect(page.getByTestId("local-models-card-toggle")).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+
+    // Player then flips the AI-mode dropdown away and back to "local" — no Save click, just
+    // browsing the dropdown, which is enough to update `settings.aiMode` in memory either way.
+    await page
+      .locator('[data-testid="campaign-settings"] [data-slot="select-trigger"]')
+      .first()
+      .click();
+    await page.getByRole("option", { name: "Manual (copy/paste into claude.ai or chatgpt.com)" }).click();
+    await page
+      .locator('[data-testid="campaign-settings"] [data-slot="select-trigger"]')
+      .first()
+      .click();
+    await page.getByRole("option", { name: "Local model (runs on this device)" }).click();
+
+    // The player's manual collapse must still hold — not silently reopened by the dropdown edit.
+    await expect(page.getByTestId("local-models-card-toggle")).toHaveAttribute(
+      "aria-expanded",
+      "false",
+    );
+  });
 });

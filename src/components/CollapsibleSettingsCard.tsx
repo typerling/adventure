@@ -11,9 +11,13 @@ export interface CollapsibleSettingsCardProps {
    * re-render (e.g. `settings` finishing its Drive load) can't yank a card the player just
    * expanded/collapsed back to some newly-recomputed default. Callers that need the *initial*
    * open state to reflect data that loads asynchronously (this card's two Settings.tsx callers
-   * both do — see that file) should key this component on the value defaultOpen was computed
-   * from, so it remounts (and re-reads the new default) exactly once when that data arrives,
-   * rather than on every render. */
+   * both do — see that file) should key this component so it remounts (and re-reads the new
+   * default) exactly once when that data first arrives — but key on a value that only changes
+   * when there's genuinely new initial data to reflect (e.g. "has the async load completed yet"),
+   * **not** on `defaultOpen` itself or anything it's derived from. A prior version of this
+   * component's callers did exactly that and it silently discarded a player's manual toggle
+   * every time they edited the live setting `defaultOpen` was computed from, since editing it
+   * changed the key too, forcing an unwanted remount (found in independent review of #76). */
   defaultOpen: boolean
   children: ReactNode
   /** Stamped onto the card (`{testId}`) and its disclosure trigger (`{testId}-toggle`) as

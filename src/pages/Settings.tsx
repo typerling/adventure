@@ -631,6 +631,15 @@ export function Settings() {
   const kokoroModelDefaultOpen = Boolean(
     campaignId && settings?.ttsProvider === "huggingface-local",
   );
+  // The remount key for both cards below: deliberately NOT `${...DefaultOpen}` itself, which
+  // would remount (discarding a player's manual toggle) every time they edit the AI-mode/TTS-
+  // provider dropdown in "This campaign" above, since those live-edit the same `settings` object
+  // this key would otherwise be derived from (found in independent review of #76 — reproduced by
+  // toggling AI mode away and back with a card manually collapsed, which silently reopened it).
+  // Keying on campaignId + "has settings finished its async load yet" instead only changes when
+  // there's actually new initial data to reflect: once when navigating to a different campaign's
+  // settings, and once more when that campaign's `settings.md` finishes loading from Drive/cache.
+  const settingsLoadKey = `${campaignId ?? "none"}-${settings ? "ready" : "loading"}`;
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-6 px-4 py-6 sm:px-6 sm:py-8">
@@ -1175,7 +1184,7 @@ export function Settings() {
           )}
 
         <CollapsibleSettingsCard
-          key={`local-models-${localModelsDefaultOpen}`}
+          key={`local-models-${settingsLoadKey}`}
           defaultOpen={localModelsDefaultOpen}
           testId="local-models-card"
           title="Local AI models"
@@ -1309,7 +1318,7 @@ export function Settings() {
         </CollapsibleSettingsCard>
 
         <CollapsibleSettingsCard
-          key={`kokoro-model-${kokoroModelDefaultOpen}`}
+          key={`kokoro-model-${settingsLoadKey}`}
           defaultOpen={kokoroModelDefaultOpen}
           testId="kokoro-model-card"
           title="Kokoro voice model"
