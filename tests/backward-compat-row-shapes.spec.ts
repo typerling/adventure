@@ -103,7 +103,9 @@ test('a reordered column is silently misread, not caught — no automatic protec
   const [decoded] = decodeTab<{ relationship: string; status: string }>('NPCs', [header, reordered])
 
   // The values landed in the wrong fields — 'alive' where a relationship string was expected, and
-  // 'friendly' coerced into the status enum's fallback since it isn't a recognized status value.
+  // 'friendly' where a status was expected. No enum validation catches this either: `status`'s
+  // codec is `str(c[4]) || 'unknown'`, which only falls back on an empty/undefined cell — any
+  // truthy string, including one from the wrong column entirely, is accepted as-is.
   expect(decoded.relationship).toBe('alive')
   expect(decoded.status).toBe('friendly')
 })
