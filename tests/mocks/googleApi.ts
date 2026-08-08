@@ -128,6 +128,19 @@ export class FakeDriveStore {
     if (!file?.spreadsheet) throw new Error(`removeSheetTab: unknown spreadsheet ${spreadsheetId}`)
     delete file.spreadsheet.sheets[tabTitle]
   }
+
+  /** Directly overwrites one tab's rows (header row included, at index 0) — bypassing every real
+   * write path, which only ever produces *today's* column shape. This is what lets
+   * tests/fixtures/backward-compat/'s row-shape fixtures plant a tab in some genuinely older,
+   * narrower/reordered column layout so the current app's read path (sheetSchema.ts's
+   * rowCodecs/decodeTab) can be exercised against it. See seedLegacyCampaign.ts. */
+  setSheetRows(spreadsheetId: string, tabTitle: string, rows: Row[]): void {
+    const file = this.files.get(spreadsheetId)
+    if (!file?.spreadsheet) throw new Error(`setSheetRows: unknown spreadsheet ${spreadsheetId}`)
+    const sheet = file.spreadsheet.sheets[tabTitle]
+    if (!sheet) throw new Error(`setSheetRows: unknown tab "${tabTitle}" on spreadsheet ${spreadsheetId}`)
+    sheet.rows = rows
+  }
 }
 
 function toDriveFileJson(file: FakeFile) {
