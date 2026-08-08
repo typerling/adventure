@@ -43,7 +43,7 @@ export function Codex() {
       <h1 className="font-heading text-2xl font-medium text-foreground">Codex</h1>
 
       <Tabs defaultValue="character">
-        <TabsList className="w-full justify-start overflow-x-auto">
+        <TabsList className="scrollbar-none w-full justify-start overflow-x-auto">
           <TabsTrigger value="character">Character</TabsTrigger>
           <TabsTrigger value="inventory">Inventory</TabsTrigger>
           <TabsTrigger value="skills">Skills</TabsTrigger>
