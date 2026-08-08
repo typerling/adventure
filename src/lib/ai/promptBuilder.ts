@@ -1,5 +1,6 @@
 import type { CampaignFile } from '@/types/campaign'
 import type { TurnRecord } from '@/types/turn'
+import { stripRollingSummaryPlaceholder } from '@/lib/google/campaignRepo'
 import type {
   CharacterRow,
   InventoryItem,
@@ -171,7 +172,7 @@ ${campaign.body.trim()}
 ${campaign.meta.houseRules ? `\nHouse rules: ${campaign.meta.houseRules}` : ''}
 
 ## Running summary of the story so far
-${rollingSummary.trim() || '(no summary yet)'}
+${stripRollingSummaryPlaceholder(rollingSummary) || '(no summary yet)'}
 
 ## Most recent turns
 ${renderRecentTurns(recentTurns)}

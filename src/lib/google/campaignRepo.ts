@@ -33,6 +33,28 @@ export const ROOT_FOLDER_NAME = 'Adventure'
  * this exact string rather than duplicating the literal. */
 export const EMPTY_ROLLING_SUMMARY_PLACEHOLDER = '_No story yet — this campaign has not started._'
 
+/** Strips a leading `EMPTY_ROLLING_SUMMARY_PLACEHOLDER` off a rolling summary, if present;
+ * otherwise returns the (trimmed) input unchanged. Two callers need exactly this, for two
+ * different reasons — issue #70:
+ *
+ * 1. `useCampaign.ts`'s `submitReply` calls this on the *current* rolling summary before
+ *    appending a new `summary_update`, so the placeholder never survives into real content. This
+ *    covers both the campaign's first-ever real update (the placeholder is the entire string, so
+ *    this reduces to "start fresh") *and* self-heals any campaign that already had the placeholder
+ *    permanently glued onto its rolling summary before this fix shipped (issue #70's backward-
+ *    compatibility case) — the very next turn that campaign submits strips it out for good, no
+ *    separate migration needed.
+ * 2. Display/prompt call sites — `recap.ts`'s `buildRecapSummary` and `promptBuilder.ts`'s prompt
+ *    assembly — call this so an already-affected campaign (one that hasn't submitted a turn since
+ *    the write-side fix above landed, so its stored rolling.md still carries the prefix) doesn't
+ *    show or feed the placeholder text anywhere in the meantime. */
+export function stripRollingSummaryPlaceholder(rollingSummary: string): string {
+  const trimmed = rollingSummary.trim()
+  return trimmed.startsWith(EMPTY_ROLLING_SUMMARY_PLACEHOLDER)
+    ? trimmed.slice(EMPTY_ROLLING_SUMMARY_PLACEHOLDER.length).trim()
+    : trimmed
+}
+
 export interface Library {
   rootId: string
   campaignsFolderId: string
