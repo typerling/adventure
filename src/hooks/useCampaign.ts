@@ -5,6 +5,7 @@ import {
   loadSheetSnapshot,
   readRollingSummary,
   saveCampaignFile,
+  stripRollingSummaryPlaceholder,
   writeRollingSummary,
 } from '@/lib/google/campaignRepo'
 import { appendTurnToLog, readRecentTurns } from '@/lib/google/storyLog'
@@ -177,8 +178,15 @@ export function useCampaign(folderId: string | undefined) {
           optionsOffered: parsed.reply.options.map((o) => o.label),
         })
 
+        // Strip a leading placeholder (see stripRollingSummaryPlaceholder's doc comment) before
+        // appending, rather than always appending onto whatever's already there — otherwise
+        // "_No story yet..._" stays a permanent leading prefix on every campaign's rolling
+        // summary forever (issue #70). This both starts a brand-new campaign's summary fresh on
+        // its first real update, and self-heals a campaign whose stored rolling.md already
+        // carries the placeholder from before this fix (issue #70's backward-compatibility case)
+        // the next time it submits a turn.
         const nextSummary = parsed.reply.summary_update
-          ? `${data.rollingSummary.trim()} ${parsed.reply.summary_update}`.trim()
+          ? `${stripRollingSummaryPlaceholder(data.rollingSummary)} ${parsed.reply.summary_update}`.trim()
           : data.rollingSummary
         if (parsed.reply.summary_update) {
           await writeRollingSummary(folderId, nextSummary)

@@ -1,4 +1,4 @@
-import { EMPTY_ROLLING_SUMMARY_PLACEHOLDER } from '@/lib/google/campaignRepo'
+import { stripRollingSummaryPlaceholder } from '@/lib/google/campaignRepo'
 import type { Quest } from '@/types/sheets'
 
 /**
@@ -20,17 +20,17 @@ export const RECAP_SUMMARY_MAX_CHARS = 280
  * with no turns yet) so the caller can skip rendering that section entirely rather than showing
  * an empty "So far" heading. */
 export function buildRecapSummary(rollingSummary: string, maxChars = RECAP_SUMMARY_MAX_CHARS): string | null {
-  let trimmed = rollingSummary.trim()
-  // Every campaign's rolling.md starts as this exact placeholder (see campaignRepo.ts's
-  // createCampaign) until the first turn appends a real summary_update — and useCampaign.ts's
-  // submitReply only ever *appends* to the existing summary, so this placeholder stays as a
-  // permanent leading prefix on every campaign's rolling summary, not just its very first turn
-  // (a pre-existing wart, filed separately as its own issue — out of scope to fix the storage
-  // side here). Strip it wherever it leads the string so it never surfaces as recap text,
-  // Markdown underscores and all.
-  if (trimmed.startsWith(EMPTY_ROLLING_SUMMARY_PLACEHOLDER)) {
-    trimmed = trimmed.slice(EMPTY_ROLLING_SUMMARY_PLACEHOLDER.length).trim()
-  }
+  // Every campaign's rolling.md starts as the exact EMPTY_ROLLING_SUMMARY_PLACEHOLDER string (see
+  // campaignRepo.ts's createCampaign) until the first turn appends a real summary_update.
+  // useCampaign.ts's submitReply now strips that placeholder before appending (issue #70), so a
+  // campaign that has submitted a turn since that fix landed never carries it here. Two cases
+  // still reach this line with the placeholder present, so the strip below stays needed rather
+  // than becoming dead code: a brand-new campaign that hasn't submitted its first turn yet (this
+  // function is what makes that case return null, below), and a campaign whose stored rolling.md
+  // still has the placeholder baked in from before the write-side fix shipped and hasn't
+  // submitted a turn since (issue #70's backward-compatibility case — self-heals in storage on
+  // that campaign's next turn, but this display path can't wait for that).
+  const trimmed = stripRollingSummaryPlaceholder(rollingSummary)
   if (!trimmed) return null
   if (trimmed.length <= maxChars) return trimmed
 
