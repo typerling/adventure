@@ -20,7 +20,11 @@ test.describe('reaching a campaign\'s own Settings', () => {
     await page.getByRole('menuitem', { name: 'Settings' }).click()
 
     await expect(page).toHaveURL(/\/settings\/.+/)
-    await expect(page.getByText('This campaign', { exact: true })).toBeVisible()
+    // getByRole('heading', ...), not getByText — issue #22 wrapped the "This campaign" card in a
+    // SettingsSection whose own <h2> repeats the card's title text verbatim, so a plain text query
+    // is now ambiguous between the two. The heading role is also the more precise assertion here:
+    // it's specifically checking the section landed, not just that the words appear anywhere.
+    await expect(page.getByRole('heading', { name: 'This campaign' })).toBeVisible()
     await expect(page.getByText('AI mode', { exact: true })).toBeVisible()
   })
 
@@ -32,7 +36,11 @@ test.describe('reaching a campaign\'s own Settings', () => {
     await page.getByRole('link', { name: 'Campaign settings' }).click()
 
     await expect(page).toHaveURL(/\/settings\/.+/)
-    await expect(page.getByText('This campaign', { exact: true })).toBeVisible()
+    // getByRole('heading', ...), not getByText — issue #22 wrapped the "This campaign" card in a
+    // SettingsSection whose own <h2> repeats the card's title text verbatim, so a plain text query
+    // is now ambiguous between the two. The heading role is also the more precise assertion here:
+    // it's specifically checking the section landed, not just that the words appear anywhere.
+    await expect(page.getByRole('heading', { name: 'This campaign' })).toBeVisible()
     await expect(page.getByText('AI mode', { exact: true })).toBeVisible()
   })
 })

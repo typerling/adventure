@@ -11,6 +11,7 @@ import {
 } from "./mocks/kokoro";
 import {
   createRandomCampaign,
+  expandSettingsCard,
   setCampaignVoiceProviders,
   submitFreeTextTurn,
 } from "./helpers";
@@ -71,6 +72,8 @@ test("the Kokoro voice model can be downloaded ahead of time from Settings", asy
   await expect(
     page.getByText("Kokoro voice model", { exact: true }),
   ).toBeVisible();
+  // No campaign open, so this card starts collapsed (issue #22).
+  await expandSettingsCard(page, "kokoro-model-card");
   const downloadButton = page.getByRole("button", {
     name: "Download voice model now",
   });
@@ -110,6 +113,7 @@ test("an already-downloaded Kokoro voice model shows as ready and can be removed
   });
 
   await page.reload();
+  await expandSettingsCard(page, "kokoro-model-card");
   await expect(
     page.getByText(
       "Voice model downloaded and ready — playback starts instantly.",
@@ -539,6 +543,7 @@ test.describe("Kokoro voice picker", () => {
       );
     });
     await page.reload();
+    await expandSettingsCard(page, "kokoro-model-card");
     await expect(
       page.getByText(
         "Voice model downloaded and ready — playback starts instantly.",

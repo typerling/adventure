@@ -1,6 +1,10 @@
 import { test, expect } from "@playwright/test";
 import { installGoogleApiMock } from "./mocks/googleApi";
-import { createRandomCampaign, setCampaignAiMode } from "./helpers";
+import {
+  createRandomCampaign,
+  expandSettingsCard,
+  setCampaignAiMode,
+} from "./helpers";
 
 /**
  * Real, on-device model generation via WebGPU can't practically run as an automated test here:
@@ -28,11 +32,15 @@ test.describe("local (on-device) AI mode", () => {
   }) => {
     await installGoogleApiMock(page);
 
-    // No campaign at all — the general Settings page, reached directly.
+    // No campaign at all — the general Settings page, reached directly. The card's title shows
+    // either way (issue #22): only its body — the actual catalog/download UI — starts collapsed
+    // here, since there's no campaign context to judge relevance from.
     await page.goto("/settings");
     await expect(
       page.getByText("Local AI models", { exact: true }),
     ).toBeVisible();
+    await expect(page.locator(DEFAULT_MODEL_ROW)).toHaveCount(0);
+    await expandSettingsCard(page, "local-models-card");
     // One row (and one "Download" button) per catalog entry.
     await expect(page.locator(DEFAULT_MODEL_ROW)).toBeVisible();
     await expect(
@@ -40,7 +48,8 @@ test.describe("local (on-device) AI mode", () => {
     ).toBeVisible();
 
     // Still there for a campaign whose AI mode is NOT local (manual is the default for a fresh
-    // campaign) — this list doesn't depend on the currently-viewed campaign's settings.
+    // campaign) — this list doesn't depend on the currently-viewed campaign's settings. Since this
+    // campaign doesn't use local mode, the card is collapsed by default here too.
     await createRandomCampaign(page);
     const match = page.url().match(/\/play\/([^/?#]+)/);
     const campaignId = match![1];
@@ -48,6 +57,8 @@ test.describe("local (on-device) AI mode", () => {
     await expect(
       page.getByText("Local AI models", { exact: true }),
     ).toBeVisible();
+    await expect(page.locator(DEFAULT_MODEL_ROW)).toHaveCount(0);
+    await expandSettingsCard(page, "local-models-card");
     await expect(page.locator(DEFAULT_MODEL_ROW)).toBeVisible();
   });
 
@@ -197,6 +208,7 @@ test.describe("local (on-device) AI mode", () => {
     );
 
     await page.reload();
+    await expandSettingsCard(page, "local-models-card");
     const row = page.locator(DEFAULT_MODEL_ROW);
     await expect(row.getByText("Downloaded and ready.")).toBeVisible();
     const removeButton = row.getByRole("button", { name: "Remove" });
@@ -274,10 +286,18 @@ test.describe("local (on-device) AI mode", () => {
     }, DEFAULT_MODEL_ID);
 
     await page.reload();
+    await expandSettingsCard(page, "local-models-card");
     const row = page.locator(DEFAULT_MODEL_ROW);
     // Never fully downloaded, so the primary action is still "Download" — but a partial-clear
     // option is offered alongside it rather than silently discarding the interrupted attempt.
-    await expect(row.getByRole("button", { name: "Download" })).toBeVisible();
+    // exact: true — without it this also matches "Clear partial download" (a real, pre-existing
+    // ambiguity this test happened not to hit before: expanding the card now takes just long
+    // enough for the async hasPartial check to resolve before this assertion runs, so both
+    // buttons are reliably present by the time it does, instead of racing a still-"Download"-only
+    // render).
+    await expect(
+      row.getByRole("button", { name: "Download", exact: true }),
+    ).toBeVisible();
     const clearButton = row.getByRole("button", {
       name: "Clear partial download",
     });
