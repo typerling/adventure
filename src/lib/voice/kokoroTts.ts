@@ -8,6 +8,7 @@ import {
   CACHE_NAMES,
   DEFAULT_VOICE,
   KOKORO_DTYPE_SUFFIX,
+  KOKORO_PLAYBACK_BUFFER_CHUNKS,
   MAX_CHUNK_CHARS,
   PREVIEW_TEXT,
   PROGRESS_LABEL,
@@ -101,6 +102,41 @@ import type {
  * audio hardware to play a chunk's duration against in real time — see "Playback engine" above) —
  * so whether generation reliably stays ahead once "warmed up" by one chunk, the way the issue
  * speculates it might, is left unverified rather than assumed true.
+ *
+ * **Startup playback buffer (issue #68).** Reported audio artifacts led to investigating exactly
+ * this "falling behind" risk more concretely. Two things were newly verified for that investigation
+ * (real, unfaked Kokoro CPU inference via kokoro-js's Node build — `onnxruntime-node`'s `cpu`
+ * device, the same "conservative lower bound on in-browser WASM" caveat kokoroTts.worker.ts's doc
+ * comment already documents for its own timing measurement, not literally in-browser WASM):
+ * - Real generated chunk audio has a clean, near-silent taper at *both* ends already (measured:
+ *   sub-percent-of-full-scale RMS in the first/last 10ms of every generated chunk, and essentially
+ *   zero sample-value jump between one chunk's last sample and the next chunk's first) — ruling
+ *   *out* "Kokoro's own boundary lacks a silence taper" as a real cause here: there is no padding to
+ *   trim, and a mathematically gapless scheduling boundary between two already-near-silent edges
+ *   should not itself produce an audible click. This directly weakens the case for a padding-trim
+ *   fix (`splitIntoSpeakableChunks`/generation side) — there's nothing to trim.
+ * - Generation speed measured at only ~0.7x of each chunk's own audio duration — a ~30% margin over
+ *   real-time even on the conservative-lower-bound backend above. That margin doesn't exist at all
+ *   for the *first* chunk (nothing has generated yet when playback would start), and 30% is not much
+ *   margin to survive a slower device, a less-favorable (real in-browser WASM, possibly
+ *   single-threaded if cross-origin isolation didn't take) backend, or a busy tab — exactly the
+ *   conditions under which "falling behind" (this section, above) would produce a real, audible gap
+ *   a player could describe as an "artifact."
+ *
+ * Given the first finding leaves no other in-code-explicable cause standing (see kokoroTts.worker.ts
+ * and the issue itself for the full reasoning, including what's still genuinely unverifiable in this
+ * sandbox — real audio hardware gaplessness), `speak()` below now buffers the first
+ * `KOKORO_PLAYBACK_BUFFER_CHUNKS` chunks (generated, held, not yet scheduled) before starting
+ * playback, rather than scheduling chunk 0 the instant it arrives — see that constant's own doc
+ * comment for why 2, and the measured per-chunk generation time (~1.3-1.8s in this sandbox) that
+ * bounds how much startup latency this actually costs: nowhere near #44's tens-of-seconds full-turn
+ * wait, a small, deliberate trade of a little more up-front latency for a real margin against falling
+ * behind on chunk 2 once chunk 0 starts playing. A turn with fewer total chunks than the buffer size
+ * still plays as soon as all of it is ready, same as before (see `flushPending`'s doc comment for how
+ * this collapses correctly for a 1-chunk turn). If *generation itself* fails before the buffer ever
+ * fills (a real error, not a supersession), whatever chunks did complete are flushed and played
+ * rather than silently discarded — mirroring the existing "don't cut off audio already generated"
+ * behavior below for a failure after the buffer has already flushed once.
  *
  * **De-duplication after a WebGPU-fallback restart.** kokoroTts.worker.ts's device-lost/no-adapter
  * fallback restarts the *whole* job from chunk 0 on WASM (not just the failed chunk) — see that
@@ -613,13 +649,63 @@ export function createKokoroTtsProvider(opts: KokoroTtsOptions = {}): TtsProvide
       // engine" above. Clamped against ctx.currentTime on every chunk (not just initialized once),
       // so a chunk that arrives late doesn't try to schedule in the past (see "Falling behind").
       let nextStartTime = ctx.currentTime
+      // See "Startup playback buffer" above: chunks arriving before playback has started are held
+      // here instead of scheduled immediately, so generation gets a head start over playback rather
+      // than starting the race exactly tied. Cleared for good the first time flushPending runs.
+      const pendingBuffer: { index: number; audio: Float32Array; samplingRate: number }[] = []
+      let started = false
 
       await new Promise<void>((resolve, reject) => {
         settleCurrent = resolve
+
+        // createBuffer's sampleRate need not match ctx's own hardware rate — the Web Audio API
+        // resamples during playback automatically (verified against the spec: AudioBuffer's
+        // sampleRate is independent of its BaseAudioContext's), so no manual resampling here.
+        function scheduleChunk(index: number, total: number, audio: Float32Array, samplingRate: number): void {
+          const buffer = ctx.createBuffer(1, audio.length, samplingRate)
+          // getChannelData(0).set(...) rather than copyToChannel(audio, 0) — equivalent for a
+          // single-channel buffer, but avoids a strict-typed-array generic mismatch
+          // (Float32Array<ArrayBufferLike> vs. the DOM lib's Float32Array<ArrayBuffer>) that
+          // copyToChannel's stricter parameter type doesn't accept without an unsafe cast.
+          buffer.getChannelData(0).set(audio)
+          const source = ctx.createBufferSource()
+          source.buffer = buffer
+          source.connect(ctx.destination)
+          const startTime = Math.max(ctx.currentTime, nextStartTime)
+          nextStartTime = startTime + buffer.duration
+          scheduledSources.push(source)
+          if (index === total - 1) {
+            // The last chunk's natural end is this speak() call's natural end too. A concurrent
+            // stop() also resolves this same promise (via settleCurrent) — whichever fires
+            // first wins; resolving an already-settled promise a second time is a no-op, so
+            // there's no race to guard against here.
+            source.onended = () => resolve()
+          }
+          source.start(startTime)
+        }
+
+        // Schedules every chunk buffered so far, back-to-back, and switches to scheduling each
+        // future chunk immediately as it arrives — the one-time transition out of "still buffering."
+        // A turn with fewer total chunks than KOKORO_PLAYBACK_BUFFER_CHUNKS never has a chance to
+        // reach that count; onChunkAudio below flushes as soon as every chunk of a short turn has
+        // arrived instead, so a short turn still plays the moment it's actually fully ready, same as
+        // before this buffer existed.
+        function flushPending(): void {
+          started = true
+          for (const chunk of pendingBuffer) scheduleChunk(chunk.index, totalChunks, chunk.audio, chunk.samplingRate)
+          pendingBuffer.length = 0
+        }
+
+        // Set on the first message and unchanged after (the worker sends the same chunks.length on
+        // every message for one job) — needed by the error path below, which flushPending can't
+        // reach via a chunkAudio callback's own `total` parameter once generation has already failed.
+        let totalChunks = 0
+
         sendStream(
           { kind: 'speakStream', chunks, voice: speakOpts?.voice ?? '', device: readDevice() },
           (index, total, audio, samplingRate) => {
             if (isStale()) return
+            totalChunks = total
             // Reported even for a chunk about to be dropped as a duplicate below — a long
             // WebGPU-fallback restart (kokoroTts.worker.ts's doSpeakStream) re-generates chunks
             // 0..N-1 for real before reaching the genuinely new chunk N, and the player should see
@@ -628,29 +714,15 @@ export function createKokoroTtsProvider(opts: KokoroTtsOptions = {}): TtsProvide
             if (index !== nextExpectedChunkIndex) return // duplicate resend — see doc comment above
             nextExpectedChunkIndex++
 
-            // createBuffer's sampleRate need not match ctx's own hardware rate — the Web Audio API
-            // resamples during playback automatically (verified against the spec: AudioBuffer's
-            // sampleRate is independent of its BaseAudioContext's), so no manual resampling here.
-            const buffer = ctx.createBuffer(1, audio.length, samplingRate)
-            // getChannelData(0).set(...) rather than copyToChannel(audio, 0) — equivalent for a
-            // single-channel buffer, but avoids a strict-typed-array generic mismatch
-            // (Float32Array<ArrayBufferLike> vs. the DOM lib's Float32Array<ArrayBuffer>) that
-            // copyToChannel's stricter parameter type doesn't accept without an unsafe cast.
-            buffer.getChannelData(0).set(audio)
-            const source = ctx.createBufferSource()
-            source.buffer = buffer
-            source.connect(ctx.destination)
-            const startTime = Math.max(ctx.currentTime, nextStartTime)
-            nextStartTime = startTime + buffer.duration
-            scheduledSources.push(source)
-            if (index === total - 1) {
-              // The last chunk's natural end is this speak() call's natural end too. A concurrent
-              // stop() also resolves this same promise (via settleCurrent) — whichever fires
-              // first wins; resolving an already-settled promise a second time is a no-op, so
-              // there's no race to guard against here.
-              source.onended = () => resolve()
+            if (!started) {
+              pendingBuffer.push({ index, audio, samplingRate })
+              // Flush once the buffer target is reached, or once every chunk of a shorter-than-the-
+              // buffer turn has arrived (min(...)) — see flushPending's doc comment.
+              if (pendingBuffer.length < Math.min(KOKORO_PLAYBACK_BUFFER_CHUNKS, total)) return
+              flushPending()
+              return
             }
-            source.start(startTime)
+            scheduleChunk(index, total, audio, samplingRate)
           },
         ).catch((err: unknown) => {
           // A genuine generation failure (not a supersession) after some chunks already played:
@@ -659,7 +731,14 @@ export function createKokoroTtsProvider(opts: KokoroTtsOptions = {}): TtsProvide
           // letting whatever narration exists finish, at the cost of the "Stop playback" UI state
           // reverting slightly before the audio actually stops (Play.tsx's speakText.finally runs
           // on this rejection). Rejecting still surfaces the error as a toast either way.
-          if (!isStale()) reject(err instanceof Error ? err : new Error(String(err)))
+          if (!isStale()) {
+            // The same "let whatever narration exists finish" reasoning applies to chunks still
+            // held in the startup buffer when generation fails before ever reaching it — without
+            // this, a turn that fails on (say) chunk 3 while still buffering chunks 0-1 would play
+            // nothing at all, even though chunk 0 and 1 generated successfully.
+            if (!started && pendingBuffer.length > 0) flushPending()
+            reject(err instanceof Error ? err : new Error(String(err)))
+          }
         })
       }).finally(() => {
         settleCurrent = null

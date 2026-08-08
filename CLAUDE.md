@@ -436,6 +436,28 @@ philosophy as the AI backend. Three implementations exist (Kokoro is TTS-only):
   playback, confirmed to work headlessly here despite no real audio hardware) versus what isn't
   (real-device audio-hardware gaplessness, and background-tab-freeze behavior).
 
+  **Startup playback buffer (issue #68).** Reported playback artifacts led to investigating #62's
+  "start on chunk 1" design more concretely — this environment turned out to be able to run real
+  (unfaked) Kokoro inference after all, via kokoro-js's Node/`onnxruntime-node` `cpu` device (not
+  literally in-browser WASM, but the same documented conservative-lower-bound stand-in
+  `kokoroTts.worker.ts` already uses for its own timing measurement). Two real findings from that:
+  every generated chunk already has a clean, near-silent taper at both ends with essentially zero
+  sample-value jump at a chunk boundary — ruling *out* "Kokoro's own chunk edges lack a silence
+  taper" as the cause, so there's nothing to trim; and generation measured at only ~0.7x of each
+  chunk's own audio duration — just a ~30% margin over real-time on a favorable backend, none of it
+  available for the very first chunk. That thin margin evaporating on a slower/real-WASM device is
+  the most plausible surviving explanation for a reported artifact this investigation could ground
+  in code + real data. `speak()` now buffers the first `KOKORO_PLAYBACK_BUFFER_CHUNKS` (2) generated
+  chunks before starting playback, instead of scheduling chunk 0 the instant it arrives, so
+  generation gets a real head start over playback — a deliberate middle ground between #44's
+  wait-for-everything and #62's wait-for-nothing, costing a few seconds of extra startup latency
+  (measured ~1.3-1.8s/chunk in this sandbox) rather than #44's tens-of-seconds full-turn wait. A
+  turn shorter than the buffer size still plays as soon as it's fully ready, same as before. What
+  this can't settle — same limitation as #62 itself — is whether real audio hardware reproduces
+  correctly-scheduled back-to-back chunks gaplessly, or whether the reported artifacts were actually
+  this falling-behind case at all rather than something only audible on the project owner's own
+  device; both remain open, needing the project owner's ears to confirm or rule out.
+
   **Cross-origin isolation for multi-threaded WASM.** ONNX Runtime Web's WASM backend (what
   `kokoroTts.worker.ts` runs on) can use `SharedArrayBuffer` to run multi-threaded, which speeds up
   both session init and inference — but only when the page is cross-origin isolated (`COOP:
