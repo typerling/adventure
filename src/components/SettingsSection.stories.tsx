@@ -21,7 +21,10 @@ function ExampleCard() {
     <Card>
       <CardHeader>
         <CardTitle>This campaign</CardTitle>
-        <CardDescription>AI mode and voice provider choices, stored in this campaign's settings.md.</CardDescription>
+        <CardDescription>
+          The one setting genuinely tied to this particular story, stored in this campaign's
+          settings.md (issue #77 moved everything else to a global store — see below).
+        </CardDescription>
       </CardHeader>
       <CardContent>
         <p className="text-sm text-muted-foreground">Card content goes here.</p>
@@ -30,8 +33,8 @@ function ExampleCard() {
   )
 }
 
-/** One of Settings.tsx's three headed groups (issue #22) — a heading, an optional description, and
- * whatever cards are passed as children. */
+/** One of Settings.tsx's headed groups (issue #22, revised by #77) — a heading, an optional
+ * description, and whatever cards are passed as children. */
 export const Default: Story = {
   args: {
     title: 'This campaign',
@@ -49,18 +52,19 @@ export const DefaultDesktop: Story = {
   globals: { viewport: { value: 'desktop' } },
 }
 
-/** The "AI & voice providers" section's real copy — a description explaining these settings are
- * account-wide, distinct from "This campaign"'s per-campaign framing. */
+/** The "AI & voice providers" section's real copy (issue #77) — a description explaining these
+ * settings are global to this device, not saved per campaign the way "This campaign" once
+ * implied for the whole page. */
 export const WithDescription: Story = {
   args: {
     title: 'AI & voice providers',
     description:
-      'Account-wide — apply to every campaign on this device, not just the one currently open.',
+      'The same AI mode, models, and voice choices apply to every campaign on this device — not saved per campaign, and not synced to other devices signed into the same Google account (see below).',
     children: <ExampleCard />,
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await expect(canvas.getByRole('heading', { name: 'AI & voice providers' })).toBeVisible()
-    await expect(canvas.getByText(/Account-wide/)).toBeVisible()
+    await expect(canvas.getByText(/apply to every campaign on this device/)).toBeVisible()
   },
 }

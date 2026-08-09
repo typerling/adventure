@@ -271,7 +271,16 @@ AI Adventure/
                                 #   current turn, current location, house rules) + prose body:
                                 #   world/scenario setup and your stated expectations, written
                                 #   at campaign creation and human-readable/editable anytime.
-      settings.md               # per-campaign voice provider choices, narration style (frontmatter)
+      settings.md               # per-campaign frontmatter — as of issue #77, only
+                                #   summarizationCadence (a narrative-pacing choice tied to this
+                                #   particular story). AI mode, model choices, STT/TTS provider,
+                                #   and voice IDs used to live here too, but the project owner's
+                                #   call was that there's no real per-campaign/global difference
+                                #   for a device/provider preference — they're global now,
+                                #   localStorage-only (see "Settings" under §10 and §11's Direct AI
+                                #   mode / Voice architecture notes). An older client's settings.md
+                                #   may still have those fields sitting in it — harmlessly ignored
+                                #   on read, no longer written back.
       world/
         lore/
           <slug>.md              # one file per long-form lore entry (a location history, a
@@ -634,8 +643,9 @@ Sources: [DriveThruRPG — PbtA introduction](https://pages.drivethrurpg.com/pow
    linked Markdown file when present).
 4. **Map** — the discovered-location graph from the `Map` sheet tab, rendered as connected
    nodes that reveal as `new_locations` deltas land; undiscovered edges hinted but greyed out.
-5. **Settings** — Drive folder picker, AI mode (manual/API + key), STT provider + key, TTS
-   provider + key/voice assignments, summarization cadence.
+5. **Settings** — Drive folder picker, account. AI mode (manual/API + key), STT/TTS provider +
+   key/voice assignments are global to the device (issue #77 — see §4), not per screen visit;
+   summarization cadence is the one setting that stays scoped to whichever campaign is open.
 
 ---
 

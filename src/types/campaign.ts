@@ -53,27 +53,22 @@ export interface CampaignFile {
   body: string
 }
 
-/** Frontmatter of campaigns/<slug>/settings.md */
+/** Frontmatter of campaigns/<slug>/settings.md.
+ *
+ * Every other field that used to live here (aiMode, claudeModel, localModelId, sttProvider,
+ * ttsProvider, elevenLabsVoiceId, kokoroVoiceId) moved to a single global, localStorage-backed
+ * store (`src/lib/settings/globalSettings.ts`) in issue #77 — the project owner's explicit call
+ * was that there's no real difference between "per-campaign" and "global" for a device/provider
+ * preference like an AI mode or a TTS voice, so re-picking one per campaign was friction, not a
+ * feature. `summarizationCadence` is the one field that stayed here: unlike the others, it's a
+ * narrative-pacing choice tied to how a *particular* story is being told (a fast, event-dense
+ * campaign might reasonably want a different re-summarization rhythm than a slow, dialogue-heavy
+ * one), not a device/provider preference — see #77's PR description for the full reasoning. */
 export interface CampaignSettings {
-  aiMode: AiMode
-  claudeModel: ClaudeModel
-  localModelId: LocalModelId
-  sttProvider: SttProvider
-  ttsProvider: TtsProvider
-  elevenLabsVoiceId?: string
-  /** Which Kokoro voice to use for on-device TTS — see kokoroTts.ts's `listKokoroVoices()`/
-   * `DEFAULT_VOICE`. Undefined means "use DEFAULT_VOICE ('af_heart')", mirroring how a blank
-   * elevenLabsVoiceId falls back to ElevenLabs' own default. */
-  kokoroVoiceId?: string
   summarizationCadence: number
 }
 
 export const DEFAULT_SETTINGS: CampaignSettings = {
-  aiMode: 'manual',
-  claudeModel: 'claude-sonnet-5',
-  localModelId: 'onnx-community/gemma-3-1b-it-ONNX',
-  sttProvider: 'browser',
-  ttsProvider: 'browser',
   summarizationCadence: 15,
 }
 

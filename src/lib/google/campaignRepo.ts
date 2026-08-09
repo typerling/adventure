@@ -3,6 +3,7 @@ import { createSpreadsheet, batchGetTabs, addMissingTabs, appendRows } from './s
 import { GoogleApiError } from './http'
 import { TAB_HEADERS, rowCodecs, decodeTab } from './sheetSchema'
 import { parseFrontmatter, stringifyFrontmatter } from '@/lib/markdown/frontmatter'
+import { seedGlobalSettingsFromLegacyIfNeeded } from '@/lib/settings/globalSettings'
 import { SHEET_TABS } from '@/types/sheets'
 import type {
   CampaignFile,
@@ -231,6 +232,13 @@ export async function loadSettings(folderId: string): Promise<CampaignSettings> 
   const file = await mustFind(folderId, 'settings.md')
   const raw = await getTextFile(file.id)
   const { data } = parseFrontmatter(raw)
+  // A pre-#77 settings.md still has aiMode/claudeModel/localModelId/sttProvider/ttsProvider/
+  // elevenLabsVoiceId/kokoroVoiceId sitting in it — vestigial now (CampaignSettings only types
+  // summarizationCadence going forward), but the *first* one of these read after upgrading is
+  // exactly the one-time chance to seed the new global store from a player's existing choices
+  // instead of silently resetting them — see that function's doc comment. No-ops after the first
+  // call that finds anything (or the first call ever, if there's nothing to find).
+  seedGlobalSettingsFromLegacyIfNeeded(data)
   return { ...DEFAULT_SETTINGS, ...(data as unknown as Partial<CampaignSettings>) }
 }
 
