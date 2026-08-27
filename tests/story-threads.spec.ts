@@ -214,4 +214,46 @@ test.describe('Story threads / fronts-clocks tracking (#83)', () => {
     await actAndOpenDialog(page, 'head back to town')
     await expect(promptTextarea).not.toHaveValue(/The cult beneath the chapel/)
   })
+
+  test('planting and advancing the same thread in one turn keeps its description and clock size', async ({
+    page,
+  }) => {
+    // Regression for a same-title new_threads + thread_updates collision in one state_delta —
+    // found in independent review of PR #85. applyDelta.ts used to process thread_updates before
+    // new_threads: the update ran first, found no existing row, created a bare stub (empty
+    // description, progressMax 0), and the create then silently no-op'd because a row with that
+    // title already "existed" — losing the real description and clock size. new_threads now runs
+    // first so the update merges onto the fully-created row instead.
+    const store = await installGoogleApiMock(page)
+    await createRandomCampaign(page)
+
+    await submitTurnWithDelta(
+      page,
+      'explore the cellar',
+      'Something is very wrong down here, and it is already moving.',
+      {
+        new_threads: [
+          {
+            title: 'The cult beneath the chapel',
+            description: 'A cult is quietly preparing a ritual in the crypt below the chapel.',
+            status: 'dormant',
+            revealed: false,
+            progress: 0,
+            progressMax: 6,
+          },
+        ],
+        thread_updates: [{ title: 'The cult beneath the chapel', status: 'active', progress: 2 }],
+      },
+    )
+
+    // Columns: id, title, description, status, revealed, progress, progressMax, createdTurn, updatedTurn
+    const row = sheetRows(store, 'Threads').find((r) => r[1] === 'The cult beneath the chapel')
+    expect(row, 'the thread was persisted').toBeDefined()
+    expect(row![2], 'description from the create must survive the same-turn update').toBe(
+      'A cult is quietly preparing a ritual in the crypt below the chapel.',
+    )
+    expect(row![3], 'status from the update applies').toBe('active')
+    expect(row![5], 'progress from the update applies').toBe(2)
+    expect(row![6], 'progressMax from the create must survive the same-turn update').toBe(6)
+  })
 })

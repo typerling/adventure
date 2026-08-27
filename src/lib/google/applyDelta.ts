@@ -219,10 +219,32 @@ export async function applyStateDelta(
     await updateRow(spreadsheetId, 'Quests', rowNum, rowCodecs.Quests.toRow(merged))
   }
 
-  // Story threads (issue #83) — update existing (by title) or append new, same upsert-by-name
-  // pattern as Quests just above. `progress` is clamped into [0, progressMax] defensively even
-  // though validate.ts already warns on an out-of-range value — a warning doesn't block the
-  // write, so this is what actually keeps a bad value out of the sheet.
+  // Story threads (issue #83) — append new, then update existing (by title), same upsert-by-name
+  // pattern as Quests just above. new_threads runs first so a same-turn new_threads +
+  // thread_updates pair for the same title (the AI plants a thread and immediately advances it
+  // in one turn) lands the create's full description/progressMax before the update merges its
+  // fields on top, rather than the update finding no row, creating a bare stub, and the create
+  // then silently no-op'ing because the title "already exists" — found in independent review of
+  // PR #85. `progress` is clamped into [0, progressMax] defensively even though validate.ts
+  // already warns on an out-of-range value — a warning doesn't block the write, so this is what
+  // actually keeps a bad value out of the sheet.
+  for (const t of delta.new_threads ?? []) {
+    if (!t.title?.trim() || snapshot.Threads.some((existing) => sameName(existing.title, t.title))) continue
+    const progressMax = t.progressMax ?? 0
+    const created: Thread = {
+      id: newId(),
+      title: t.title,
+      description: t.description ?? '',
+      status: t.status ?? 'dormant',
+      revealed: t.revealed ?? false,
+      progress: clampProgress(t.progress, progressMax),
+      progressMax,
+      createdTurn: turnNumber,
+      updatedTurn: turnNumber,
+    }
+    await appendRows(spreadsheetId, 'Threads', [rowCodecs.Threads.toRow(created)])
+    snapshot.Threads.push(created)
+  }
   for (const update of delta.thread_updates ?? []) {
     const rowNum = rowNumberOf(snapshot.Threads, (t) => sameName(t.title, update.title))
     if (rowNum === null) {
@@ -255,23 +277,6 @@ export async function applyStateDelta(
     }
     snapshot.Threads[rowNum - 2] = merged
     await updateRow(spreadsheetId, 'Threads', rowNum, rowCodecs.Threads.toRow(merged))
-  }
-  for (const t of delta.new_threads ?? []) {
-    if (!t.title?.trim() || snapshot.Threads.some((existing) => sameName(existing.title, t.title))) continue
-    const progressMax = t.progressMax ?? 0
-    const created: Thread = {
-      id: newId(),
-      title: t.title,
-      description: t.description ?? '',
-      status: t.status ?? 'dormant',
-      revealed: t.revealed ?? false,
-      progress: clampProgress(t.progress, progressMax),
-      progressMax,
-      createdTurn: turnNumber,
-      updatedTurn: turnNumber,
-    }
-    await appendRows(spreadsheetId, 'Threads', [rowCodecs.Threads.toRow(created)])
-    snapshot.Threads.push(created)
   }
 
   // Lore.
