@@ -158,6 +158,25 @@ AI Adventure/
         Monsters       # id, name, description, threat_notes, status, last_encountered_turn
         Timeline       # turn, title, summary, tags
         Quests         # id, title, status, description, updated_turn
+        Threads        # id, title, description, status(dormant/active/resolved), revealed(bool),
+                        #   progress, progressMax, createdTurn, updatedTurn — GM-only foreshadowed
+                        #   threads and ticking threats (issue #83), the story-level equivalent of
+                        #   the NPCs tab's `secrets` field: a planted detail/mystery/threat that
+                        #   isn't tied to one NPC and can advance/escalate turn to turn, including
+                        #   off-screen while the player isn't engaging it directly (the "fronts/
+                        #   clocks" pattern from Blades in the Dark / Apocalypse World, plus
+                        #   Chekhov's-gun foreshadowing discipline — see §5 and #83's research).
+                        #   Distinct from Quests (always player-visible, no hidden state, no
+                        #   clock) and Timeline (a log of what already happened, not a live thread
+                        #   with momentum of its own). `description` is GM-only ground truth that
+                        #   must never appear in the narrative/options/Codex while `revealed` is
+                        #   false — same discipline as NPCs.secrets. `progress`/`progressMax` are
+                        #   an optional numeric clock (0 means "not using one, just a status");
+                        #   the size isn't fixed to any one convention (a 4-clock, 6-clock,
+                        #   8-clock are all valid), keeping this genre-agnostic. No Codex/player-
+                        #   facing UI exists for this tab — deliberately GM-only, mirroring
+                        #   secrets having no dedicated UI either; see #83's PR for the scoping
+                        #   rationale.
         Map            # id, name, type, state(discovered/rumored/unexplored), connects_to,
                         #   description, x, y (coords optional — layout can also be force-directed)
         Lore           # id, type, name, summary, tags, discovered(bool), detail_file (optional,
@@ -204,7 +223,16 @@ contract so the app can parse it. **Two-part output:**
       "notes_add": "Admitted she's been paid to keep strangers out of the crypt."
     }],
     "new_locations": [{"name": "The Sunken Chapel", "connects_to": "Market Square"}],
-    "events": [{"title": "Found the Rusted Key", "summary": "..."}]
+    "events": [{"title": "Found the Rusted Key", "summary": "..."}],
+    "new_threads": [{
+      "title": "The cult beneath the chapel",
+      "description": "A cult is quietly preparing a ritual in the crypt below the chapel.",
+      "status": "dormant",
+      "revealed": false,
+      "progress": 0,
+      "progressMax": 6
+    }],
+    "thread_updates": [{"title": "The cult beneath the chapel", "status": "active", "progress": 2}]
   },
   "summary_update": "one or two sentences to fold into the rolling summary",
   "options": [
@@ -254,6 +282,38 @@ contract so the app can parse it. **Two-part output:**
   relationships`, ...) via the existing `stat_changes` mechanism (which already sets a
   non-numeric key directly rather than as a delta), so the player's profile keeps developing from
   play instead of staying frozen at campaign setup — no schema change needed for this half.
+- **`new_threads`/`thread_updates` (issue #83)** — GM-only foreshadowed threads and ticking
+  threats, the story-level equivalent of `npc_updates`/`new_npcs`'s `secrets` field: a planted
+  detail, mystery clue, or looming threat that isn't tied to one NPC. Research: TTRPG design has
+  two established, related techniques this mirrors — **Chekhov's gun / foreshadowing**, the
+  discipline that anything the GM deliberately plants should be assumed to matter later (see
+  [Campaign Mastery, "Chekhov's Gun and RPGs"](https://www.campaignmastery.com/blog/chekhovs-gun-and-rpgs/)),
+  and **fronts/clocks** (*Blades in the Dark*, *Apocalypse World*), where a looming threat is
+  tracked as an explicit countdown that can advance off-screen, giving the world momentum
+  independent of the player's current scene rather than a static "quest active" flag (see
+  [Gnome Stew, "The GM's Agenda and Principles"](https://gnomestew.com/the-gms-agenda-and-principles/)
+  and [Troy Press, "GM Principles & Moves"](https://troypress.com/gm-principles-moves/)). Stored
+  in a new `Threads` sheet tab rather than extending `Quests`/`Timeline` (see §4): `Quests` is
+  always player-visible with no hidden state or clock, and `Timeline` is a log of what already
+  happened, not a live thing that can advance on its own — neither can support "planted but not
+  yet shown to the player" or "escalating turn to turn independent of player engagement" without
+  overloading their existing, simpler meaning. `thread_updates` is matched by `title` (same
+  upsert-by-name pattern `quest_updates` uses) so a thread can be created via `new_threads` in one
+  turn and advanced — or flipped from unrevealed to revealed, or resolved — any later turn,
+  including one where the player's action has nothing to do with it (the DM is explicitly
+  instructed to do this — see `contract.ts`'s "Story threads" section — since that off-screen
+  momentum is the entire point of the mechanic per the fronts/clocks research above). `revealed`
+  gates player-visibility exactly like `secrets` gates NPC ground truth: while false, a thread's
+  `title`/`description` must never appear in the narrative, `options`, or Codex — only in the
+  prompt fed back to the model (`renderSnapshot`'s "Story threads" section, filtered to
+  `status !== 'resolved'` so paid-off threads don't keep consuming context forever, mirroring
+  "Active quests" only showing `status === 'active'`). `progress`/`progressMax` model an optional
+  numeric clock (`progressMax: 0` means "not using one, just a status") — sizes aren't fixed to
+  any one convention, since different TTRPG clocks use different segment counts and this app
+  doesn't mandate one, keeping it genre-agnostic like everything else in the data model. There is
+  no Codex/player-facing UI for this tab, a deliberate scoping choice (issue #83's Definition of
+  Done explicitly allows it): it's GM-only tracking, and the app already has no dedicated UI for
+  NPC `secrets` either — the same reasoning applies here.
 - The **system prompt** sent every turn (built by the app, shown in full in manual mode so
   you can inspect/edit it before pasting) includes: DM persona + tone, a short set of
   genre-agnostic standing narrative-craft principles (world/NPC agency — established NPCs pursue
@@ -264,7 +324,7 @@ contract so the app can parse it. **Two-part output:**
   TTRPG-GM and AI-DM-prompting practice), the difficulty rules (§7, which now also carries a
   pacing note per tier — e.g. Standard alternates tense and quiet beats, Brutal stays taut
   throughout), the world/character setup from `campaign.md`, a fresh `batchGet` snapshot of the
-  Character/Inventory/NPCs/NPCAttributes/Monsters/Map/Quests tabs (every known NPC's condensed
+  Character/Inventory/NPCs/NPCAttributes/Monsters/Map/Quests/Threads tabs (every known NPC's condensed
   `notes`, `secrets`, and attributes included unconditionally — cheap, the whole snapshot is
   already loaded), the rolling summary from `rolling.md`, the last ~6 raw turns, and a fixed
   instruction block requiring the `state` JSON contract and telling the model to **only** report

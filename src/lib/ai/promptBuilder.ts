@@ -11,6 +11,7 @@ import type {
   NpcAttribute,
   Quest,
   Skill,
+  Thread,
   TimelineEvent,
 } from '@/types/sheets'
 import { DIFFICULTY_INSTRUCTIONS } from './difficultyInstructions'
@@ -25,6 +26,7 @@ export interface SheetSnapshot {
   Monsters: Monster[]
   Timeline: TimelineEvent[]
   Quests: Quest[]
+  Threads: Thread[]
   Map: MapNode[]
   Lore: LoreEntry[]
 }
@@ -83,6 +85,29 @@ function renderSnapshot(snapshot: SheetSnapshot): string {
   if (activeQuests.length) {
     lines.push('', 'Active quests:')
     for (const q of activeQuests) lines.push(`- ${q.title}: ${q.description}`)
+  }
+
+  // Story threads (issue #83) — the plot-level equivalent of NPC secrets: GM-only ground truth
+  // that must never appear in the *narrative*/*options* until revealed. Unlike secrets, these are
+  // deliberately always included here regardless of whether the player's action touches them, so
+  // the DM is reminded every turn to keep an active thread moving (including off-screen) rather
+  // than only when the player happens to poke at it. Resolved threads are dropped — they're done,
+  // no need to keep feeding them back forever (same bounded-context reasoning as "Active quests"
+  // only showing status === 'active' above).
+  const unresolvedThreads = snapshot.Threads.filter((t) => t.status !== 'resolved')
+  if (unresolvedThreads.length) {
+    lines.push(
+      '',
+      "Story threads (GM-only — advance or escalate these turn to turn, including on turns where " +
+        'the player is not directly engaging with them; see the reply-format instructions below ' +
+        'for the rule on revealed vs. unrevealed content):',
+    )
+    for (const t of unresolvedThreads) {
+      const clock = t.progressMax > 0 ? `, clock: ${t.progress}/${t.progressMax}` : ''
+      lines.push(
+        `- "${t.title}" [status: ${t.status}, revealed: ${t.revealed ? 'yes' : 'no'}${clock}]: ${t.description}`,
+      )
+    }
   }
 
   const discoveredNodes = snapshot.Map.filter((m) => m.state === 'discovered')

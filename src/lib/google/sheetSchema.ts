@@ -8,6 +8,7 @@ import type {
   Monster,
   TimelineEvent,
   Quest,
+  Thread,
   MapNode,
   LoreEntry,
 } from '@/types/sheets'
@@ -29,6 +30,10 @@ export const TAB_HEADERS: Record<(typeof SHEET_TABS)[number], string[]> = {
   Monsters: ['id', 'name', 'description', 'threatNotes', 'status', 'lastEncounteredTurn'],
   Timeline: ['turn', 'title', 'summary', 'tags'],
   Quests: ['id', 'title', 'status', 'description', 'updatedTurn'],
+  Threads: [
+    'id', 'title', 'description', 'status', 'revealed', 'progress', 'progressMax',
+    'createdTurn', 'updatedTurn',
+  ],
   Map: ['id', 'name', 'type', 'state', 'connectsTo', 'description', 'x', 'y'],
   Lore: ['id', 'type', 'name', 'summary', 'tags', 'discovered', 'detailFile'],
 }
@@ -115,6 +120,23 @@ export const rowCodecs = {
       status: (str(c[2]) || 'active') as Quest['status'],
       description: str(c[3]),
       updatedTurn: num(c[4]),
+    }),
+  },
+  Threads: {
+    toRow: (r: Thread): Row => [
+      r.id, r.title, r.description, r.status, r.revealed, r.progress, r.progressMax,
+      r.createdTurn, r.updatedTurn,
+    ],
+    fromRow: (c: Row): Thread => ({
+      id: str(c[0]) || newId(),
+      title: str(c[1]),
+      description: str(c[2]),
+      status: (str(c[3]) || 'dormant') as Thread['status'],
+      revealed: bool(c[4]),
+      progress: num(c[5]),
+      progressMax: num(c[6]),
+      createdTurn: num(c[7]),
+      updatedTurn: num(c[8]),
     }),
   },
   Map: {

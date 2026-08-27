@@ -35,6 +35,28 @@ export interface StateDelta {
   new_locations?: { name: string; connects_to?: string; description?: string; state?: MapNodeState }[]
   events?: { title: string; summary: string; tags?: string }[]
   quest_updates?: { title: string; status?: 'active' | 'completed' | 'failed'; description?: string }[]
+  /** Plants a new GM-only foreshadowed thread/ticking threat — the story-level equivalent of an
+   * NPC's `secrets` (issue #83). See contract.ts's "Story threads" instructions for the
+   * revealed/status/progress semantics. */
+  new_threads?: {
+    title: string
+    description: string
+    status?: 'dormant' | 'active' | 'resolved'
+    revealed?: boolean
+    progress?: number
+    progressMax?: number
+  }[]
+  /** Advances/escalates an existing thread, matched by `title` (same upsert-by-name pattern as
+   * `quest_updates`) — including on a turn where the player didn't directly engage it, so a
+   * thread can tick down off-screen. `progress` is the new absolute clock fill, not a delta. */
+  thread_updates?: {
+    title: string
+    description?: string
+    status?: 'dormant' | 'active' | 'resolved'
+    revealed?: boolean
+    progress?: number
+    progressMax?: number
+  }[]
   new_lore?: { name: string; type?: string; summary: string; tags?: string }[]
 }
 

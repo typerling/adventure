@@ -22,6 +22,7 @@ import type {
   NpcAttribute,
   Quest,
   Skill,
+  Thread,
   TimelineEvent,
 } from '@/types/sheets'
 
@@ -292,6 +293,7 @@ export async function loadSheetSnapshot(spreadsheetId: string) {
     Monsters: decodeTab<Monster>('Monsters', raw.Monsters),
     Timeline: decodeTab<TimelineEvent>('Timeline', raw.Timeline),
     Quests: decodeTab<Quest>('Quests', raw.Quests),
+    Threads: decodeTab<Thread>('Threads', raw.Threads),
     Map: decodeTab<MapNode>('Map', raw.Map),
     Lore: decodeTab<LoreEntry>('Lore', raw.Lore),
   }

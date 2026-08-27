@@ -3,7 +3,7 @@ import { rowCodecs } from './sheetSchema'
 import { appendNpcDetail } from './npcDetailFile'
 import type { SheetSnapshot } from '@/lib/ai/promptBuilder'
 import type { StateDelta } from '@/types/turn'
-import type { CharacterRow, InventoryItem, MapNode, Monster, Npc, NpcAttribute, Quest } from '@/types/sheets'
+import type { CharacterRow, InventoryItem, MapNode, Monster, Npc, NpcAttribute, Quest, Thread } from '@/types/sheets'
 
 function rowNumberOf<T>(rows: T[], predicate: (r: T) => boolean): number | null {
   const idx = rows.findIndex(predicate)
@@ -12,6 +12,15 @@ function rowNumberOf<T>(rows: T[], predicate: (r: T) => boolean): number | null 
 
 const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
 const newId = () => crypto.randomUUID().slice(0, 8)
+
+/** Clamps a thread's clock fill into [0, progressMax] — progressMax <= 0 means "not using a
+ * clock," so only the lower bound applies in that case. Defense-in-depth: validate.ts already
+ * warns on an out-of-range value, but a warning doesn't block the write. */
+function clampProgress(progress: number | undefined, progressMax: number): number {
+  const p = progress ?? 0
+  if (progressMax <= 0) return Math.max(0, p)
+  return Math.min(Math.max(0, p), progressMax)
+}
 
 /** Applies an already-validated StateDelta as a batch of Sheets writes. Mutates the passed
  * snapshot in place so callers can re-render immediately without another round trip.
@@ -208,6 +217,61 @@ export async function applyStateDelta(
     }
     snapshot.Quests[rowNum - 2] = merged
     await updateRow(spreadsheetId, 'Quests', rowNum, rowCodecs.Quests.toRow(merged))
+  }
+
+  // Story threads (issue #83) — update existing (by title) or append new, same upsert-by-name
+  // pattern as Quests just above. `progress` is clamped into [0, progressMax] defensively even
+  // though validate.ts already warns on an out-of-range value — a warning doesn't block the
+  // write, so this is what actually keeps a bad value out of the sheet.
+  for (const update of delta.thread_updates ?? []) {
+    const rowNum = rowNumberOf(snapshot.Threads, (t) => sameName(t.title, update.title))
+    if (rowNum === null) {
+      const progressMax = update.progressMax ?? 0
+      const created: Thread = {
+        id: newId(),
+        title: update.title,
+        description: update.description ?? '',
+        status: update.status ?? 'dormant',
+        revealed: update.revealed ?? false,
+        progress: clampProgress(update.progress, progressMax),
+        progressMax,
+        createdTurn: turnNumber,
+        updatedTurn: turnNumber,
+      }
+      await appendRows(spreadsheetId, 'Threads', [rowCodecs.Threads.toRow(created)])
+      snapshot.Threads.push(created)
+      continue
+    }
+    const existing = snapshot.Threads[rowNum - 2]
+    const progressMax = update.progressMax ?? existing.progressMax
+    const merged: Thread = {
+      ...existing,
+      description: update.description ?? existing.description,
+      status: update.status ?? existing.status,
+      revealed: update.revealed ?? existing.revealed,
+      progress: update.progress !== undefined ? clampProgress(update.progress, progressMax) : existing.progress,
+      progressMax,
+      updatedTurn: turnNumber,
+    }
+    snapshot.Threads[rowNum - 2] = merged
+    await updateRow(spreadsheetId, 'Threads', rowNum, rowCodecs.Threads.toRow(merged))
+  }
+  for (const t of delta.new_threads ?? []) {
+    if (!t.title?.trim() || snapshot.Threads.some((existing) => sameName(existing.title, t.title))) continue
+    const progressMax = t.progressMax ?? 0
+    const created: Thread = {
+      id: newId(),
+      title: t.title,
+      description: t.description ?? '',
+      status: t.status ?? 'dormant',
+      revealed: t.revealed ?? false,
+      progress: clampProgress(t.progress, progressMax),
+      progressMax,
+      createdTurn: turnNumber,
+      updatedTurn: turnNumber,
+    }
+    await appendRows(spreadsheetId, 'Threads', [rowCodecs.Threads.toRow(created)])
+    snapshot.Threads.push(created)
   }
 
   // Lore.
