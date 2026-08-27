@@ -255,8 +255,15 @@ contract so the app can parse it. **Two-part output:**
   non-numeric key directly rather than as a delta), so the player's profile keeps developing from
   play instead of staying frozen at campaign setup — no schema change needed for this half.
 - The **system prompt** sent every turn (built by the app, shown in full in manual mode so
-  you can inspect/edit it before pasting) includes: DM persona + tone, the difficulty rules
-  (§7), the world/character setup from `campaign.md`, a fresh `batchGet` snapshot of the
+  you can inspect/edit it before pasting) includes: DM persona + tone, a short set of
+  genre-agnostic standing narrative-craft principles (world/NPC agency — established NPCs pursue
+  their own goals rather than just reacting to the player; scene-framing discipline — a few
+  concrete, sensory-varied focal points rather than cataloguing a room; pacing variety between
+  tense and quieter beats; and pushing back on repetitive/stock phrasing across turns — see
+  [issue #82](https://github.com/typerling/adventure/issues/82)'s research grounding in
+  TTRPG-GM and AI-DM-prompting practice), the difficulty rules (§7, which now also carries a
+  pacing note per tier — e.g. Standard alternates tense and quiet beats, Brutal stays taut
+  throughout), the world/character setup from `campaign.md`, a fresh `batchGet` snapshot of the
   Character/Inventory/NPCs/NPCAttributes/Monsters/Map/Quests tabs (every known NPC's condensed
   `notes`, `secrets`, and attributes included unconditionally — cheap, the whole snapshot is
   already loaded), the rolling summary from `rolling.md`, the last ~6 raw turns, and a fixed
