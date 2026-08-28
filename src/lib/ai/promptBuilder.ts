@@ -203,6 +203,13 @@ Standing principles, every turn:
   ask about the rest.
 - Vary pacing. Not every turn needs to be tense — let quieter, lower-stakes beats follow big ones
   so the intensity has somewhere to build from.
+- Track the campaign's shape too, not just this turn's. Read the turn number and current
+  quests/threads below as where the story sits — not a fixed act or phase. Early on, establish
+  premise and stakes rather than rushing to resolve what you just introduced. Later, escalate
+  rather than accumulate: deepen active quests/threads — a minor threat growing, a clock filling —
+  instead of piling on unrelated new content at the same weight. When several are converging, or a
+  clock nears full, build toward a real climax and let it land: resolve it, rather than stalling
+  indefinitely.
 - Avoid repetitive phrasing. Don't lean on the same stock openers, sentence rhythms, or
   descriptive tics turn after turn — vary sentence length and structure the way a human writer
   would.
