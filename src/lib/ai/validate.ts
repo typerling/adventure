@@ -105,6 +105,87 @@ export function validateStateDelta(delta: StateDelta, snapshot: SheetSnapshot): 
     if (!quest.title?.trim()) issues.push(issue('error', 'quest_updates', 'A quest update is missing a title.'))
   }
 
+  for (const thread of delta.new_threads ?? []) {
+    if (!thread.title?.trim()) {
+      issues.push(issue('error', 'new_threads', 'A new story thread is missing a title.'))
+      continue
+    }
+    if (thread.progressMax !== undefined && thread.progressMax < 0) {
+      issues.push(
+        issue('warning', 'new_threads', `Thread "${thread.title}" has a negative progressMax (${thread.progressMax}).`),
+      )
+    } else if (
+      thread.progress !== undefined &&
+      thread.progressMax !== undefined &&
+      (thread.progress < 0 || thread.progress > thread.progressMax)
+    ) {
+      issues.push(
+        issue(
+          'warning',
+          'new_threads',
+          `Thread "${thread.title}" sets progress (${thread.progress}) outside its clock (0-${thread.progressMax}).`,
+        ),
+      )
+    }
+    if (thread.status === 'resolved' && !thread.revealed) {
+      issues.push(
+        issue(
+          'warning',
+          'new_threads',
+          `Thread "${thread.title}" is created already resolved without ever being revealed — confirm this was meant to pay off entirely off-screen.`,
+        ),
+      )
+    }
+  }
+
+  for (const update of delta.thread_updates ?? []) {
+    if (!update.title?.trim()) {
+      issues.push(issue('error', 'thread_updates', 'A story thread update is missing a title.'))
+      continue
+    }
+    const existing = snapshot.Threads.find(
+      (t) => t.title.trim().toLowerCase() === update.title.trim().toLowerCase(),
+    )
+    if (!existing) {
+      issues.push(
+        issue('warning', 'thread_updates', `Updates story thread "${update.title}", which isn't documented yet.`),
+      )
+    } else {
+      if (existing.status === 'resolved' && update.status && update.status !== 'resolved') {
+        issues.push(
+          issue(
+            'warning',
+            'thread_updates',
+            `"${update.title}" is documented as resolved and is being reopened — confirm the narrative actually explains this.`,
+          ),
+        )
+      }
+      if (update.status === 'resolved' && !(update.revealed ?? existing.revealed)) {
+        issues.push(
+          issue(
+            'warning',
+            'thread_updates',
+            `"${update.title}" is being resolved without ever being revealed to the player — confirm this was meant to pay off entirely off-screen, or reveal it first.`,
+          ),
+        )
+      }
+    }
+    const maxForCheck = update.progressMax ?? existing?.progressMax
+    if (
+      update.progress !== undefined &&
+      maxForCheck !== undefined &&
+      (update.progress < 0 || update.progress > maxForCheck)
+    ) {
+      issues.push(
+        issue(
+          'warning',
+          'thread_updates',
+          `Thread "${update.title}" sets progress (${update.progress}) outside its clock (0-${maxForCheck}).`,
+        ),
+      )
+    }
+  }
+
   for (const lore of delta.new_lore ?? []) {
     if (!lore.name?.trim()) issues.push(issue('error', 'new_lore', 'A new lore entry is missing a name.'))
   }

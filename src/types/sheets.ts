@@ -91,6 +91,38 @@ export interface Quest {
   updatedTurn: number
 }
 
+export type ThreadStatus = 'dormant' | 'active' | 'resolved'
+
+/** A GM-only foreshadowed plot thread or ticking threat — the story-level equivalent of an NPC's
+ * `secrets` field, extended with a numeric "clock" so it can escalate turn to turn independent of
+ * whether the player is engaging with it directly (the "fronts/clocks" pattern from Blades in the
+ * Dark / Apocalypse World, plus Chekhov's-gun foreshadowing discipline — see issue #83's research
+ * and DESIGN.md §5). Distinct from `Quests` (always player-visible, no clock, no hidden state) and
+ * `Timeline` (a log of what already happened, not a live thread that can advance off-screen) — see
+ * DESIGN.md §4. */
+export interface Thread {
+  id: string
+  title: string
+  /** GM-only ground truth: the actual plot detail/threat. This is what `revealed` gates — must
+   * never appear in any player-facing render (Play narrative/options, Codex) while `revealed` is
+   * false, same discipline as `Npc.secrets`. */
+  description: string
+  status: ThreadStatus
+  /** Whether the player has been shown any part of this thread yet. False means it's pure GM-only
+   * foreshadowing that must not leak into narrative/options. */
+  revealed: boolean
+  /** Current clock fill, 0..progressMax — how close this thread is to firing/resolving. Advances
+   * turn to turn, including on turns where the player isn't directly engaging with it. */
+  progress: number
+  /** Clock size. Free-form, not fixed to any particular segment count — different threads can use
+   * different-sized clocks (a 4-clock for something imminent, an 8-clock for something distant),
+   * matching TTRPG "fronts/clocks" convention rather than mandating one fixed scale. 0 means this
+   * thread isn't using a clock at all, just a status. */
+  progressMax: number
+  createdTurn: number
+  updatedTurn: number
+}
+
 export type MapNodeState = 'discovered' | 'rumored' | 'unexplored'
 
 export interface MapNode {
@@ -123,6 +155,7 @@ export const SHEET_TABS = [
   'Monsters',
   'Timeline',
   'Quests',
+  'Threads',
   'Map',
   'Lore',
 ] as const

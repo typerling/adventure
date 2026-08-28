@@ -255,8 +255,8 @@ Everything under `src/lib/google/` is the persistence layer — there is no othe
 - **`sheetSchema.ts`** — the single place mapping typed row objects (`src/types/sheets.ts`) to/from
   raw Sheets rows (`rowCodecs`, `TAB_HEADERS`). Column order here **is** the sheet column order —
   keep both in sync when changing a tab's shape. `SHEET_TABS` in `src/types/sheets.ts` enumerates
-  every tab (Character, Inventory, Skills, NPCs, NPCAttributes, Monsters, Timeline, Quests, Map,
-  Lore); adding a tab means updating `SHEET_TABS`, `TAB_HEADERS`, `rowCodecs`, and the
+  every tab (Character, Inventory, Skills, NPCs, NPCAttributes, Monsters, Timeline, Quests,
+  Threads, Map, Lore); adding a tab means updating `SHEET_TABS`, `TAB_HEADERS`, `rowCodecs`, and the
   `loadSheetSnapshot` / `SheetSnapshot` type together — **and** addressing backward compatibility
   with data already in a user's Drive, see immediately below.
 - **`campaignRepo.ts`** — the repository layer above raw Drive/Sheets calls: bootstrapping the

@@ -102,6 +102,36 @@ test('healing is not special-cased to NPCAttributes — any missing tab is backf
   expect(healed?.rows[0].length).toBeGreaterThan(0)
 })
 
+test('a campaign whose spreadsheet predates the Threads tab (issue #83) is healed the same way', async ({
+  page,
+}) => {
+  // Threads (issue #83's foreshadowed-thread/clock tracking) is the newest tab SHEET_TABS has
+  // grown — this is that specific case's fixture, per the README's "add a fresh one anyway if
+  // it's the first fixture to model that shape" guidance, even though the generic loop below
+  // already covers it incidentally.
+  const store = await installGoogleApiMock(page)
+  await createRandomCampaign(page)
+  await expect(page.getByPlaceholder('Say or do anything…')).toBeVisible()
+
+  const spreadsheet = store.allFiles().find((f) => f.mimeType === SPREADSHEET_MIME)
+  if (!spreadsheet) throw new Error('no spreadsheet file found in the fake store')
+  store.removeSheetTab(spreadsheet.id, 'Threads')
+
+  await page.reload()
+
+  await expect(page.getByText("Couldn't load this campaign", { exact: false })).toHaveCount(0)
+  await expect(page.getByPlaceholder('Say or do anything…')).toBeVisible()
+
+  const healed = store.get(spreadsheet.id)?.spreadsheet?.sheets.Threads
+  expect(healed?.rows[0]).toBeTruthy()
+  expect(healed?.rows[0].length).toBeGreaterThan(0)
+
+  // The turn loop itself still works against a freshly healed Threads tab, not just the Codex/load
+  // path — proves an empty Threads snapshot doesn't break prompt-building or submission.
+  await page.reload()
+  await expect(page.getByPlaceholder('Say or do anything…')).toBeVisible()
+})
+
 test('multiple missing tabs are all backfilled in a single heal, not one at a time', async ({ page }) => {
   const store = await installGoogleApiMock(page)
   await createRandomCampaign(page)

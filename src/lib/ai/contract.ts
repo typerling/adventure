@@ -29,6 +29,8 @@ Reply in exactly two parts, every turn, with nothing before or after them:
     "new_locations": [{"name": "string", "connects_to": "string", "description": "string"}],
     "events": [{"title": "string", "summary": "string", "tags": "string"}],
     "quest_updates": [{"title": "string", "status": "active", "description": "string"}],
+    "new_threads": [{"title": "string", "description": "string", "status": "dormant", "revealed": false, "progress": 0, "progressMax": 4}],
+    "thread_updates": [{"title": "string", "description": "string", "status": "active", "revealed": false, "progress": 1, "progressMax": 4}],
     "new_lore": [{"name": "string", "type": "string", "summary": "string", "tags": "string"}]
   },
   "summary_update": "one or two sentences folding this turn into the running summary",
@@ -69,6 +71,26 @@ existing at all:
   running summary (shown to you every turn from now on) and a permanent timestamped entry in
   their history, so write it as a self-contained sentence or two, not a diff.
 
+Story threads — the story-level equivalent of an NPC's "secrets": a planted detail, mystery clue,
+or ticking threat that isn't tied to one NPC (a countdown to some looming event, a rumor spreading
+through the city, an object planted for later payoff). Use "new_threads" to plant one and
+"thread_updates" (matched by "title", same upsert-by-name pattern as "quest_updates") to advance
+it later — including on a turn where the player isn't directly engaging with it, so the world
+keeps moving on its own rather than sitting frozen until the player happens to poke at it. Keep
+content genuinely free-form; don't force any fixed threat type or genre assumption.
+- "revealed": false until the player has actually learned of this thread in the story (found the
+  clue, overheard the rumor, whatever fits the scene). Starts false for anything planted purely as
+  GM-only foreshadowing.
+- "status": "dormant" (planted, not yet ticking), "active" (currently advancing), or "resolved"
+  (paid off or defused — the thread is done and won't be shown to you again).
+- "progress"/"progressMax" are an optional clock (Blades in the Dark-style) tracking how close an
+  active thread is to firing. Set "progress" to the new absolute fill each time, not a delta (e.g.
+  going from 2/4 to 3/4 means sending {"progress": 3, "progressMax": 4}, not {"progress": 1}). Not
+  every thread needs a clock — omit both to just track a status.
+- Advance an active thread's clock, or flip a dormant one active, even on turns where the player
+  didn't touch it directly — that's the whole point: things elsewhere in the world should keep
+  happening whether or not the player is watching.
+
 Detail recall — if an NPC has enough history that a "Recalled history for NPCs named in this
 turn's action" section appears below, that's their full prior detail file, pulled in because the
 player's action just named them. Use it as ground truth for continuity; you don't need to repeat
@@ -90,4 +112,8 @@ Critical rules:
   short across a long campaign.
 - Never write an NPC's "secrets" content into the narrative, into "options", or anywhere else the
   player reads — that field is GM-only by design, purely to keep future turns consistent with
-  facts the player hasn't discovered yet.`
+  facts the player hasn't discovered yet.
+- Never write an unrevealed story thread's "title" or "description" into the narrative, into
+  "options", or anywhere else the player reads, exactly the same rule as "secrets" above — only
+  plant/advance it via "new_threads"/"thread_updates" until the story naturally reveals it, then
+  set "revealed": true on the turn it actually comes to light.`
