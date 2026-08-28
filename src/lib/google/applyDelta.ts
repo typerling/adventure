@@ -81,10 +81,38 @@ export async function applyStateDelta(
     })
   }
 
-  // NPCs — update existing (by name) or append new. Profile fields (voice/secrets/attributes/
-  // notes_add) are optional per the AI's own profile-depth judgment (see contract.ts's
-  // "real interaction" gate) — a background NPC mentioned in passing carries none of them and
-  // stays name+description only, exactly like before this ticket.
+  // NPCs — append new, then update existing (by name), same upsert-by-name pattern as
+  // Quests/Threads below. new_npcs runs first so a same-turn new_npcs + npc_updates pair for the
+  // same name (the AI introduces an NPC and immediately gives them a status/relationship update
+  // in the same turn) lands the create's full description/voice/secrets before the update merges
+  // its fields on top, rather than the update finding no row, creating a bare stub, and the
+  // create then silently no-op'ing because the name "already exists" — same bug shape as issue
+  // #83/PR #85's Threads fix (commit a66b457), found for NPCs in independent review of that PR
+  // (issue #86). Profile fields (voice/secrets/attributes/notes_add) are optional per the AI's
+  // own profile-depth judgment (see contract.ts's "real interaction" gate) — a background NPC
+  // mentioned in passing carries none of them and stays name+description only, exactly like
+  // before this ticket.
+  for (const n of delta.new_npcs ?? []) {
+    if (!n.name?.trim() || snapshot.NPCs.some((existing) => sameName(existing.name, n.name))) continue
+    const created: Npc = {
+      id: newId(),
+      name: n.name,
+      description: n.description ?? '',
+      relationship: '',
+      status: n.status ?? 'alive',
+      lastSeenTurn: turnNumber,
+      voice: n.voice ?? '',
+      secrets: n.secrets ?? '',
+      notes: n.notes_add ?? '',
+      detailFile: undefined,
+    }
+    if (n.notes_add) {
+      created.detailFile = await appendNpcDetail(campaignFolderId, created, turnNumber, n.notes_add)
+    }
+    await appendRows(spreadsheetId, 'NPCs', [rowCodecs.NPCs.toRow(created)])
+    snapshot.NPCs.push(created)
+    await upsertNpcAttributes(spreadsheetId, snapshot, created.id, n.attributes)
+  }
   for (const update of delta.npc_updates ?? []) {
     const rowNum = rowNumberOf(snapshot.NPCs, (n) => sameName(n.name, update.name))
     if (rowNum === null) {
@@ -129,27 +157,6 @@ export async function applyStateDelta(
     snapshot.NPCs[rowNum - 2] = merged
     await updateRow(spreadsheetId, 'NPCs', rowNum, rowCodecs.NPCs.toRow(merged))
     await upsertNpcAttributes(spreadsheetId, snapshot, merged.id, update.attributes)
-  }
-  for (const n of delta.new_npcs ?? []) {
-    if (!n.name?.trim() || snapshot.NPCs.some((existing) => sameName(existing.name, n.name))) continue
-    const created: Npc = {
-      id: newId(),
-      name: n.name,
-      description: n.description ?? '',
-      relationship: '',
-      status: n.status ?? 'alive',
-      lastSeenTurn: turnNumber,
-      voice: n.voice ?? '',
-      secrets: n.secrets ?? '',
-      notes: n.notes_add ?? '',
-      detailFile: undefined,
-    }
-    if (n.notes_add) {
-      created.detailFile = await appendNpcDetail(campaignFolderId, created, turnNumber, n.notes_add)
-    }
-    await appendRows(spreadsheetId, 'NPCs', [rowCodecs.NPCs.toRow(created)])
-    snapshot.NPCs.push(created)
-    await upsertNpcAttributes(spreadsheetId, snapshot, created.id, n.attributes)
   }
 
   // Monsters.
