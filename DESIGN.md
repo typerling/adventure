@@ -319,9 +319,9 @@ contract so the app can parse it. **Two-part output:**
   genre-agnostic standing narrative-craft principles (world/NPC agency — established NPCs pursue
   their own goals rather than just reacting to the player; scene-framing discipline — a few
   concrete, sensory-varied focal points rather than cataloguing a room; pacing variety between
-  tense and quieter beats; and pushing back on repetitive/stock phrasing across turns — see
-  [issue #82](https://github.com/typerling/adventure/issues/82)'s research grounding in
-  TTRPG-GM and AI-DM-prompting practice), the difficulty rules (§7, which now also carries a
+  tense and quieter beats within a scene; and pushing back on repetitive/stock phrasing across
+  turns — see [issue #82](https://github.com/typerling/adventure/issues/82)'s research grounding
+  in TTRPG-GM and AI-DM-prompting practice), the difficulty rules (§7, which now also carries a
   pacing note per tier — e.g. Standard alternates tense and quiet beats, Brutal stays taut
   throughout), the world/character setup from `campaign.md`, a fresh `batchGet` snapshot of the
   Character/Inventory/NPCs/NPCAttributes/Monsters/Map/Quests/Threads tabs (every known NPC's condensed
@@ -336,6 +336,21 @@ contract so the app can parse it. **Two-part output:**
   history" section — a simple case-insensitive substring match against the action text, the same
   trick NovelAI/AI Dungeon's "World Info" system uses (no embeddings, no new retrieval
   infrastructure).
+- **Campaign-arc pacing (issue #88), a different axis from the per-scene pacing bullet above.**
+  Left alone, an AI DM tends to just accumulate content over a long campaign — new quests, new
+  threads, new NPCs — without ever building toward or reaching a resolution. The standing
+  principles add one instruction reading turn count and the current `Quests`/`Threads` snapshot as
+  where the story sits in its arc: early on, establish premise and stakes rather than rushing to
+  resolve what was just introduced; as the campaign progresses, escalate rather than accumulate —
+  active quests/threads should interconnect and deepen (a minor threat growing, a thread's clock
+  filling) instead of piling on unrelated new content at the same weight every turn; and when
+  several are converging, or a clock is nearly full, build toward a real climax and let it land —
+  resolve it (mark the quest completed, the thread resolved) rather than stalling indefinitely.
+  Deliberately **prompt-only, no new schema**: `turnNumber`, `Quests`, and `Threads` (added by
+  #83) already reach every prompt via `renderSnapshot`, so this is qualitative guidance on reading
+  that existing data as a shape over time, not a literal act/phase state machine — TTRPG-arc
+  research warns against scripting a rigid structure onto player-driven fiction, and this app's
+  own persona already promises not to railroad toward a fixed outcome (see the bullet above).
 - **Deterministic validation always runs client-side** before any `state_delta` is written back
   to the sheet: can't remove an item not currently held, can't set HP below the ruleset's
   floor, can't revive a `dead` NPC without an explicit resurrection tag, etc. A failed
