@@ -185,6 +185,52 @@ test.describe('NPC + player character profiles (#30)', () => {
     await expect(promptTextarea).toHaveValue(/Admitted she's been paid to keep strangers out of the crypt\./)
   })
 
+  test('introducing and updating the same NPC in one turn keeps the description and voice from the create', async ({
+    page,
+  }) => {
+    // Regression for a same-name new_npcs + npc_updates collision in one state_delta — same bug
+    // shape as issue #83/PR #85's Threads regression, found in independent review and reordered
+    // there (commit a66b457). applyDelta.ts used to process npc_updates before new_npcs: the
+    // update ran first, found no existing row, created a bare stub (empty description, no
+    // voice/secrets), and the create then silently no-op'd because an NPC with that name already
+    // "existed" — losing the real description and voice. new_npcs now runs first so the update
+    // merges onto the fully-created row instead.
+    const store = await installGoogleApiMock(page)
+    await createRandomCampaign(page)
+
+    await submitTurnWithDelta(
+      page,
+      'push open the chapel door and meet whoever is inside',
+      'A stranger steps out of the shadows, sizing you up before offering a name.',
+      {
+        new_npcs: [
+          {
+            name: 'Corin the Warden',
+            description: 'a scarred sentinel who guards the chapel threshold',
+            voice: 'low and measured, every word deliberate',
+            secrets: 'was once a member of the cult he now guards against',
+          },
+        ],
+        npc_updates: [{ name: 'Corin the Warden', relationship: 'wary', status: 'alive' }],
+      },
+    )
+
+    // Columns: id, name, description, relationship, status, lastSeenTurn, voice, secrets, notes, detailFile
+    const row = sheetRows(store, 'NPCs').find((r) => r[1] === 'Corin the Warden')
+    expect(row, 'the NPC was persisted').toBeDefined()
+    expect(row![2], 'description from the create must survive the same-turn update').toBe(
+      'a scarred sentinel who guards the chapel threshold',
+    )
+    expect(row![6], 'voice from the create must survive the same-turn update').toBe(
+      'low and measured, every word deliberate',
+    )
+    expect(row![7], 'secrets from the create must survive the same-turn update').toBe(
+      'was once a member of the cult he now guards against',
+    )
+    expect(row![3], 'relationship from the update applies').toBe('wary')
+    expect(row![4], 'status from the update applies').toBe('alive')
+  })
+
   test('a short NPC name matches whole words only, not as a substring of an unrelated word', async ({ page }) => {
     // Flagged in PR #37's review: a plain substring check on a short name like "Al" would
     // false-positive against "alley" and pull in an irrelevant detail file. findMentionedNpcs
