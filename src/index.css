@@ -248,6 +248,24 @@
   }
   html {
     @apply font-sans;
+    /* Pins <html>'s actual rendered colors to this app's own already-correct .dark/.light
+       cascade above, overriding daisyUI's rootcolor.css (`:root,[data-theme]{background-color:
+       var(--root-bg);color:...}`) and scrollbar.css (`:root{scrollbar-color:...}`) base-layer
+       rules, which also target :root — found in independent review of PR #90 (issue #28 Phase
+       1). daisyUI's rules are driven purely by ITS OWN default/prefersdark theme flags (i.e. OS
+       prefers-color-scheme alone), completely independent of this app's actual selected theme
+       (explicit .dark/.light class, only falling back to OS preference when neither is set — see
+       above). Whenever a user's OS preference disagreed with their in-app choice, <html> and
+       <body> painted different colors — invisible in a normal viewport screenshot, but real (e.g.
+       iOS/macOS overscroll bounce, pinch-zoom past 100%, where <html>'s own background shows
+       through). !important is deliberate: Tailwind's `base` layer (this block) is registered
+       before daisyUI's plugin-injected layers, so for a *non*-important declaration the later
+       layer always wins regardless of selector specificity — !important is the one thing that
+       inverts that, guaranteeing this app's own theme wins over a third-party plugin's base layer
+       regardless of exactly which selectors that plugin's own CSS happens to use. */
+    background-color: var(--background) !important;
+    color: var(--foreground) !important;
+    scrollbar-color: auto !important;
   }
 }
 
