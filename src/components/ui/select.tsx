@@ -97,10 +97,14 @@ function SelectContent({
         {...props}
       >
         <SelectScrollUpButton />
+        {/* p-1 is shadcn's own stock inset for this viewport — every SelectItem in this app is
+            rendered directly here rather than wrapped in a SelectGroup (the only other place the
+            template puts this padding), so without it items sit flush against Content's rounded
+            border with no breathing room at all. */}
         <SelectPrimitive.Viewport
           data-position={position}
           className={cn(
-            "data-[position=popper]:h-(--radix-select-trigger-height) data-[position=popper]:w-full data-[position=popper]:min-w-(--radix-select-trigger-width)",
+            "p-1 data-[position=popper]:h-(--radix-select-trigger-height) data-[position=popper]:w-full data-[position=popper]:min-w-(--radix-select-trigger-width)",
             position === "popper" && ""
           )}
         >
