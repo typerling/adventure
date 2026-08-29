@@ -193,6 +193,93 @@
   }
 }
 
+/* Phase 2 tier 1 (issue #91): bridges daisyUI's own per-theme color tokens onto this app's real
+   dark-mode mechanism. daisyUI's tokens are normally scoped to `[data-theme=...]` or, for the
+   default theme, plain `:root`/OS `prefers-color-scheme` (the two `@plugin "daisyui/theme"`
+   blocks above) — none of which is what this app's *actual* toggle drives. `data-theme` only ever
+   gets set on an isolated, Storybook-only wrapper (`src/components/daisyui-preview/`), never on
+   this app's real `<html>`, and DESIGN.md §3 is explicit the switch to `data-theme` as the real
+   mechanism only happens once every `src/components/ui/*` primitive has migrated — not yet. So as
+   soon as a real primitive renders via daisyUI's classes (starting with badge/separator/label
+   here), it needs daisyUI's tokens to track the SAME toggle every other real component already
+   does (the `.dark`/`.light` class, falling back to `prefers-color-scheme` per the block just
+   above — confirmed as the only mechanism actually wired up today; App.tsx doesn't toggle `.dark`
+   itself yet), or it would silently stay light-themed in the app's actual dark mode. Verified this
+   gap is real by inspecting the compiled CSS, not assumed: daisyUI's only unconditional selectors
+   are `:where(:root)` (zero specificity) and `@media (prefers-color-scheme:dark){:root:not(
+   [data-theme])}`, neither of which involves `.dark`/`.light` at all.
+   Fixed by aliasing daisyUI's tokens straight onto this app's own already-theme-aware variables —
+   not a new palette, the same mapping the two `@plugin "daisyui/theme"` blocks above already
+   documented (their comments cite which shadcn variable each daisyUI token was hand-derived from).
+   These rules are plain, unlayered top-level CSS, like the `:root`/`.dark`/media-query palette
+   blocks above them — Tailwind/daisyUI's own generated rules live inside `@layer`s, and an
+   unlayered rule always wins over a layered one regardless of source order or specificity, so no
+   `!important` is needed here (unlike the `html{...}` rule further below, which has to fight
+   daisyUI's rules from inside Tailwind's own `base` layer). Two tokens (`--color-base-200`/
+   `--color-base-300`) genuinely differ between light/dark beyond a value swap of the same variable
+   — dark's base-200 intentionally reuses `--card`, not `--muted` ("cards sit lighter, not darker",
+   per that theme block's own comment) — so those two get theme-specific overrides below; everything
+   else is a single alias that already tracks `.dark`/`.light`/system-preference for free, since it
+   points at variables that already do. */
+:root {
+  --color-base-100: var(--background);
+  --color-base-200: var(--muted);
+  --color-base-300: var(--input);
+  --color-base-content: var(--foreground);
+  --color-primary: var(--primary);
+  --color-primary-content: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-content: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-content: var(--accent-foreground);
+  --color-neutral: var(--foreground);
+  --color-neutral-content: var(--background);
+  --color-info: var(--accent);
+  --color-info-content: var(--accent-foreground);
+  --color-success: var(--primary);
+  --color-success-content: var(--primary-foreground);
+  --color-warning: var(--secondary);
+  --color-warning-content: var(--secondary-foreground);
+  --color-error: var(--destructive);
+  --color-error-content: var(--primary-foreground);
+}
+
+.dark {
+  --color-base-200: var(--card);
+  --color-base-300: var(--muted);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.light) {
+    --color-base-200: var(--card);
+    --color-base-300: var(--muted);
+  }
+}
+
+/* Phase 2 tier 1 (issue #91): a real, confirmed bug found while verifying badge dark mode, not a
+   hypothetical — `--border` is used by BOTH systems for two entirely different things under the
+   identical bare name: daisyUI's own theme blocks above declare it as a border-WIDTH (`1px`,
+   consumed by rules like `.badge{border:var(--border) solid ...}` and
+   `padding-inline:calc(var(--size)/2 - var(--border))`), while this app's own shadcn palette
+   (`:root`/`.dark`/the media-query block above) declares a property of the exact same name as a
+   border-COLOR (an oklch value). Since `--border` inherits and shadcn's declarations win the
+   "which ancestor wins" contest at `:root` (see the Phase 2 bridge block above for why — same
+   unlayered/specificity reasoning), every daisyUI-classed element's inherited `--border` resolves
+   to a *color*, not a length: `calc(1.5rem/2 - oklch(...))` and `oklch(...) solid ...` are both
+   invalid, so the whole declaration using it is dropped — verified by inspecting a real rendered
+   badge's computed style (`padding-inline` came back `0px 0px`), not assumed, after tier 1's own
+   dark-mode verification above surfaced clipped, near-zero-width badges. Fixed the only way that
+   doesn't fight shadcn's own (unrelated, correct) use of `--border` as a color everywhere else:
+   re-declaring the length locally, scoped to the specific daisyUI component classes that actually
+   read it as a length, so it overrides the inherited color *only inside those elements* rather
+   than touching the app-wide value. `.badge` is the only tier 1 class that reads `--border` at all
+   (verified against the installed package's compiled `badge.css`/`divider.css`/`label.css` — the
+   other two don't reference it); later tiers reusing `--border` (`.btn`, `.card`, `.input`,
+   `.select`, ...) will need adding to this selector list as they migrate. */
+.badge {
+  --border: 1px;
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);

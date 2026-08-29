@@ -12,9 +12,12 @@ type Story = StoryObj<typeof meta>
 
 export const Horizontal: Story = {
   render: () => (
+    // No explicit margin className: daisyUI's `.divider` bakes in `margin: 1rem 0` by default
+    // (Phase 2 tier 1, issue #91) — a plain className override still works via `cn`/twMerge same
+    // as before, just not needed for the common case any more.
     <div className="w-64">
       <p className="text-sm">Above</p>
-      <Separator className="my-3" />
+      <Separator />
       <p className="text-sm">Below</p>
     </div>
   ),

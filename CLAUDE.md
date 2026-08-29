@@ -556,12 +556,19 @@ primitives). Path alias `@/*` → `src/*` (configured in both `vite.config.ts` a
 `tsconfig.app.json` — keep in sync if it ever changes). Sonner for toasts (validation errors
 surface this way per `DESIGN.md` §5).
 
-**Migrating to daisyUI (issue #28).** Every real page above still renders shadcn/ui + Radix,
-unchanged. Phase 1 (additive/isolated) added the daisyUI Tailwind v4 plugin to `src/index.css`
-(two custom themes, `adventure-light`/`adventure-dark`, hand-derived from the existing shadcn
-palette) and a Storybook-only review surface, `src/components/daisyui-preview/`. See DESIGN.md's
-"UI stack migration" section (§3) for the full data-theme-vs-`.dark`/`.light` coexistence decision
-and the proposed Phase 2 component-by-component migration order.
+**Migrating to daisyUI (issue #28).** Phase 1 (additive/isolated) added the daisyUI Tailwind v4
+plugin to `src/index.css` (two custom themes, `adventure-light`/`adventure-dark`, hand-derived from
+the existing shadcn palette) and a Storybook-only review surface, `src/components/daisyui-preview/`.
+Phase 2 replaces real `src/components/ui/*` primitives one tier at a time; tier 1 (issue #91,
+`badge`/`separator`/`label`, the only primitives with no Radix primitive underneath) is done —
+every other primitive listed above (Button, Card, Select, etc.) still renders shadcn/ui + Radix,
+unchanged. `src/index.css` also carries the bridge making daisyUI's own color tokens track this
+app's real `.dark`/`.light` toggle (not just `data-theme`, which nothing in the real app sets) and
+a scoped fix for a real `--border` name collision between the two systems — see that file's own
+comments, and DESIGN.md §3's tier-1 entry for the full story, before migrating any later tier that
+touches a daisyUI class reading `--border` as a length (`.btn`, `.card`, `.input`, `.select`, ...).
+See DESIGN.md's "UI stack migration" section (§3) for the full data-theme-vs-`.dark`/`.light`
+coexistence decision and the proposed Phase 2 component-by-component migration order.
 
 ### Genre-agnostic by design
 
