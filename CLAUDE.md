@@ -556,6 +556,13 @@ primitives). Path alias `@/*` → `src/*` (configured in both `vite.config.ts` a
 `tsconfig.app.json` — keep in sync if it ever changes). Sonner for toasts (validation errors
 surface this way per `DESIGN.md` §5).
 
+**Migrating to daisyUI (issue #28).** Every real page above still renders shadcn/ui + Radix,
+unchanged. Phase 1 (additive/isolated) added the daisyUI Tailwind v4 plugin to `src/index.css`
+(two custom themes, `adventure-light`/`adventure-dark`, hand-derived from the existing shadcn
+palette) and a Storybook-only review surface, `src/components/daisyui-preview/`. See DESIGN.md's
+"UI stack migration" section (§3) for the full data-theme-vs-`.dark`/`.light` coexistence decision
+and the proposed Phase 2 component-by-component migration order.
+
 ### Genre-agnostic by design
 
 Nothing in the data model is hard-coded to D&D fields — Character stats are a free-form key/value

@@ -4,6 +4,95 @@
 @import "@fontsource-variable/geist";
 @import "@fontsource-variable/lora";
 
+/* daisyUI (issue #28 Phase 1) — Storybook-only theming review surface for now. `themes: false`
+   opts out of daisyUI's stock "light"/"dark" built-in themes entirely (they'd otherwise also
+   register at `:root`/`[data-theme]` and fight with the two custom themes below); the two
+   `daisyui/theme` blocks are this app's own baseline pair, hand-derived from the existing
+   `:root`/`.dark` palette a few lines down rather than any of daisyUI's presets — see each
+   block's comment for the exact source values. `daisyui`'s own component classes (`.btn`, `.card`,
+   `.select`, ...) are scoped to those class names, never bare elements, and its five base-layer
+   modules (rootcolor/rootscrollgutter/rootscrolllock/scrollbar/svg/properties) are either inert
+   until a daisyUI component class opts in, or — for `rootcolor`'s `:root` background-color/color
+   and `scrollbar`'s native scrollbar tinting — paint values equal to this app's own existing
+   colors, so real app pages (still shadcn/Radix, still keyed off `.dark`/`.light`) render
+   unchanged; verified with before/after screenshots, see the Phase 1 PR description. */
+@plugin "daisyui" {
+  themes: false;
+}
+
+/* Light baseline — every value below is copied verbatim from the `:root` block a few lines down
+   (this file's existing shadcn/Radix palette), just renamed to daisyUI's token names. */
+@plugin "daisyui/theme" {
+  name: "adventure-light";
+  default: true;
+  prefersdark: false;
+  color-scheme: light;
+  --color-base-100: oklch(0.97 0.02 85); /* :root --background */
+  --color-base-200: oklch(0.93 0.022 80); /* :root --muted */
+  --color-base-300: oklch(0.9 0.025 75); /* :root --input, one step past --muted */
+  --color-base-content: oklch(0.28 0.025 75); /* :root --foreground */
+  --color-primary: oklch(0.42 0.06 140); /* :root --primary */
+  --color-primary-content: oklch(0.97 0.02 90); /* :root --primary-foreground */
+  --color-secondary: oklch(0.64 0.09 55); /* :root --secondary */
+  --color-secondary-content: oklch(0.99 0.01 80); /* :root --secondary-foreground */
+  --color-accent: oklch(0.46 0.035 240); /* :root --accent */
+  --color-accent-content: oklch(0.97 0.01 240); /* :root --accent-foreground */
+  --color-neutral: oklch(0.28 0.025 75); /* :root --foreground, reused as the neutral ink */
+  --color-neutral-content: oklch(0.97 0.02 85); /* :root --background */
+  --color-info: oklch(0.46 0.035 240); /* :root --accent (this app has no separate info color) */
+  --color-info-content: oklch(0.97 0.01 240);
+  --color-success: oklch(0.42 0.06 140); /* :root --primary (app's olive-green reused for success) */
+  --color-success-content: oklch(0.97 0.02 90);
+  --color-warning: oklch(0.64 0.09 55); /* :root --secondary (app's rust reused for warning) */
+  --color-warning-content: oklch(0.99 0.01 80);
+  --color-error: oklch(0.55 0.19 25); /* :root --destructive */
+  --color-error-content: oklch(0.97 0.02 90);
+  --radius-selector: 0.5rem; /* :root --radius-sm (calc(1rem - 4px) = 12px), rounded down a step */
+  --radius-field: 0.875rem; /* :root --radius-md (calc(1rem - 2px) = 14px) */
+  --radius-box: 1rem; /* :root --radius */
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0; /* app's current buttons/cards are flat, no glossy 3D shading */
+  --noise: 0; /* app's current surfaces have no grain texture */
+}
+
+/* Dark baseline — every value below is copied verbatim from the `.dark` block a few lines down. */
+@plugin "daisyui/theme" {
+  name: "adventure-dark";
+  default: false;
+  prefersdark: true;
+  color-scheme: dark;
+  --color-base-100: oklch(0.22 0.02 75); /* .dark --background */
+  --color-base-200: oklch(0.27 0.02 75); /* .dark --card (dark mode's cards sit lighter, not darker) */
+  --color-base-300: oklch(0.32 0.02 75); /* .dark --muted */
+  --color-base-content: oklch(0.92 0.02 85); /* .dark --foreground */
+  --color-primary: oklch(0.68 0.09 140); /* .dark --primary */
+  --color-primary-content: oklch(0.18 0.02 140); /* .dark --primary-foreground */
+  --color-secondary: oklch(0.62 0.08 55); /* .dark --secondary */
+  --color-secondary-content: oklch(0.16 0.02 55); /* .dark --secondary-foreground */
+  --color-accent: oklch(0.58 0.05 240); /* .dark --accent */
+  --color-accent-content: oklch(0.16 0.02 240); /* .dark --accent-foreground */
+  --color-neutral: oklch(0.92 0.02 85); /* .dark --foreground, reused as the neutral ink */
+  --color-neutral-content: oklch(0.22 0.02 75); /* .dark --background */
+  --color-info: oklch(0.58 0.05 240); /* .dark --accent */
+  --color-info-content: oklch(0.16 0.02 240);
+  --color-success: oklch(0.68 0.09 140); /* .dark --primary */
+  --color-success-content: oklch(0.18 0.02 140);
+  --color-warning: oklch(0.62 0.08 55); /* .dark --secondary */
+  --color-warning-content: oklch(0.16 0.02 55);
+  --color-error: oklch(0.62 0.19 25); /* .dark --destructive */
+  --color-error-content: oklch(0.18 0.02 140);
+  --radius-selector: 0.5rem;
+  --radius-field: 0.875rem;
+  --radius-box: 1rem;
+  --size-selector: 0.25rem;
+  --size-field: 0.25rem;
+  --border: 1px;
+  --depth: 0;
+  --noise: 0;
+}
+
 @custom-variant dark (&:is(.dark *));
 
 /* A warm, storybook "parchment" theme — cream paper, dark olive/rust/slate accents, serif

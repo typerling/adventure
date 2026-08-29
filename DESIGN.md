@@ -63,7 +63,9 @@ one Sheets batch call plus one Drive file read — never an open-ended search.
 - **Vite + React + TypeScript** — client-only SPA, no backend to operate.
 - **Tailwind CSS + shadcn/ui** for styling/components (Dialog/Stepper for the setup wizard,
   Tabs for the Codex, Card for entity entries, Command/Combobox where useful, Sonner for
-  toasts on validation errors).
+  toasts on validation errors). **Migrating to daisyUI** (issue #28) — shadcn/ui + Radix are
+  still what every real page renders today; see "UI stack migration" immediately below for
+  what Phase 1 actually shipped and the Phase 2 plan for finishing the swap.
 - **Google Identity Services** for auth; **Drive API v3** (`drive.file`) for folder/file
   management; **Sheets API v4** (`spreadsheets`) for all tabular reads/writes; a narrow
   `userinfo.email` scope (issue #45) purely to power a `login_hint` mitigation for a known
@@ -79,6 +81,93 @@ one Sheets batch call plus one Drive file read — never an open-ended search.
 - No build-time dependency on any AI vendor SDK in Phase 1 (manual bridge needs none). Phase 2
   adds a thin `fetch`-based client per provider, called directly from the browser with a
   user-supplied key stored only in `localStorage`.
+
+### UI stack migration (issue #28): shadcn/Radix → daisyUI
+
+The project owner decided to fully replace shadcn/ui + Radix with **daisyUI**, accepting that
+daisyUI's components are plain Tailwind classes on native elements (or CSS-only interactivity via
+`:checked`/`<dialog>`), not Radix's headless behavior primitives — this migration trades away
+Radix's built-in focus trapping, roving keyboard nav, collision-aware popup positioning, and ARIA
+wiring unless equivalently rebuilt per component. The reason: daisyUI's theme system (CSS custom
+properties + a `data-theme` attribute, switchable at runtime) is the foundation issue #28's real
+goal — scene-driven, multi-theme support (Phase 3, still unimplemented) — needs. See issue #28 for
+the full phased plan and the scoping discussion that led here.
+
+**Phase 1 (this PR) is additive and isolated: no real page's markup, styling, or behavior
+changed.** It added the daisyUI Tailwind v4 plugin to `src/index.css` (`@plugin "daisyui"` with
+`themes: false`, then two `@plugin "daisyui/theme"` blocks — `adventure-light`/`adventure-dark` —
+hand-derived from this file's existing `:root`/`.dark` shadcn palette a few lines up, not any of
+daisyUI's built-in presets) and a new, separate Storybook review surface,
+`src/components/daisyui-preview/DaisyPreview.tsx` + `.stories.tsx` — plain daisyUI-classed mocks
+(button, card, select, input, badge, dropdown, dialog) rather than real `src/components/ui/*`
+components, so the project owner can visually review the theming approach before any real
+component migrates. It deliberately lives outside `src/components/ui/` so it's never mistaken for
+one of the real primitives every page still actually uses.
+
+**`data-theme` vs. the existing `.dark`/`.light` class toggle — the coexistence decision.**
+Real app pages keep using shadcn/Radix's `.dark`/`.light` class + `--background`/`--foreground`-
+style custom properties, completely unchanged; daisyUI's theme tokens (`--color-base-100`, etc.)
+are a parallel, non-overlapping namespace, switched via `data-theme` rather than a class. Both
+mechanisms are wired into the same `src/index.css` build and proven inert with respect to each
+other (Phase 1's PR description has the verification: pixel-identical before/after screenshots of
+Dashboard/Play/Settings, and an interaction test asserting toggling one never touches the other's
+attribute/class). This is deliberately a **coexist-for-now, replace-in-Phase-2** decision, not a
+permanent dual-system: once every `src/components/ui/*` primitive has migrated to daisyUI classes
+in Phase 2, `App.tsx`'s theme toggle should switch from `classList.add('dark'/'light')` to
+`setAttribute('data-theme', name)` on `<html>`, and this file's shadcn `:root`/`.dark` blocks (and
+the `@theme inline` mappings that expose them as Tailwind tokens) should be deleted outright —
+running both indefinitely isn't the goal, and `data-theme` is also the mechanism Phase 3's
+scene-driven theming needs (it can hold any number of named themes and change per scene/turn,
+where a two-state class toggle only ever had "light" and "dark"). A partially-migrated Phase 2
+(some primitives on daisyUI, some still shadcn) can safely run both mechanisms at once in the
+interim, since Phase 1 already proved they don't interact.
+
+**Proposed Phase 2 migration order**, safest/most-mechanical first, riskiest last (see issue #28
+for why each interactive component needs its own explicit keyboard/focus/ARIA check, not just a
+visual diff):
+
+1. **`badge`, `separator`, `label`** — pure presentational wrappers over native elements, no Radix
+   dependency at all today. A closest-to-1:1 class swap (`.badge`, a `<hr>`/divider, `.label`).
+2. **`button`, `card`, `input`, `textarea`, `progress`** — also no Radix, but used at far more call
+   sites across every page and dialog than (1) — migrate them right after so later, harder
+   components (Select, Dialog) can be rebuilt on an already-daisyUI Button/Input rather than mixing
+   a still-shadcn Button inside a half-migrated Dialog.
+3. **`collapsible`** — wraps Radix Collapsible: a single open/close boolean, no floating
+   positioning. daisyUI has no dedicated collapsible component, but native `<details>`/daisyUI's
+   `.collapse` gets most of the behavior (including `aria-expanded`-equivalent semantics) for free.
+4. **`scroll-area`** — wraps Radix ScrollArea purely for custom scrollbar chrome, no keyboard/focus
+   model of its own beyond native scrolling. daisyUI has no equivalent component; likely just
+   dropped in favor of native scroll + the existing `scrollbar-none` utility (`src/index.css`).
+5. **`sonner`** — not a Radix wrapper at all today (it wraps the independent `sonner` npm package).
+   Its Phase 2 question isn't "rebuild Radix behavior" but "keep the `sonner` library as-is
+   (simplest — nothing to migrate) vs. replace it with daisyUI's own `.toast`/`.alert` and hand-roll
+   stacking/auto-dismiss" — a product decision to make explicitly, independent of the Radix-specific
+   work around it, not a forced part of "the migration."
+6. **`tabs`** — wraps Radix Tabs: real roving-tabindex keyboard nav and `aria-selected`/
+   `aria-controls` wiring to reproduce, but no floating/portal positioning. daisyUI's `.tab`/`.tabs`
+   are visual-only, so `role="tablist"` semantics and arrow-key handling need to be added by hand.
+7. **`dialog`** — wraps Radix Dialog: focus trap, `aria-modal`, return-focus-on-close, Escape-to-
+   close, scroll lock. Sounds like the most behavior to reimplement, but daisyUI's own `.modal` is
+   built on the **native `<dialog>` element** (confirmed building this PR's own DaisyPreview mock —
+   `showModal()`/`<form method="dialog">`), and native `<dialog>` already provides focus trapping,
+   Escape-to-close, and top-layer rendering for free, browser-native — likely *less* custom
+   behavior to hand-build than Select/DropdownMenu's floating-positioning problem below, despite
+   sounding scarier on paper. Worth sequencing before them for that reason.
+8. **`dropdown-menu`** — wraps Radix DropdownMenu: floating/collision-aware positioning + roving
+   keyboard nav + typeahead + return-focus behavior. Also this app's primary nav surface today
+   (`Header.tsx`'s hamburger menu) with the most existing test coverage to keep green
+   (`tests/mobile-layout.spec.ts`, `Header.stories.tsx`) — a strong regression net, but also the
+   most exposed surface if something regresses.
+9. **`select`** — wraps Radix Select: the same floating-positioning + keyboard-nav + typeahead
+   problem as DropdownMenu, and the component whose real shadcn-drift bugs (viewport overflow, no
+   collision avoidance, missing internal padding — PR #81's independent review) triggered this
+   whole migration decision in the first place. Do this one last, once a floating-positioning
+   approach has already been proven once on DropdownMenu.
+
+This repo currently has no `popover.tsx` (issue #28's abstract description names Popover as an
+example risky component, but nothing here implements one yet) — if one is added before Phase 2, it
+belongs alongside DropdownMenu/Select in the riskiest group, for the same floating-positioning
+reason.
 
 ---
 

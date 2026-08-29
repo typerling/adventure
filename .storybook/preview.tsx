@@ -80,10 +80,33 @@ const preview: Preview = {
         dynamicTitle: true,
       },
     },
+
+    // daisyUI theming review (issue #28 Phase 1). Deliberately a *second*, independent global
+    // rather than folded into `theme` above: `theme` toggles the `.dark`/`.light` class real
+    // shadcn/Radix components (and every other story in this file) still key off, while this one
+    // drives daisyUI's `data-theme` attribute, a different mechanism with a different value shape
+    // (named themes, not just light/dark) that only src/components/daisyui-preview's stories
+    // consume. No global decorator reads this — see DaisyPreview.stories.tsx's own
+    // `WithDaisyTheme` decorator for why it's scoped there instead of applied here for every
+    // story.
+    daisyTheme: {
+      description: 'daisyUI theme (Phase 1 preview — src/components/daisyui-preview only)',
+      toolbar: {
+        title: 'daisyUI theme',
+        icon: 'paintbrush',
+        items: [
+          { value: 'system', title: 'System' },
+          { value: 'adventure-light', title: 'Adventure Light' },
+          { value: 'adventure-dark', title: 'Adventure Dark' },
+        ],
+        dynamicTitle: true,
+      },
+    },
   },
 
   initialGlobals: {
     theme: 'system',
+    daisyTheme: 'system',
   },
 
   decorators: [
