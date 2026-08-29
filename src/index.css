@@ -273,9 +273,13 @@
    re-declaring the length locally, scoped to the specific daisyUI component classes that actually
    read it as a length, so it overrides the inherited color *only inside those elements* rather
    than touching the app-wide value. `.badge` is the only tier 1 class that reads `--border` at all
-   (verified against the installed package's compiled `badge.css`/`divider.css`/`label.css` — the
-   other two don't reference it); later tiers reusing `--border` (`.btn`, `.card`, `.input`,
-   `.select`, ...) will need adding to this selector list as they migrate. */
+   (verified against the installed package's compiled `badge.css`/`divider.css`/`label.css` —
+   `label.css` does also reference `--border`, but only in its `.label:is(.input>*,.select>*)`
+   nested-in-input/select variant, which `label.tsx` never applies since it kept plain Tailwind
+   classes rather than daisyUI's `.label` class, so it's inert here rather than absent); later
+   tiers reusing `--border` (`.btn`, `.card`, `.input`, `.select`, ..., and `label.tsx` itself if
+   it ever adopts daisyUI's `.label` class) will need adding to this selector list as they
+   migrate — re-check the installed package's compiled CSS at that point, not this comment. */
 .badge {
   --border: 1px;
 }
