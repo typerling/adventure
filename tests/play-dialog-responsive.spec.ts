@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { installGoogleApiMock } from './mocks/googleApi'
-import { createRandomCampaign } from './helpers'
+import { createRandomCampaign, hideToasts } from './helpers'
 
 /**
  * Regression coverage for a real bug: the dialog's own `max-w-2xl` (an unprefixed class) was
@@ -44,6 +44,20 @@ const SIZES = [
 for (const size of SIZES) {
   test(`the turn dialog is sized for its breakpoint (${size.label})`, async ({ page }) => {
     await page.setViewportSize(size.viewport)
+    // `createRandomCampaign`'s "Random campaign" click fires a "Randomized a starting point…"
+    // success toast immediately, then this test clicks straight through the wizard's remaining
+    // "Next" steps with no pause — at the mobile viewport that toast pins to the bottom right over
+    // those buttons. Headless Chromium never fires Sonner's auto-dismiss timer (see hideToasts's
+    // own doc comment), so under load the toast can still be sitting there when the click lands,
+    // intercepting it. Found while verifying Phase 2 tier 2 (issue #93)'s migration against the
+    // full suite: this exact spec failed here, reproducibly, only under the full suite's
+    // concurrent load (never in isolation, on either this branch or pre-migration `main`) — timing
+    // margins under load are close enough to this known Sonner/headless-Chromium gap that this was
+    // likely latent already, this migration just wasn't confirmed to be the trigger either way.
+    // Every other `createRandomCampaign` caller in a similarly tight spot already carries this
+    // exact guard (e.g. turn-pager.spec.ts, npc-profiles.spec.ts) — this spec was simply missing
+    // it. Fixed with the same established mechanism those use, not a loosened assertion.
+    await hideToasts(page)
     await installGoogleApiMock(page)
     await createRandomCampaign(page)
 

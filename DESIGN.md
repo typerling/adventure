@@ -174,10 +174,48 @@ visual diff):
      (`.btn`, `.card`, `.input`, `.select`, ...) will hit the exact same bug and need adding to that
      scoped-override list** — see `src/index.css`'s comment for the full mechanism. This is the
      single most important thing for later tiers to know going in.
-2. **`button`, `card`, `input`, `textarea`, `progress`** — also no Radix, but used at far more call
-   sites across every page and dialog than (1) — migrate them right after so later, harder
-   components (Select, Dialog) can be rebuilt on an already-daisyUI Button/Input rather than mixing
-   a still-shadcn Button inside a half-migrated Dialog.
+2. **DONE (issue #93). `button`, `card`, `input`, `textarea`, `progress`** — also no Radix, but used
+   at far more call sites across every page and dialog than (1); migrated right after (1) so later,
+   harder components (Select, Dialog) can be rebuilt on an already-daisyUI Button/Input rather than
+   mixing a still-shadcn Button inside a half-migrated Dialog.
+   - **`--border` collision extended, exactly as (1) predicted**: re-checked the installed
+     package's compiled CSS rather than assuming — `.btn`, `.input`, and `.textarea` all read
+     `--border` as a length the same way `.badge` did, so all three were added to
+     `src/index.css`'s scoped `--border: 1px` override list. `.card` turned out NOT to need an
+     entry: its plain class never references `--border` at all — only its unused `.card-border`/
+     `.card-dash` *modifier* classes do, and `card.tsx` deliberately doesn't use either (kept this
+     app's existing `ring-1 ring-foreground/10` border treatment — see that file's own comment).
+     `.progress` doesn't reference `--border` either.
+   - **The dark-mode theme-token bridge from (1) needed no changes** — verified, not assumed:
+     button/card/input touch more of daisyUI's token surface (focus-ring tokens, `--btn-color`/
+     `--btn-fg`, `--input-color`) than badge/separator/label did, but every one of those resolves
+     through `--color-primary`/`--color-base-*`/etc., which (1)'s bridge already aliases onto this
+     app's `.dark`/`.light`-tracking variables. No new bridging was needed for this tier.
+   - **New risk this tier introduced, checked explicitly and confirmed safe**: `button.tsx` is used
+     far more widely than tier 1's components, including composed inside still-Radix `Dialog`'s
+     close button and `Header.tsx`'s `DropdownMenuTrigger asChild` (the app's primary nav menu) —
+     both via React's `asChild`/`Slot` cloning, which only requires the child to render one real DOM
+     element accepting merged props/ref, not any particular class names. Since `Button`'s own
+     `asChild`/`Slot.Root` structure was left untouched (only its `className` content changed), this
+     composition was never actually at risk — confirmed empirically anyway with real Playwright
+     clicks through both interactions (the dialog's close button closes it; the header's hamburger
+     button opens the menu), not just by reasoning about it.
+   - **`progress.tsx` dropped Radix's `Progress` primitive entirely**, not just its styling — it was
+     already just `role="progressbar"` + ARIA value attributes on a `div`, no keyboard/focus
+     behavior. A native `<progress value max>` element gets equivalent (arguably more standard)
+     accessibility for free, and is what daisyUI's `.progress` is actually built to style (its
+     compiled CSS targets `::-webkit-progress-bar`/`::-moz-progress-bar` pseudo-elements, not a
+     div+div composition) — first tier-2 case of "the Radix wrapper wasn't earning its keep," worth
+     the same explicit check on every remaining Radix-wrapped component in tiers 3+.
+   - **A real bug caught by the required regression-test discipline, not just a screenshot**: the
+     first pass at `button.tsx` kept shadcn's old base `border-transparent`/`text-sm` utility
+     classes alongside daisyUI's `.btn` — both same-specificity same-layer collisions where the
+     later-declared utility silently won, making every button's border invisible (including
+     `outline`, whose entire point is a visible border) and flattening every size's distinct
+     `--fontsize` to one value. Caught with a computed-style probe, not a glance; fixed by dropping
+     both base classes and letting `.btn`'s own CSS variables drive border-color/font-size per
+     variant/size instead. A new Storybook story (`button.stories.tsx`'s `OutlineHasVisibleBorder`)
+     regression-guards this specific failure mode going forward.
 3. **`collapsible`** — wraps Radix Collapsible: a single open/close boolean, no floating
    positioning. daisyUI has no dedicated collapsible component, but native `<details>`/daisyUI's
    `.collapse` gets most of the behavior (including `aria-expanded`-equivalent semantics) for free.
