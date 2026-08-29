@@ -126,8 +126,54 @@ interim, since Phase 1 already proved they don't interact.
 for why each interactive component needs its own explicit keyboard/focus/ARIA check, not just a
 visual diff):
 
-1. **`badge`, `separator`, `label`** — pure presentational wrappers over native elements, no Radix
-   dependency at all today. A closest-to-1:1 class swap (`.badge`, a `<hr>`/divider, `.label`).
+1. **DONE (issue #91). `badge`, `separator`, `label`** — pure presentational wrappers over native
+   elements, no Radix dependency at all today. A closest-to-1:1 class swap (`.badge`, a
+   `<hr>`/divider, `.label`).
+   - **`label` really was cosmetic-only**, confirmed by reading `@radix-ui/react-label`'s own
+     source rather than assuming: it renders nothing but a plain native `<label>` plus one small
+     UX behavior (suppress text-selection on a double-click, skipped when the click lands on a
+     nested control) — ported by hand. The click-to-focus-the-named-control behavior every real
+     `htmlFor` call site actually depends on was never a Radix behavior at all; it's the browser's
+     native `<label for="...">` association, which a plain `<label>` gets for free. Verified with a
+     real Storybook interaction test (`label.stories.tsx`'s `ClickToFocus`), not just "it renders."
+   - **Not every "form-control label class" daisyUI offers was actually a fit.** daisyUI's own
+     `.label` class bakes in `color: color-mix(in oklab, currentcolor 60%, transparent)` — a
+     permanent 60%-opacity mute. Real call sites don't want that: every one renders full-strength
+     text today, and two (Settings.tsx's "Run on" rows) already layer their own
+     `text-muted-foreground` on top of `Label`, which would either fight or double up with
+     `.label`'s built-in muting depending on generated-CSS order, for no benefit either way. Kept
+     the existing Tailwind classes (unchanged tokens, just no longer routed through Radix) instead
+     of forcing a daisyUI class that didn't match this app's actual usage — worth remembering for
+     later tiers: "use the daisyUI class" is a default, not an unconditional rule, when a real call
+     site's own behavior says otherwise.
+   - **A real, previously-undiscovered CSS bug, found by verifying dark mode rather than assuming
+     it "just worked" via the CSS custom property cascade**: daisyUI's own per-theme tokens
+     (`--color-primary`, etc.) are scoped to `[data-theme=...]`/OS `prefers-color-scheme` only —
+     none of which this app's actual `.dark`/`.light` toggle (or its system-preference fallback,
+     the only one actually wired up pre-toggle) drives. Fixed with a new bridge block in
+     `src/index.css` that aliases daisyUI's tokens onto this app's own already-theme-aware
+     variables (`--color-base-100: var(--background)`, etc.) — not a new palette, the same mapping
+     the Phase 1 theme blocks' own comments already documented, just made reachable through the
+     toggle the app actually has. Verified empirically (a headless-browser probe of computed custom
+     properties across all four light/dark × explicit-class/system-preference combinations), not
+     assumed from reading the CSS.
+   - **A second, more serious bug the above verification surfaced**: `--border` is declared by
+     *both* systems under the identical bare name for two unrelated things — daisyUI's own theme
+     blocks use it as a border-**width** (`1px`), while this app's shadcn palette already used the
+     same name for a border-**color** (an oklch value). Since custom properties inherit and
+     shadcn's declaration wins the "which ancestor wins" cascade at `:root`, every daisyUI-classed
+     element's inherited `--border` silently resolved to a color, and every daisyUI rule computing
+     with it as a length (`.badge`'s `padding-inline: calc(var(--size)/2 - var(--border))`, its
+     `border: var(--border) solid ...`) went invalid and got dropped — real badges rendered
+     clipped to a few pixels wide with a `0px` padding-inline. Not visible in Phase 1's own
+     `daisyui-preview`, which never got scrutinized at this level of detail; only caught here by
+     actually inspecting a real, migrated component's computed style, not trusting a screenshot at
+     a glance. Fixed by re-declaring `--border: 1px` scoped to `.badge` specifically (not globally
+     — that would have broken shadcn's *own*, correct, unrelated use of `--border` as a color
+     everywhere else). **Later tiers reusing any daisyUI class that reads `--border` as a length
+     (`.btn`, `.card`, `.input`, `.select`, ...) will hit the exact same bug and need adding to that
+     scoped-override list** — see `src/index.css`'s comment for the full mechanism. This is the
+     single most important thing for later tiers to know going in.
 2. **`button`, `card`, `input`, `textarea`, `progress`** — also no Radix, but used at far more call
    sites across every page and dialog than (1) — migrate them right after so later, harder
    components (Select, Dialog) can be rebuilt on an already-daisyUI Button/Input rather than mixing
