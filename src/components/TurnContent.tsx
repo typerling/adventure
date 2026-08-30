@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import ReactMarkdown, { type Components } from 'react-markdown'
 import { ChevronRight, Compass, Feather, Footprints, Sparkles } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { stripSpeakerTokens } from '@/lib/ai/turnBlocks'
 import type { TurnBlock } from '@/types/turn'
 
 /** Options are arbitrary AI-generated strings with no inherent icon/color meaning — these just
@@ -40,9 +41,15 @@ const MARKDOWN_COMPONENTS: Components = {
 }
 
 function ProseBlock({ markdown }: { markdown: string }) {
+  // Strip the invisible `{{v:Name}}...{{/v}}` speaker tags (issue #96) before react-markdown ever
+  // sees the string — they use only `{`/`}`, which commonmark doesn't treat specially, so left in
+  // place they'd render as literal, visible text. A plain substring removal, not markdown-aware,
+  // so it can't disturb any real markdown syntax the tags happen to sit next to. A no-op for
+  // every turn logged before this shipped (no tokens present at all).
+  const visible = stripSpeakerTokens(markdown)
   return (
     <div className="flex flex-col gap-3">
-      <ReactMarkdown components={MARKDOWN_COMPONENTS}>{markdown}</ReactMarkdown>
+      <ReactMarkdown components={MARKDOWN_COMPONENTS}>{visible}</ReactMarkdown>
     </div>
   )
 }

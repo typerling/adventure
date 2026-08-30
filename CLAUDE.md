@@ -145,6 +145,18 @@ campaign: it loads campaign/settings/sheet-snapshot/rolling-summary/recent-turns
 campaign meta, rolling summary, and turn log). Look here first when tracing "what happens when
 the player submits a turn."
 
+The narrative half of the contract also supports an invisible `{{v:Name}}...{{/v}}` speaker token
+around a character's own dialogue (issue #96, epic #36's multi-voice-narration groundwork) —
+stripped everywhere player-facing (`TurnContent.tsx`'s renderer, `turnBlocks.ts`'s
+`stripMarkdownToPlainText`) so it never changes what's shown or read aloud today.
+`turnBlocks.ts`'s `buildSpokenSegments` splits a turn's spoken text into `{text, speaker}`
+segments at these tokens (tolerant of unclosed/stray/nested malformed tags — see its doc
+comment), collapsing to exactly one `speaker: null` segment whenever a turn has none (every turn
+logged before this shipped); `attributeSpeakersHeuristically` is a separate, opt-in fallback that
+guesses a speaker for quoted dialogue by nearest preceding known name when no real tokens are
+present. Nothing consumes the per-speaker split yet — `buildSpokenScript` still hands every TTS
+provider one flattened string, unchanged until a future ticket wires actual voice-switching.
+
 ### Direct AI mode (Phase 3: Claude API + local on-device models)
 
 `GlobalSettings.aiMode` (`'manual' | 'api' | 'local'`, `src/lib/settings/globalSettings.ts`) picks

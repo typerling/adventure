@@ -441,6 +441,18 @@ contract so the app can parse it. **Two-part output:**
    The narrative includes the literal placeholder token `{{options}}` at the point the turn's
    options should render inline (usually near the end, but not hardcoded to always be last); if
    omitted, the client falls back to appending the options after the narrative automatically.
+   Spoken dialogue can also be wrapped in an invisible `{{v:Name}}...{{/v}}` token pair (`Name`
+   matching an NPC's `name` exactly as `npc_updates`/`new_npcs` use it, or the player character's
+   own name) — stripped before anything is shown or read aloud, so it never changes what the
+   player sees. This is issue #96's speaker-attribution groundwork for epic #36 (multi-voice
+   narration): `src/lib/ai/turnBlocks.ts`'s `buildSpokenSegments` splits a turn's spoken text into
+   `{text, speaker}` segments at these token boundaries (tolerantly — an unclosed tag ends at the
+   next paragraph break, a stray closer is dropped, nesting is treated as a speaker change), and
+   `attributeSpeakersHeuristically` offers a separate, opt-in fallback that guesses a speaker for
+   quoted dialogue by nearest preceding name when a reply has no real tokens at all (a weaker
+   local model, or a manual-mode paste). Nothing consumes the per-speaker split for playback yet —
+   every provider still reads `buildSpokenScript`'s single flattened string, byte-identical to
+   before this shipped whenever no tokens are present.
 2. A single trailing fenced block, ` ```state ` … ` ``` `, containing structured JSON:
 
 ```json

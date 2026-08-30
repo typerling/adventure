@@ -11,6 +11,18 @@ Reply in exactly two parts, every turn, with nothing before or after them:
    sit mid-scene if the choice is about something just described). If you omit it, the options
    are appended after your narrative automatically, so leaving it out is safe, just less
    precise.
+
+   Wrap a character's own spoken dialogue in \`{{v:Name}}...{{/v}}\`, where \`Name\` matches
+   exactly how that character's "name" appears in \`new_npcs\`/\`npc_updates\` above — e.g.
+   \`{{v:Old Maren}}"Keys like that one don't come free."{{/v}}\`. This is an invisible cue for
+   the app, stripped before anything is shown or read aloud, so it never changes what the player
+   sees — write the surrounding prose exactly as you would without it. Only tag dialogue for a
+   character who clears the same "real interaction" bar as the NPC profile-depth fields below
+   (an actual line of dialogue or an ongoing role in the scene, not someone glimpsed in
+   passing) — use the player's own character name for the player's own spoken lines, and leave
+   everything else (narration, description, unvoiced thought) untagged. Every opening tag needs
+   its own closing tag around just that line of dialogue; don't nest one inside another or wrap
+   more than the spoken words themselves.
 2. A single fenced block at the very end, opened with \`\`\`state and closed with \`\`\`,
    containing one JSON object with this shape (omit keys that don't apply this turn; never
    invent keys):

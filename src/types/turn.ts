@@ -85,6 +85,19 @@ export type TurnBlock =
   | { type: 'prose'; markdown: string }
   | { type: 'options'; items: { label: string; manus: string }[] }
 
+/** One piece of a turn's *spoken* content, in the order it should be read — the per-speaker
+ * counterpart to `TurnBlock` (issue #96, part of the multi-voice-narration epic #36). A prose
+ * block with no `{{v:Name}}...{{/v}}` tags in it (today's only shape) always collapses to exactly
+ * one segment with `speaker: null` — see turnBlocks.ts's `buildSpokenSegments` doc comment for why
+ * that equivalence is load-bearing. `speaker: null` means narration (no character voiced it);
+ * a non-null `speaker` names a character exactly as it appears in the sheet snapshot (an NPC's
+ * `name`, or the player character's own name) for a future ticket to map to a distinct voice —
+ * this ticket only produces the split, it doesn't change playback. */
+export interface SpokenSegment {
+  text: string
+  speaker: string | null
+}
+
 /** One turn as archived in story/log/*.md. */
 export interface TurnRecord {
   turn: number
