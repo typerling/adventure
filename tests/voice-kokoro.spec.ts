@@ -33,16 +33,12 @@ test("Kokoro is selectable as a text-to-speech provider in Settings", async ({
   page,
 }) => {
   await installGoogleApiMock(page);
-  await createRandomCampaign(page);
-
-  const match = page.url().match(/\/play\/([^/?#]+)/);
-  const campaignId = match![1];
-  await page.goto(`/settings/${campaignId}`);
+  await page.goto("/settings");
 
   // AI mode (0), Speech-to-text (1), Text-to-speech (2) — manual AI mode (the default) adds no
   // extra select before these.
   const ttsTrigger = page
-    .locator('[data-testid="campaign-settings"] [data-slot="select-trigger"]')
+    .locator('[data-testid="global-settings"] [data-slot="select-trigger"]')
     .nth(2);
   await ttsTrigger.click();
 

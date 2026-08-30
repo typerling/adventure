@@ -48,6 +48,14 @@ export const OpensAndSelects: Story = {
     const option = await waitFor(() => body.getByRole('option', { name: 'Direct API key (Claude)' }))
     await userEvent.click(option)
 
-    await expect(canvas.getByRole('combobox', { name: 'AI mode' })).toHaveTextContent('Direct API key (Claude)')
+    // Radix's `position="popper"` unmounts the closing popup's Portal (and the aria-hidden it
+    // puts on the rest of the tree while open) one tick later than `item-aligned` did — a
+    // real, harmless implementation-timing difference, not something a user would ever notice,
+    // but the very next assertion can otherwise land while the trigger is still hidden from the
+    // accessibility tree. Same class of issue as this repo's other Radix open/close-animation
+    // findings (see CLAUDE.md) — wait for the settled state instead of asserting synchronously.
+    await waitFor(() =>
+      expect(canvas.getByRole('combobox', { name: 'AI mode' })).toHaveTextContent('Direct API key (Claude)'),
+    )
   },
 }

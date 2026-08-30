@@ -1,13 +1,13 @@
 import type { TtsProvider } from './types'
 import { getElevenLabsApiKey } from './elevenLabsKey'
 
-// "Rachel" — one of ElevenLabs' stable premade voices, used when a campaign hasn't set
-// CampaignSettings.elevenLabsVoiceId yet.
+// "Rachel" — one of ElevenLabs' stable premade voices, used when the player hasn't set
+// GlobalSettings.elevenLabsVoiceId yet.
 const DEFAULT_VOICE_ID = '21m00Tcm4TlvDq8ikWAM'
 const MODEL_ID = 'eleven_multilingual_v2'
 
-/** ElevenLabs TTS — needs an API key (Settings, see elevenLabsKey.ts) and, optionally, a
- * campaign-level voice ID (CampaignSettings.elevenLabsVoiceId, passed as opts.voice). */
+/** ElevenLabs TTS — needs an API key (Settings, see elevenLabsKey.ts) and, optionally, a global
+ * voice ID (GlobalSettings.elevenLabsVoiceId, passed as opts.voice). */
 export function createElevenLabsTtsProvider(): TtsProvider {
   let currentAudio: HTMLAudioElement | null = null
   /** Settles the in-flight speak() when stop() interrupts it. `pause()` fires neither 'ended' nor
