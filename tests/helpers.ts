@@ -67,8 +67,12 @@ export async function submitFreeTextTurn(
   await page.getByRole("button", { name: "Apply turn" }).click();
 }
 
-/** Switches a campaign's voice providers via its Settings page, saves, and returns to Play.
- * Call while `page` is on /play/:id, /codex/:id, or /settings/:id for that campaign. */
+/** Switches the (global, device-scoped — issue #77) voice providers via Settings, saves, and
+ * returns to Play for whichever campaign was open (if any). Call while `page` is on /play/:id,
+ * /codex/:id, or /settings/:id for that campaign — or on /settings with no campaign open, in
+ * which case it just stays on /settings afterward. Named "Campaign" for historical/call-site
+ * continuity (most callers do have a campaign open, to exercise "the setting changed here shows
+ * up there" scenarios), but the setting itself applies everywhere, not to just that campaign. */
 export async function setCampaignVoiceProviders(
   page: Page,
   opts: {
@@ -77,18 +81,14 @@ export async function setCampaignVoiceProviders(
   },
 ): Promise<void> {
   const match = page.url().match(/\/(?:play|codex|settings)\/([^/?#]+)/);
-  if (!match)
-    throw new Error(
-      `setCampaignVoiceProviders: no campaign id in URL "${page.url()}"`,
-    );
-  const campaignId = match[1];
+  const campaignId = match?.[1];
 
-  await page.goto(`/settings/${campaignId}`);
-  // Scoped to the campaign card: the "Local AI models" card below it renders its own selects,
-  // and it renders *before* this card does (it doesn't wait on settings loading from Drive), so
-  // an unscoped positional lookup can land on a per-model "Run on" select instead.
+  await page.goto("/settings");
+  // Scoped to the global AI & voice card: the "Local AI models" card below it renders its own
+  // selects, and it renders *before* this card does, so an unscoped positional lookup can land on
+  // a per-model "Run on" select instead.
   const triggers = page.locator(
-    '[data-testid="campaign-settings"] [data-slot="select-trigger"]',
+    '[data-testid="global-settings"] [data-slot="select-trigger"]',
   );
 
   if (opts.stt) {
@@ -117,10 +117,10 @@ export async function setCampaignVoiceProviders(
   }
 
   await page.getByRole("button", { name: "Save settings" }).click();
-  // Save is async (a Drive write) — wait for it to actually land before navigating away, or the
-  // Play page reloads and re-fetches the *old* settings.md.
+  // Save is synchronous (localStorage) but await the toast anyway, matching the old Drive-write
+  // timing so call sites don't need to know the difference — and confirming Save actually ran.
   await expect(page.getByText("Settings saved.")).toBeVisible();
-  await page.goto(`/play/${campaignId}`);
+  if (campaignId) await page.goto(`/play/${campaignId}`);
 }
 
 const AI_MODE_OPTION_LABEL = {
@@ -129,28 +129,28 @@ const AI_MODE_OPTION_LABEL = {
   local: "Local model (runs on this device)",
 } as const;
 
-/** Switches a campaign's AI mode (manual copy/paste, direct Claude API, or an on-device local
- * model) via Settings, saves, and returns to Play. Leaves the Claude model / local model choice
- * at their defaults (Sonnet 5 / Gemma 3 1B). */
+/** Switches the (global, device-scoped — issue #77) AI mode (manual copy/paste, direct Claude
+ * API, or an on-device local model) via Settings, saves, and returns to Play for whichever
+ * campaign was open (if any). Leaves the Claude model / local model choice at their defaults
+ * (Sonnet 5 / Gemma 3 1B). See setCampaignVoiceProviders' doc comment for why this is still named
+ * "Campaign" despite the setting being global. */
 export async function setCampaignAiMode(
   page: Page,
   mode: keyof typeof AI_MODE_OPTION_LABEL,
 ): Promise<void> {
   const match = page.url().match(/\/(?:play|codex|settings)\/([^/?#]+)/);
-  if (!match)
-    throw new Error(`setCampaignAiMode: no campaign id in URL "${page.url()}"`);
-  const campaignId = match[1];
+  const campaignId = match?.[1];
 
-  await page.goto(`/settings/${campaignId}`);
+  await page.goto("/settings");
   await page
-    .locator('[data-testid="campaign-settings"] [data-slot="select-trigger"]')
+    .locator('[data-testid="global-settings"] [data-slot="select-trigger"]')
     .first()
     .click();
   await page.getByRole("option", { name: AI_MODE_OPTION_LABEL[mode] }).click();
 
   await page.getByRole("button", { name: "Save settings" }).click();
   await expect(page.getByText("Settings saved.")).toBeVisible();
-  await page.goto(`/play/${campaignId}`);
+  if (campaignId) await page.goto(`/play/${campaignId}`);
 }
 
 /**
@@ -184,10 +184,11 @@ export async function recordToasts(page: Page): Promise<void> {
 /**
  * Expands one of Settings' collapsible download-management cards ("Local AI models" / "Kokoro
  * voice model", issue #22) if it isn't already open — both default collapsed except when the
- * currently open campaign already uses that mode (see CollapsibleSettingsCard.tsx and
- * Settings.tsx's `localModelsDefaultOpen`/`kokoroModelDefaultOpen`). `testId` is the card's own
- * `data-testid` (e.g. `"local-models-card"`); the toggle carries `data-testid="{testId}-toggle"`.
- * Safe to call even when the card is already expanded.
+ * current global AI mode/TTS provider (issue #77 made these device-scoped, not per-campaign)
+ * already uses that mode (see CollapsibleSettingsCard.tsx and Settings.tsx's
+ * `localModelsDefaultOpen`/`kokoroModelDefaultOpen`). `testId` is the card's own `data-testid`
+ * (e.g. `"local-models-card"`); the toggle carries `data-testid="{testId}-toggle"`. Safe to call
+ * even when the card is already expanded.
  */
 export async function expandSettingsCard(page: Page, testId: string): Promise<void> {
   const toggle = page.getByTestId(`${testId}-toggle`);

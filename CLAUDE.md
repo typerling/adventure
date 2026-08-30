@@ -147,8 +147,9 @@ the player submits a turn."
 
 ### Direct AI mode (Phase 3: Claude API + local on-device models)
 
-`CampaignSettings.aiMode` (`'manual' | 'api' | 'local'`) picks how stage 1's prompt reaches an
-actual AI reply.
+`GlobalSettings.aiMode` (`'manual' | 'api' | 'local'`, `src/lib/settings/globalSettings.ts`) picks
+how stage 1's prompt reaches an actual AI reply — global to the device (localStorage), not
+per-campaign, since issue #77.
 
 - **`'api'`** — `src/lib/ai/claudeProvider.ts`'s `generateClaudeReply(prompt, model)` calls
   `POST https://api.anthropic.com/v1/messages` with a plain `fetch` — no `@anthropic-ai/sdk`
@@ -159,14 +160,14 @@ actual AI reply.
   Anthropic's official reference at time of writing; verified against the SDK's own source and
   community reporting) — without it the request is blocked as cross-origin. The API key
   (`src/lib/ai/claudeKey.ts`) is `localStorage`-only, same reasoning as `elevenLabsKey.ts`; the
-  model choice (`CampaignSettings.claudeModel`, one of `CLAUDE_MODELS`, default `claude-sonnet-5`)
-  is per-campaign like `elevenLabsVoiceId`.
+  model choice (`GlobalSettings.claudeModel`, one of `CLAUDE_MODELS`, default `claude-sonnet-5`)
+  is global like `elevenLabsVoiceId` (issue #77 — previously per-campaign).
 - **`'local'`** — `src/lib/ai/localModel.ts`'s `generateLocalReply(modelId, prompt, opts)` runs one
   of several small instruction-tuned models entirely in-browser via `@huggingface/transformers`
   over WebGPU — no key, no server. `LOCAL_MODELS` is the catalog (Hugging Face repo ID → display
   label, approximate download size, and whether it needs a real multimodal `AutoProcessor`), picked
-  per-campaign via `CampaignSettings.localModelId` (default `onnx-community/gemma-3-1b-it-ONNX`)
-  and shown with sizes in Settings' model dropdown. They range from ~490MB (Qwen2.5 0.5B) to ~3GB
+  globally via `GlobalSettings.localModelId` (default `onnx-community/gemma-3-1b-it-ONNX`, issue
+  #77 — previously per-campaign) and shown with sizes in Settings' model dropdown. They range from ~490MB (Qwen2.5 0.5B) to ~3GB
   (Gemma 4 E2B) — the catalog started as just the Gemma 4 E2B model, but that alone was crashing
   the tab (Chrome's "Aw, Snap") on memory-constrained devices at ~2GB downloaded, so smaller
   alternatives were added as an escape hatch rather than trying to make one model work everywhere.
@@ -374,8 +375,10 @@ and Sheets are the actual source of truth, not the in-memory store.
 `/` → Dashboard (campaign list), `/new` → NewCampaign (setup wizard), `/play/:campaignId` → Play
 (the turn loop UI), `/codex/:campaignId` → Codex (read-only tabs over sheet data — Inventory,
 Stats/Skills, NPCs, Monsters, Lore, Timeline/Quests), `/settings` and `/settings/:campaignId` →
-Settings (global + per-campaign). `AuthGate` (`src/components/AuthGate.tsx`) wraps the whole app
-shell and gates everything on Google sign-in state.
+Settings (AI mode/model/provider/voice settings are global — issue #77; `/settings/:campaignId`
+only adds a small per-campaign summarization-cadence card on top). `AuthGate`
+(`src/components/AuthGate.tsx`) wraps the whole app shell and gates everything on Google sign-in
+state.
 
 ### Voice (Phase 2: browser, ElevenLabs, and on-device Kokoro)
 
@@ -394,9 +397,9 @@ philosophy as the AI backend. Three implementations exist (Kokoro is TTS-only):
   localStorage too, for a different reason — see that file). TTS is one `fetch` + `Audio` playback. STT is fundamentally different
   from browser STT: no live transcript, it records the whole utterance via `getUserMedia` +
   `MediaRecorder` and only transcribes (one HTTP upload) once `stop()` is called — so unlike
-  browser STT, the user must click the mic button again to end recording. A campaign's voice
-  (`CampaignSettings.elevenLabsVoiceId`) is optional and per-campaign (settings.md), separate from
-  the API key (global, localStorage).
+  browser STT, the user must click the mic button again to end recording. The chosen voice
+  (`GlobalSettings.elevenLabsVoiceId`) is optional and global to the device (localStorage, issue
+  #77 — previously per-campaign in settings.md), same storage as the API key.
 - **`huggingface-local`** (`kokoroTts.ts`) — TTS only, via `kokoro-js`: a small on-device model, no
   key and no server, run over **WASM rather than WebGPU**, so unlike the local text models
   there's no hard support gate. Dynamically imported (it bundles its own ONNX runtime). Read the
@@ -530,7 +533,7 @@ philosophy as the AI backend. Three implementations exist (Kokoro is TTS-only):
   swap that one constant if a real listen test confirms it holds up; it would be a strict win
   (155 MB vs 326 MB, still faster than WASM).
 
-`getProvider.ts` resolves a `CampaignSettings` provider choice to an implementation, plus
+`getProvider.ts` resolves a `GlobalSettings` provider choice to an implementation, plus
 `isSttProviderAvailable`/`isTtsProviderAvailable` for gating UI before an API key is even needed
 (missing-key errors surface later, as a toast, when actually used — not by hiding controls, since
 the user picked that provider on purpose). Consumed from `Play.tsx`: a mic button feeds

@@ -21,8 +21,8 @@ import {
 // file's upgrade handler, which deliberately drops everything rather than migrating — so a stale
 // value here silently wipes the very cache entry these tests seed.
 const CACHE_DB_VERSION = 3;
-// The default model a fresh campaign's localModelId points at (see DEFAULT_SETTINGS in
-// src/types/campaign.ts) — the one actually exercised when a turn is generated.
+// The default model localModelId points at (see DEFAULT_GLOBAL_SETTINGS in
+// src/lib/settings/globalSettings.ts) — the one actually exercised when a turn is generated.
 const DEFAULT_MODEL_ID = "onnx-community/gemma-3-1b-it-ONNX";
 const DEFAULT_MODEL_ROW = `[data-testid="local-model-row-${DEFAULT_MODEL_ID}"]`;
 
@@ -69,22 +69,20 @@ test.describe("local (on-device) AI mode", () => {
     await createRandomCampaign(page);
     await setCampaignAiMode(page, "local");
 
-    const match = page.url().match(/\/play\/([^/?#]+)/);
-    const campaignId = match![1];
-    await page.goto(`/settings/${campaignId}`);
+    await page.goto("/settings");
 
     await expect(
       page
         .locator(
-          '[data-testid="campaign-settings"] [data-slot="select-trigger"]',
+          '[data-testid="global-settings"] [data-slot="select-trigger"]',
         )
         .first(),
     ).toContainText("Local model (runs on this device)");
-    // The campaign's own model picker (a second select) defaults to Gemma 3 1B and shows its size.
+    // The model picker (a second select) defaults to Gemma 3 1B and shows its size.
     await expect(
       page
         .locator(
-          '[data-testid="campaign-settings"] [data-slot="select-trigger"]',
+          '[data-testid="global-settings"] [data-slot="select-trigger"]',
         )
         .nth(1),
     ).toContainText("Gemma 3 1B");

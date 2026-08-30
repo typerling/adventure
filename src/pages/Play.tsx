@@ -4,7 +4,8 @@ import { toast } from '@/components/ui/toast'
 import { ArrowUp, CircleAlert, Loader2, Mic, MicOff, Square, Volume2 } from 'lucide-react'
 import { useCampaign } from '@/hooks/useCampaign'
 import { usePlayHeaderStore } from '@/store/playHeaderStore'
-import { DEFAULT_SETTINGS, type TtsProvider as TtsProviderKind } from '@/types/campaign'
+import type { TtsProvider as TtsProviderKind } from '@/types/campaign'
+import { getGlobalSettings } from '@/lib/settings/globalSettings'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Badge } from '@/components/ui/badge'
@@ -53,8 +54,15 @@ function blocksForTurn(turn: TurnRecord, interactive: boolean, optionsOverride?:
 export function Play() {
   const { campaignId } = useParams<{ campaignId: string }>()
   const data = useCampaign(campaignId)
-  const { status, errorMessage, campaign, snapshot, rollingSummary, recentTurns, settings, buildPromptForAction, submitReply } =
+  const { status, errorMessage, campaign, snapshot, rollingSummary, recentTurns, buildPromptForAction, submitReply } =
     data
+  // AI mode, model choices, STT/TTS provider, and voice IDs are all global (device-scoped,
+  // localStorage — issue #77), not per-campaign, so unlike the rest of `data` above they don't
+  // come from useCampaign's Drive-backed settings.md read at all. Read once per mount — Settings
+  // lives on its own route, so a change made there and saved is picked up the next time this page
+  // mounts (a route navigation), matching how a Drive-backed settings.md change used to only apply
+  // after Settings' own Save + a return to Play.
+  const [globalSettings] = useState(() => getGlobalSettings())
 
   const [freeText, setFreeText] = useState('')
   /** The action awaiting a reply. A ref, not state, because auto modes kick off generation in the
@@ -142,10 +150,10 @@ export function Play() {
     recentTurns.length === 0 || currentPageIndex === null || currentPageIndex === recentTurns.length - 1
   const handleCurrentPageIndexChange = useCallback((index: number) => setCurrentPageIndex(index), [])
 
-  const sttAvailable = Boolean(settings) && isSttProviderAvailable(settings!.sttProvider)
-  const ttsAvailable = Boolean(settings) && isTtsProviderAvailable(settings!.ttsProvider)
-  const isApiMode = settings?.aiMode === 'api'
-  const isLocalMode = settings?.aiMode === 'local'
+  const sttAvailable = isSttProviderAvailable(globalSettings.sttProvider)
+  const ttsAvailable = isTtsProviderAvailable(globalSettings.ttsProvider)
+  const isApiMode = globalSettings.aiMode === 'api'
+  const isLocalMode = globalSettings.aiMode === 'local'
   const isAutoMode = isApiMode || isLocalMode
   const campaignName = campaign?.meta.name
   const turnLabel = campaign ? `Turn ${campaign.meta.currentTurn} · ${campaign.meta.currentLocation}` : null
@@ -241,8 +249,7 @@ export function Play() {
    * `browser`/`elevenlabs`/`huggingface-local` alike. */
   const speakText = useCallback(
     (text: string, turn?: number) => {
-      if (!settings) return
-      const kind = settings.ttsProvider
+      const kind = globalSettings.ttsProvider
       // Reuse the existing instance for the same provider kind — a fresh instance per call would
       // have its own private "currently playing" state, so stop() could never reach audio a
       // previous instance started (this is exactly what made the per-turn stop button not work).
@@ -282,14 +289,14 @@ export function Play() {
         onPause: pausePlayback,
         onStop: stopPlayback,
       })
-      // Each provider that supports voice selection keys off its own campaign setting —
-      // elevenLabsVoiceId/kokoroVoiceId are independent choices, not a shared field, since a
-      // campaign can switch providers without losing either one's pick.
+      // Each provider that supports voice selection keys off its own global setting —
+      // elevenLabsVoiceId/kokoroVoiceId are independent choices, not a shared field, since
+      // switching providers doesn't lose either one's pick.
       const voice =
         kind === 'elevenlabs'
-          ? settings.elevenLabsVoiceId
+          ? globalSettings.elevenLabsVoiceId
           : kind === 'huggingface-local'
-            ? settings.kokoroVoiceId
+            ? globalSettings.kokoroVoiceId
             : undefined
       provider
         .speak(text, { voice })
@@ -312,7 +319,7 @@ export function Play() {
           }
         })
     },
-    [settings, campaignName, turnLabel, stopPlayback, pausePlayback],
+    [globalSettings, campaignName, turnLabel, stopPlayback, pausePlayback],
   )
 
   // Keeps speakTextRef current — see its own doc comment for why onPlay reads through it instead
@@ -351,7 +358,7 @@ export function Play() {
     const override =
       pendingSpokenOptionsRef.current?.turn === lastTurn.turn ? pendingSpokenOptionsRef.current.options : undefined
     speakText(buildSpokenScript(blocksForTurn(lastTurn, true, override)), lastTurn.turn)
-  }, [lastTurn, readAloud, ttsAvailable, settings, speakText, isOnLatestPage])
+  }, [lastTurn, readAloud, ttsAvailable, speakText, isOnLatestPage])
 
   useEffect(() => {
     return () => {
@@ -368,7 +375,7 @@ export function Play() {
       sttProviderRef.current?.stop()
       return
     }
-    const provider = getSttProvider(settings?.sttProvider ?? 'browser')
+    const provider = getSttProvider(globalSettings.sttProvider)
     if (!provider) {
       toast.error("Speech-to-text isn't available — check Settings or your browser's support.")
       return
@@ -467,7 +474,7 @@ export function Play() {
     setStatusMessage(isLocalMode ? 'Loading local model…' : 'Generating your turn…')
     try {
       const text = isLocalMode
-        ? await generateLocalReply(settings?.localModelId ?? DEFAULT_SETTINGS.localModelId, promptText, {
+        ? await generateLocalReply(globalSettings.localModelId, promptText, {
             onLoadProgress: (p) => {
               setStatusMessage(describeLocalModelProgress(p))
               setDownloadProgress(typeof p.progress === 'number' ? p.progress : null)
@@ -478,7 +485,7 @@ export function Play() {
               setStreamPreview(soFar)
             },
           })
-        : await generateClaudeReply(promptText, settings?.claudeModel ?? 'claude-sonnet-5')
+        : await generateClaudeReply(promptText, globalSettings.claudeModel)
       setReply(text)
       await handleSubmitReply(text)
     } catch (err) {

@@ -21,6 +21,11 @@ import {
   type CampaignSettings,
   type LocalModelId,
 } from "@/types/campaign";
+import {
+  getGlobalSettings,
+  setGlobalSettings,
+  type GlobalSettings,
+} from "@/lib/settings/globalSettings";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -120,9 +125,21 @@ const CLAUDE_MODEL_LABELS: Record<(typeof CLAUDE_MODELS)[number], string> = {
 export function Settings() {
   const { campaignId } = useParams<{ campaignId: string }>();
   const { signOut } = useGoogleAuth();
-  const [settings, setSettings] = useState<CampaignSettings | null>(null);
+  // Per-campaign: only summarizationCadence lives here now (issue #77 moved everything else —
+  // AI mode, model choices, STT/TTS provider, voice IDs — to the global form below). Null until
+  // (if a campaign is open) its settings.md has loaded.
+  const [campaignSettings, setCampaignSettings] =
+    useState<CampaignSettings | null>(null);
   const [campaignName, setCampaignName] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [savingCadence, setSavingCadence] = useState(false);
+  // Global AI mode/model/provider/voice preferences (localStorage, device-scoped — issue #77).
+  // Seeded once from storage; edited live here and only persisted on "Save settings" below,
+  // matching the explicit-Save pattern the campaign-scoped card (and the API key cards) already
+  // use, rather than writing on every keystroke/selection.
+  const [globalForm, setGlobalForm] = useState<GlobalSettings>(() =>
+    getGlobalSettings(),
+  );
+  const [savingGlobal, setSavingGlobal] = useState(false);
   const [elevenLabsKey, setElevenLabsKeyInput] = useState(
     () => getElevenLabsApiKey() ?? "",
   );
@@ -207,12 +224,12 @@ export function Settings() {
     // fetching settings.md (and the campaign file, for its name) from Drive again.
     const cached = getCachedCampaign(campaignId);
     if (cached) {
-      setSettings(cached.settings);
+      setCampaignSettings(cached.settings);
       setCampaignName(cached.campaign.meta.name);
       return;
     }
     void loadSettings(campaignId)
-      .then(setSettings)
+      .then(setCampaignSettings)
       // Without this a Drive failure was an unhandled rejection *and* a silently empty form.
       .catch((err) =>
         toast.error(err instanceof Error ? err.message : String(err)),
@@ -292,17 +309,27 @@ export function Settings() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function save() {
-    if (!campaignId || !settings) return;
-    setSaving(true);
+  async function saveCadence() {
+    if (!campaignId || !campaignSettings) return;
+    setSavingCadence(true);
     try {
-      await saveSettings(campaignId, settings);
-      patchCachedCampaignSettings(campaignId, settings);
+      await saveSettings(campaignId, campaignSettings);
+      patchCachedCampaignSettings(campaignId, campaignSettings);
       toast.success("Settings saved.");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : String(err));
     } finally {
-      setSaving(false);
+      setSavingCadence(false);
+    }
+  }
+
+  function saveGlobal() {
+    setSavingGlobal(true);
+    try {
+      setGlobalSettings(globalForm);
+      toast.success("Settings saved.");
+    } finally {
+      setSavingGlobal(false);
     }
   }
 
@@ -373,8 +400,7 @@ export function Settings() {
   }
 
   function selectVoice(voice: ElevenLabsVoice) {
-    if (!settings) return;
-    setSettings({ ...settings, elevenLabsVoiceId: voice.voiceId });
+    setGlobalForm({ ...globalForm, elevenLabsVoiceId: voice.voiceId });
     stopVoicePreview();
     setVoicePickerOpen(false);
   }
@@ -478,8 +504,7 @@ export function Settings() {
   }
 
   function selectKokoroVoice(voice: KokoroVoice) {
-    if (!settings) return;
-    setSettings({ ...settings, kokoroVoiceId: voice.id });
+    setGlobalForm({ ...globalForm, kokoroVoiceId: voice.id });
     stopKokoroPreview();
     setKokoroVoicePickerOpen(false);
   }
@@ -620,28 +645,16 @@ export function Settings() {
     setVoiceLoadState(downloaded ? "ready" : "unloaded");
   }
 
-  // Default-expanded state for the two on-device download-management cards below (issue #22):
-  // open by default only when the campaign currently open actually uses that mode, so a player who
-  // never touches local/Kokoro mode doesn't have to look at model-catalog/download UI to reach the
-  // settings that matter to them — collapsed (not gated away entirely) so the "download ahead of
-  // time before switching a campaign to this mode" workflow documented in each card's own
-  // description is still one click away. `campaignId && settings` are checked before reading either
-  // field so the global settings page (neither is ever set) always falls through to collapsed.
-  const localModelsDefaultOpen = Boolean(
-    campaignId && settings?.aiMode === "local",
-  );
-  const kokoroModelDefaultOpen = Boolean(
-    campaignId && settings?.ttsProvider === "huggingface-local",
-  );
-  // The remount key for both cards below: deliberately NOT `${...DefaultOpen}` itself, which
-  // would remount (discarding a player's manual toggle) every time they edit the AI-mode/TTS-
-  // provider dropdown in "This campaign" above, since those live-edit the same `settings` object
-  // this key would otherwise be derived from (found in independent review of #76 — reproduced by
-  // toggling AI mode away and back with a card manually collapsed, which silently reopened it).
-  // Keying on campaignId + "has settings finished its async load yet" instead only changes when
-  // there's actually new initial data to reflect: once when navigating to a different campaign's
-  // settings, and once more when that campaign's `settings.md` finishes loading from Drive/cache.
-  const settingsLoadKey = `${campaignId ?? "none"}-${settings ? "ready" : "loading"}`;
+  // Default-expanded state for the two on-device download-management cards below (issue #22,
+  // revised for #77): open by default only when the *global* AI mode/TTS provider currently in
+  // effect actually uses that mode — no campaign-specific gating anymore, since neither field is
+  // per-campaign now. Unlike the pre-#77 version, no remount key is needed to keep this stable
+  // against a live dropdown edit: CollapsibleSettingsCard only reads `defaultOpen` once, on mount
+  // (see its own doc comment), and nothing here ever needs to force a fresh mount — the value
+  // being global means it no longer changes meaning when the player switches which campaign (if
+  // any) they're viewing Settings from.
+  const localModelsDefaultOpen = globalForm.aiMode === "local";
+  const kokoroModelDefaultOpen = globalForm.ttsProvider === "huggingface-local";
 
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-6 px-4 py-6 sm:px-6 sm:py-8">
@@ -657,455 +670,37 @@ export function Settings() {
         </Button>
       </div>
 
-      {campaignId && settings && (
+      {campaignId && campaignSettings && (
         <SettingsSection title="This campaign">
-          <Card data-testid="campaign-settings">
+          <Card data-testid="campaign-cadence">
             <CardHeader>
               <CardTitle>This campaign</CardTitle>
               <CardDescription>
-                AI mode and voice provider choices, stored in this campaign's
-                settings.md.
+                The one setting genuinely tied to this particular story — a
+                narrative-pacing choice, not a device/provider preference (see
+                "AI & voice providers" below for those). Stored in this
+                campaign's settings.md.
               </CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-4">
-              <div className="flex flex-col gap-2">
-                <Label>AI mode</Label>
-                <Select
-                  value={settings.aiMode}
-                  onValueChange={(v) =>
-                    setSettings({
-                      ...settings,
-                      aiMode: v as CampaignSettings["aiMode"],
-                    })
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {AI_MODES.map((m) => (
-                      <SelectItem key={m} value={m}>
-                        {m === "manual"
-                          ? "Manual (copy/paste into claude.ai or chatgpt.com)"
-                          : m === "api"
-                            ? "Direct API key (Claude)"
-                            : "Local model (runs on this device)"}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {settings.aiMode === "local" && (
-                <div className="flex flex-col gap-2">
-                  <Label>Local model</Label>
-                  <Select
-                    value={settings.localModelId}
-                    onValueChange={(v) =>
-                      setSettings({
-                        ...settings,
-                        localModelId: v as LocalModelId,
-                      })
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {LOCAL_MODEL_IDS.map((id) => (
-                        <SelectItem key={id} value={id}>
-                          {LOCAL_MODELS[id].label} —{" "}
-                          {formatBytes(LOCAL_MODELS[id].sizeBytes)}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-xs text-muted-foreground">
-                    No key needed — everything runs on this device. Needs a
-                    browser with WebGPU (Chrome/Edge on Android, Safari 26+ on
-                    iOS/macOS). Bigger models are higher quality but slower to
-                    download and more likely to crash the tab on
-                    memory-constrained devices — see "Local AI models" below to
-                    download or remove any of them ahead of time. Quality and
-                    reliability (especially following the reply format) are
-                    noticeably weaker than the API mode, more so for smaller
-                    models.
-                  </p>
-                </div>
-              )}
-
-              {settings.aiMode === "api" && (
-                <div className="flex flex-col gap-2">
-                  <Label>Claude model</Label>
-                  <Select
-                    value={settings.claudeModel}
-                    onValueChange={(v) =>
-                      setSettings({
-                        ...settings,
-                        claudeModel: v as CampaignSettings["claudeModel"],
-                      })
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {CLAUDE_MODELS.map((m) => (
-                        <SelectItem key={m} value={m}>
-                          {CLAUDE_MODEL_LABELS[m]}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-xs text-muted-foreground">
-                    Needs a Claude API key below — every turn is billed to your
-                    own key.
-                  </p>
-                </div>
-              )}
-
-              <div className="flex flex-col gap-2">
-                <Label>Speech-to-text</Label>
-                <Select
-                  value={settings.sttProvider}
-                  onValueChange={(v) =>
-                    setSettings({
-                      ...settings,
-                      sttProvider: v as CampaignSettings["sttProvider"],
-                    })
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {STT_PROVIDERS.map((p) => (
-                      <SelectItem key={p} value={p}>
-                        {p === "browser"
-                          ? "Browser (Web Speech API)"
-                          : "ElevenLabs (Scribe)"}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              <div className="flex flex-col gap-2">
-                <Label>Text-to-speech</Label>
-                <Select
-                  value={settings.ttsProvider}
-                  onValueChange={(v) =>
-                    setSettings({
-                      ...settings,
-                      ttsProvider: v as CampaignSettings["ttsProvider"],
-                    })
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {TTS_PROVIDERS.map((p) => (
-                      <SelectItem key={p} value={p}>
-                        {p === "browser"
-                          ? "Browser (SpeechSynthesis)"
-                          : p === "elevenlabs"
-                            ? "ElevenLabs"
-                            : "Kokoro (on-device, runs locally)"}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                {settings.ttsProvider === "browser" && (
-                  <p className="text-xs text-muted-foreground">
-                    On Android, Chrome stops browser speech when the tab is
-                    backgrounded or the screen locks — a platform limitation of
-                    the Web Speech API itself (its audio isn&apos;t exposed as a
-                    real media stream, so it can&apos;t hold background audio
-                    focus the way ElevenLabs/Kokoro&apos;s playback does), not a
-                    bug in this app. Switch to ElevenLabs or Kokoro if you need
-                    narration to keep playing with the screen off or another app
-                    in front.
-                  </p>
-                )}
-              </div>
-
-              {(settings.sttProvider === "elevenlabs" ||
-                settings.ttsProvider === "elevenlabs") && (
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor="voiceId">ElevenLabs voice ID (optional)</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      id="voiceId"
-                      value={settings.elevenLabsVoiceId ?? ""}
-                      onChange={(e) =>
-                        setSettings({
-                          ...settings,
-                          elevenLabsVoiceId: e.target.value.trim() || undefined,
-                        })
-                      }
-                      placeholder="Defaults to a standard ElevenLabs voice if left blank"
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={() => void openVoicePicker()}
-                    >
-                      Browse voices
-                    </Button>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    {voicesLoadState === "loaded" &&
-                      settings.elevenLabsVoiceId &&
-                      (() => {
-                        const name = voices.find(
-                          (v) => v.voiceId === settings.elevenLabsVoiceId,
-                        )?.name;
-                        return name ? `Currently: ${name}. ` : "";
-                      })()}
-                    Only used for text-to-speech.
-                  </p>
-                </div>
-              )}
-
-              {settings.ttsProvider === "huggingface-local" && (
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor="kokoroVoiceId">Kokoro voice (optional)</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      id="kokoroVoiceId"
-                      value={settings.kokoroVoiceId ?? ""}
-                      onChange={(e) =>
-                        setSettings({
-                          ...settings,
-                          kokoroVoiceId: e.target.value.trim() || undefined,
-                        })
-                      }
-                      placeholder={`Defaults to ${KOKORO_DEFAULT_VOICE} if left blank`}
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={() => void openKokoroVoicePicker()}
-                    >
-                      Browse voices
-                    </Button>
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    {kokoroVoicesLoadState === "loaded" &&
-                      settings.kokoroVoiceId &&
-                      (() => {
-                        const name = kokoroVoices.find(
-                          (v) => v.id === settings.kokoroVoiceId,
-                        )?.name;
-                        return name ? `Currently: ${name}. ` : "";
-                      })()}
-                    Only used for text-to-speech. Browsing voices downloads the
-                    on-device voice model the first time (see "Kokoro voice
-                    model" below) — after that, previews and playback are
-                    instant.
-                  </p>
-                </div>
-              )}
-
-              <Dialog
-                open={voicePickerOpen}
-                onOpenChange={(open) => {
-                  setVoicePickerOpen(open);
-                  if (!open) stopVoicePreview();
-                }}
-              >
-                <DialogContent className="sm:max-w-md">
-                  <DialogHeader>
-                    <DialogTitle>Choose an ElevenLabs voice</DialogTitle>
-                    <DialogDescription>
-                      Preview plays ElevenLabs' hosted sample clip for each
-                      voice — no text-to-speech call is made just to listen.
-                    </DialogDescription>
-                  </DialogHeader>
-                  {voicesLoadState === "loading" && (
-                    <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
-                      <Loader2 className="size-4 animate-spin" />
-                      Loading voices…
-                    </div>
-                  )}
-                  {voicesLoadState === "error" && (
-                    <p className="py-4 text-sm text-muted-foreground">
-                      Couldn't load voices. Make sure your ElevenLabs API key
-                      (below) is saved and valid, then try again.
-                    </p>
-                  )}
-                  {voicesLoadState === "loaded" &&
-                    (voices.length === 0 ? (
-                      <p className="py-4 text-sm text-muted-foreground">
-                        No voices found on this ElevenLabs account.
-                      </p>
-                    ) : (
-                      <ScrollArea className="h-80 pr-3">
-                        <div className="flex flex-col gap-1">
-                          {voices.map((voice) => (
-                            <div
-                              key={voice.voiceId}
-                              className="flex items-center gap-2 rounded-md p-2 hover:bg-muted/50"
-                            >
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon"
-                                className="shrink-0"
-                                disabled={!voice.previewUrl}
-                                onClick={() => togglePreview(voice)}
-                                aria-label={
-                                  previewingVoiceId === voice.voiceId
-                                    ? `Stop preview of ${voice.name}`
-                                    : `Preview ${voice.name}`
-                                }
-                              >
-                                {previewingVoiceId === voice.voiceId ? (
-                                  <Square className="size-4" />
-                                ) : (
-                                  <Play className="size-4" />
-                                )}
-                              </Button>
-                              <button
-                                type="button"
-                                className="flex-1 truncate text-left text-sm"
-                                onClick={() => selectVoice(voice)}
-                              >
-                                {voice.name}
-                                {voice.category && (
-                                  <span className="ml-1.5 text-xs text-muted-foreground">
-                                    {voice.category}
-                                  </span>
-                                )}
-                              </button>
-                              {settings.elevenLabsVoiceId === voice.voiceId && (
-                                <span className="shrink-0 text-xs text-muted-foreground">
-                                  Selected
-                                </span>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      </ScrollArea>
-                    ))}
-                </DialogContent>
-              </Dialog>
-
-              <Dialog
-                open={kokoroVoicePickerOpen}
-                onOpenChange={(open) => {
-                  setKokoroVoicePickerOpen(open);
-                  if (!open) stopKokoroPreview();
-                }}
-              >
-                <DialogContent className="sm:max-w-md">
-                  <DialogHeader>
-                    <DialogTitle>Choose a Kokoro voice</DialogTitle>
-                    <DialogDescription>
-                      Preview generates a short clip on this device — the voice
-                      model downloads the first time, then previews and
-                      playback are instant.
-                    </DialogDescription>
-                  </DialogHeader>
-                  {kokoroVoicesLoadState === "loading" && (
-                    <div className="flex flex-col items-center justify-center gap-2 py-8 text-center text-sm text-muted-foreground">
-                      <Loader2 className="size-4 animate-spin" />
-                      {kokoroVoicesStatusMessage || "Loading voices…"}
-                    </div>
-                  )}
-                  {kokoroVoicesLoadState === "error" && (
-                    <p className="py-4 text-sm text-muted-foreground">
-                      Couldn't load Kokoro's voice list — it needs to download
-                      the voice model once. Check your connection and try
-                      again.
-                    </p>
-                  )}
-                  {kokoroVoicesLoadState === "loaded" &&
-                    (kokoroVoices.length === 0 ? (
-                      <p className="py-4 text-sm text-muted-foreground">
-                        No voices found.
-                      </p>
-                    ) : (
-                      <ScrollArea className="h-80 pr-3">
-                        <div className="flex flex-col gap-1">
-                          {kokoroVoices.map((voice) => (
-                            <div
-                              key={voice.id}
-                              data-testid={`kokoro-voice-${voice.id}`}
-                              className="flex items-center gap-2 rounded-md p-2 hover:bg-muted/50"
-                            >
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="icon"
-                                className="shrink-0"
-                                // Disabled while *any* preview is generating — including this
-                                // voice's own, since clicking again mid-generation would otherwise
-                                // fire a second concurrent generate() call for the same voice.
-                                disabled={kokoroPreviewLoadingVoiceId !== null}
-                                onClick={() => void previewKokoroVoice(voice)}
-                                aria-label={
-                                  kokoroPreviewingVoiceId === voice.id
-                                    ? `Stop preview of ${voice.name}`
-                                    : `Preview ${voice.name}`
-                                }
-                              >
-                                {kokoroPreviewLoadingVoiceId === voice.id ? (
-                                  <Loader2 className="size-4 animate-spin" />
-                                ) : kokoroPreviewingVoiceId === voice.id ? (
-                                  <Square className="size-4" />
-                                ) : (
-                                  <Play className="size-4" />
-                                )}
-                              </Button>
-                              <button
-                                type="button"
-                                className="flex-1 truncate text-left text-sm"
-                                onClick={() => selectKokoroVoice(voice)}
-                              >
-                                {voice.name}
-                                <span className="ml-1.5 text-xs text-muted-foreground">
-                                  {voice.language}
-                                  {voice.gender ? ` · ${voice.gender}` : ""}
-                                  {voice.traits ? ` ${voice.traits}` : ""}
-                                </span>
-                              </button>
-                              {(settings.kokoroVoiceId === voice.id ||
-                                (!settings.kokoroVoiceId &&
-                                  voice.id === KOKORO_DEFAULT_VOICE)) && (
-                                <span className="shrink-0 text-xs text-muted-foreground">
-                                  {settings.kokoroVoiceId === voice.id
-                                    ? "Selected"
-                                    : "Default"}
-                                </span>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      </ScrollArea>
-                    ))}
-                </DialogContent>
-              </Dialog>
-
               <div className="flex flex-col gap-2">
                 <Label htmlFor="cadence">Re-summarize every N turns</Label>
                 <Input
                   id="cadence"
                   type="number"
                   min={5}
-                  value={settings.summarizationCadence}
+                  value={campaignSettings.summarizationCadence}
                   onChange={(e) =>
-                    setSettings({
-                      ...settings,
+                    setCampaignSettings({
+                      ...campaignSettings,
                       summarizationCadence: Number(e.target.value) || 15,
                     })
                   }
                 />
               </div>
 
-              <Button onClick={() => void save()} disabled={saving}>
-                {saving ? "Saving…" : "Save settings"}
+              <Button onClick={() => void saveCadence()} disabled={savingCadence}>
+                {savingCadence ? "Saving…" : "Save"}
               </Button>
             </CardContent>
           </Card>
@@ -1114,17 +709,452 @@ export function Settings() {
 
       <SettingsSection
         title="AI & voice providers"
-        description="Account-wide — apply to every campaign on this device, not just the one currently open."
+        description="The same AI mode, models, and voice choices apply to every campaign on this device — not saved per campaign, and not synced to other devices signed into the same Google account (see below)."
       >
-        {campaignId && settings?.aiMode === "api" && (
+        <Card data-testid="global-settings">
+          <CardHeader>
+            <CardTitle>AI &amp; voice</CardTitle>
+            <CardDescription>
+              Stored only in this browser's local storage — global to this
+              device, never written to Drive.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-4">
+            <div className="flex flex-col gap-2">
+              <Label>AI mode</Label>
+              <Select
+                value={globalForm.aiMode}
+                onValueChange={(v) =>
+                  setGlobalForm({
+                    ...globalForm,
+                    aiMode: v as GlobalSettings["aiMode"],
+                  })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {AI_MODES.map((m) => (
+                    <SelectItem key={m} value={m}>
+                      {m === "manual"
+                        ? "Manual (copy/paste into claude.ai or chatgpt.com)"
+                        : m === "api"
+                          ? "Direct API key (Claude)"
+                          : "Local model (runs on this device)"}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {globalForm.aiMode === "local" && (
+              <div className="flex flex-col gap-2">
+                <Label>Local model</Label>
+                <Select
+                  value={globalForm.localModelId}
+                  onValueChange={(v) =>
+                    setGlobalForm({
+                      ...globalForm,
+                      localModelId: v as LocalModelId,
+                    })
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {LOCAL_MODEL_IDS.map((id) => (
+                      <SelectItem key={id} value={id}>
+                        {LOCAL_MODELS[id].label} —{" "}
+                        {formatBytes(LOCAL_MODELS[id].sizeBytes)}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  No key needed — everything runs on this device. Needs a
+                  browser with WebGPU (Chrome/Edge on Android, Safari 26+ on
+                  iOS/macOS). Bigger models are higher quality but slower to
+                  download and more likely to crash the tab on
+                  memory-constrained devices — see "Local AI models" below to
+                  download or remove any of them ahead of time. Quality and
+                  reliability (especially following the reply format) are
+                  noticeably weaker than the API mode, more so for smaller
+                  models.
+                </p>
+              </div>
+            )}
+
+            {globalForm.aiMode === "api" && (
+              <div className="flex flex-col gap-2">
+                <Label>Claude model</Label>
+                <Select
+                  value={globalForm.claudeModel}
+                  onValueChange={(v) =>
+                    setGlobalForm({
+                      ...globalForm,
+                      claudeModel: v as GlobalSettings["claudeModel"],
+                    })
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {CLAUDE_MODELS.map((m) => (
+                      <SelectItem key={m} value={m}>
+                        {CLAUDE_MODEL_LABELS[m]}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  Needs a Claude API key below — every turn is billed to your
+                  own key.
+                </p>
+              </div>
+            )}
+
+            <div className="flex flex-col gap-2">
+              <Label>Speech-to-text</Label>
+              <Select
+                value={globalForm.sttProvider}
+                onValueChange={(v) =>
+                  setGlobalForm({
+                    ...globalForm,
+                    sttProvider: v as GlobalSettings["sttProvider"],
+                  })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {STT_PROVIDERS.map((p) => (
+                    <SelectItem key={p} value={p}>
+                      {p === "browser"
+                        ? "Browser (Web Speech API)"
+                        : "ElevenLabs (Scribe)"}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="flex flex-col gap-2">
+              <Label>Text-to-speech</Label>
+              <Select
+                value={globalForm.ttsProvider}
+                onValueChange={(v) =>
+                  setGlobalForm({
+                    ...globalForm,
+                    ttsProvider: v as GlobalSettings["ttsProvider"],
+                  })
+                }
+              >
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {TTS_PROVIDERS.map((p) => (
+                    <SelectItem key={p} value={p}>
+                      {p === "browser"
+                        ? "Browser (SpeechSynthesis)"
+                        : p === "elevenlabs"
+                          ? "ElevenLabs"
+                          : "Kokoro (on-device, runs locally)"}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {globalForm.ttsProvider === "browser" && (
+                <p className="text-xs text-muted-foreground">
+                  On Android, Chrome stops browser speech when the tab is
+                  backgrounded or the screen locks — a platform limitation of
+                  the Web Speech API itself (its audio isn&apos;t exposed as a
+                  real media stream, so it can&apos;t hold background audio
+                  focus the way ElevenLabs/Kokoro&apos;s playback does), not a
+                  bug in this app. Switch to ElevenLabs or Kokoro if you need
+                  narration to keep playing with the screen off or another app
+                  in front.
+                </p>
+              )}
+            </div>
+
+            {(globalForm.sttProvider === "elevenlabs" ||
+              globalForm.ttsProvider === "elevenlabs") && (
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="voiceId">ElevenLabs voice ID (optional)</Label>
+                <div className="flex gap-2">
+                  <Input
+                    id="voiceId"
+                    value={globalForm.elevenLabsVoiceId ?? ""}
+                    onChange={(e) =>
+                      setGlobalForm({
+                        ...globalForm,
+                        elevenLabsVoiceId: e.target.value.trim() || undefined,
+                      })
+                    }
+                    placeholder="Defaults to a standard ElevenLabs voice if left blank"
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => void openVoicePicker()}
+                  >
+                    Browse voices
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {voicesLoadState === "loaded" &&
+                    globalForm.elevenLabsVoiceId &&
+                    (() => {
+                      const name = voices.find(
+                        (v) => v.voiceId === globalForm.elevenLabsVoiceId,
+                      )?.name;
+                      return name ? `Currently: ${name}. ` : "";
+                    })()}
+                  Only used for text-to-speech.
+                </p>
+              </div>
+            )}
+
+            {globalForm.ttsProvider === "huggingface-local" && (
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="kokoroVoiceId">Kokoro voice (optional)</Label>
+                <div className="flex gap-2">
+                  <Input
+                    id="kokoroVoiceId"
+                    value={globalForm.kokoroVoiceId ?? ""}
+                    onChange={(e) =>
+                      setGlobalForm({
+                        ...globalForm,
+                        kokoroVoiceId: e.target.value.trim() || undefined,
+                      })
+                    }
+                    placeholder={`Defaults to ${KOKORO_DEFAULT_VOICE} if left blank`}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => void openKokoroVoicePicker()}
+                  >
+                    Browse voices
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {kokoroVoicesLoadState === "loaded" &&
+                    globalForm.kokoroVoiceId &&
+                    (() => {
+                      const name = kokoroVoices.find(
+                        (v) => v.id === globalForm.kokoroVoiceId,
+                      )?.name;
+                      return name ? `Currently: ${name}. ` : "";
+                    })()}
+                  Only used for text-to-speech. Browsing voices downloads the
+                  on-device voice model the first time (see "Kokoro voice
+                  model" below) — after that, previews and playback are
+                  instant.
+                </p>
+              </div>
+            )}
+
+            <Dialog
+              open={voicePickerOpen}
+              onOpenChange={(open) => {
+                setVoicePickerOpen(open);
+                if (!open) stopVoicePreview();
+              }}
+            >
+              <DialogContent className="sm:max-w-md">
+                <DialogHeader>
+                  <DialogTitle>Choose an ElevenLabs voice</DialogTitle>
+                  <DialogDescription>
+                    Preview plays ElevenLabs' hosted sample clip for each
+                    voice — no text-to-speech call is made just to listen.
+                  </DialogDescription>
+                </DialogHeader>
+                {voicesLoadState === "loading" && (
+                  <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
+                    <Loader2 className="size-4 animate-spin" />
+                    Loading voices…
+                  </div>
+                )}
+                {voicesLoadState === "error" && (
+                  <p className="py-4 text-sm text-muted-foreground">
+                    Couldn't load voices. Make sure your ElevenLabs API key
+                    (below) is saved and valid, then try again.
+                  </p>
+                )}
+                {voicesLoadState === "loaded" &&
+                  (voices.length === 0 ? (
+                    <p className="py-4 text-sm text-muted-foreground">
+                      No voices found on this ElevenLabs account.
+                    </p>
+                  ) : (
+                    <ScrollArea className="h-80 pr-3">
+                      <div className="flex flex-col gap-1">
+                        {voices.map((voice) => (
+                          <div
+                            key={voice.voiceId}
+                            className="flex items-center gap-2 rounded-md p-2 hover:bg-muted/50"
+                          >
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="shrink-0"
+                              disabled={!voice.previewUrl}
+                              onClick={() => togglePreview(voice)}
+                              aria-label={
+                                previewingVoiceId === voice.voiceId
+                                  ? `Stop preview of ${voice.name}`
+                                  : `Preview ${voice.name}`
+                              }
+                            >
+                              {previewingVoiceId === voice.voiceId ? (
+                                <Square className="size-4" />
+                              ) : (
+                                <Play className="size-4" />
+                              )}
+                            </Button>
+                            <button
+                              type="button"
+                              className="flex-1 truncate text-left text-sm"
+                              onClick={() => selectVoice(voice)}
+                            >
+                              {voice.name}
+                              {voice.category && (
+                                <span className="ml-1.5 text-xs text-muted-foreground">
+                                  {voice.category}
+                                </span>
+                              )}
+                            </button>
+                            {globalForm.elevenLabsVoiceId === voice.voiceId && (
+                              <span className="shrink-0 text-xs text-muted-foreground">
+                                Selected
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </ScrollArea>
+                  ))}
+              </DialogContent>
+            </Dialog>
+
+            <Dialog
+              open={kokoroVoicePickerOpen}
+              onOpenChange={(open) => {
+                setKokoroVoicePickerOpen(open);
+                if (!open) stopKokoroPreview();
+              }}
+            >
+              <DialogContent className="sm:max-w-md">
+                <DialogHeader>
+                  <DialogTitle>Choose a Kokoro voice</DialogTitle>
+                  <DialogDescription>
+                    Preview generates a short clip on this device — the voice
+                    model downloads the first time, then previews and
+                    playback are instant.
+                  </DialogDescription>
+                </DialogHeader>
+                {kokoroVoicesLoadState === "loading" && (
+                  <div className="flex flex-col items-center justify-center gap-2 py-8 text-center text-sm text-muted-foreground">
+                    <Loader2 className="size-4 animate-spin" />
+                    {kokoroVoicesStatusMessage || "Loading voices…"}
+                  </div>
+                )}
+                {kokoroVoicesLoadState === "error" && (
+                  <p className="py-4 text-sm text-muted-foreground">
+                    Couldn't load Kokoro's voice list — it needs to download
+                    the voice model once. Check your connection and try
+                    again.
+                  </p>
+                )}
+                {kokoroVoicesLoadState === "loaded" &&
+                  (kokoroVoices.length === 0 ? (
+                    <p className="py-4 text-sm text-muted-foreground">
+                      No voices found.
+                    </p>
+                  ) : (
+                    <ScrollArea className="h-80 pr-3">
+                      <div className="flex flex-col gap-1">
+                        {kokoroVoices.map((voice) => (
+                          <div
+                            key={voice.id}
+                            data-testid={`kokoro-voice-${voice.id}`}
+                            className="flex items-center gap-2 rounded-md p-2 hover:bg-muted/50"
+                          >
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className="shrink-0"
+                              // Disabled while *any* preview is generating — including this
+                              // voice's own, since clicking again mid-generation would otherwise
+                              // fire a second concurrent generate() call for the same voice.
+                              disabled={kokoroPreviewLoadingVoiceId !== null}
+                              onClick={() => void previewKokoroVoice(voice)}
+                              aria-label={
+                                kokoroPreviewingVoiceId === voice.id
+                                  ? `Stop preview of ${voice.name}`
+                                  : `Preview ${voice.name}`
+                              }
+                            >
+                              {kokoroPreviewLoadingVoiceId === voice.id ? (
+                                <Loader2 className="size-4 animate-spin" />
+                              ) : kokoroPreviewingVoiceId === voice.id ? (
+                                <Square className="size-4" />
+                              ) : (
+                                <Play className="size-4" />
+                              )}
+                            </Button>
+                            <button
+                              type="button"
+                              className="flex-1 truncate text-left text-sm"
+                              onClick={() => selectKokoroVoice(voice)}
+                            >
+                              {voice.name}
+                              <span className="ml-1.5 text-xs text-muted-foreground">
+                                {voice.language}
+                                {voice.gender ? ` · ${voice.gender}` : ""}
+                                {voice.traits ? ` ${voice.traits}` : ""}
+                              </span>
+                            </button>
+                            {(globalForm.kokoroVoiceId === voice.id ||
+                              (!globalForm.kokoroVoiceId &&
+                                voice.id === KOKORO_DEFAULT_VOICE)) && (
+                              <span className="shrink-0 text-xs text-muted-foreground">
+                                {globalForm.kokoroVoiceId === voice.id
+                                  ? "Selected"
+                                  : "Default"}
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </ScrollArea>
+                  ))}
+              </DialogContent>
+            </Dialog>
+
+            <Button onClick={saveGlobal} disabled={savingGlobal}>
+              {savingGlobal ? "Saving…" : "Save settings"}
+            </Button>
+          </CardContent>
+        </Card>
+
+        {globalForm.aiMode === "api" && (
           <Card>
             <CardHeader>
               <CardTitle>Claude API</CardTitle>
               <CardDescription>
-                Needed since this campaign uses the direct API AI mode. Stored
-                only in this browser's local storage — never written to Drive.
-                Every turn generated this way is billed to this key directly by
-                Anthropic.
+                Needed since your AI mode above is set to the direct API.
+                Stored only in this browser's local storage — never written
+                to Drive. Every turn generated this way is billed to this key
+                directly by Anthropic.
               </CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
@@ -1150,54 +1180,52 @@ export function Settings() {
           </Card>
         )}
 
-        {campaignId &&
-          (settings?.sttProvider === "elevenlabs" ||
-            settings?.ttsProvider === "elevenlabs") && (
-            <Card>
-              <CardHeader>
-                <CardTitle>ElevenLabs</CardTitle>
-                <CardDescription>
-                  Needed since this campaign uses ElevenLabs for speech-to-text or
-                  text-to-speech. Stored only in this browser's local storage —
-                  never written to Drive.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-3">
-                <div className="flex flex-col gap-2">
-                  <Label htmlFor="elevenLabsKey">API key</Label>
-                  <Input
-                    id="elevenLabsKey"
-                    type="password"
-                    autoComplete="off"
-                    value={elevenLabsKey}
-                    onChange={(e) => setElevenLabsKeyInput(e.target.value)}
-                    placeholder="sk_…"
-                  />
-                </div>
-                <Button
-                  variant="outline"
-                  onClick={saveElevenLabsKey}
-                  className="self-start"
-                >
-                  {elevenLabsKey.trim() ? "Save key" : "Clear key"}
-                </Button>
-              </CardContent>
-            </Card>
-          )}
+        {(globalForm.sttProvider === "elevenlabs" ||
+          globalForm.ttsProvider === "elevenlabs") && (
+          <Card>
+            <CardHeader>
+              <CardTitle>ElevenLabs</CardTitle>
+              <CardDescription>
+                Needed since your speech-to-text or text-to-speech provider
+                above is set to ElevenLabs. Stored only in this browser's
+                local storage — never written to Drive.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-3">
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="elevenLabsKey">API key</Label>
+                <Input
+                  id="elevenLabsKey"
+                  type="password"
+                  autoComplete="off"
+                  value={elevenLabsKey}
+                  onChange={(e) => setElevenLabsKeyInput(e.target.value)}
+                  placeholder="sk_…"
+                />
+              </div>
+              <Button
+                variant="outline"
+                onClick={saveElevenLabsKey}
+                className="self-start"
+              >
+                {elevenLabsKey.trim() ? "Save key" : "Clear key"}
+              </Button>
+            </CardContent>
+          </Card>
+        )}
 
         <CollapsibleSettingsCard
-          key={`local-models-${settingsLoadKey}`}
           defaultOpen={localModelsDefaultOpen}
           testId="local-models-card"
           title="Local AI models"
           description={
             <>
-              Used by any campaign set to "Local model (runs on this device)" — no
-              key, no server, each runs fully on-device via WebGPU. Bigger models
-              are higher quality but slower to download and more likely to crash
-              the tab on memory-constrained devices. Download whichever ones you
-              want ahead of time here so a local-mode campaign's first turn
-              doesn't have to wait on it.
+              Used when AI mode above is "Local model (runs on this device)"
+              — no key, no server, each runs fully on-device via WebGPU.
+              Bigger models are higher quality but slower to download and
+              more likely to crash the tab on memory-constrained devices.
+              Download whichever ones you want ahead of time here so a
+              local-mode turn doesn't have to wait on it.
             </>
           }
         >
@@ -1320,19 +1348,18 @@ export function Settings() {
         </CollapsibleSettingsCard>
 
         <CollapsibleSettingsCard
-          key={`kokoro-model-${settingsLoadKey}`}
           defaultOpen={kokoroModelDefaultOpen}
           testId="kokoro-model-card"
           title="Kokoro voice model"
           description={
             <>
-              Used by any campaign set to "Kokoro (on-device, runs locally)" for
-              text-to-speech — no key, no server. Runs on the CPU by default, so
+              Used when text-to-speech above is "Kokoro (on-device, runs
+              locally)" — no key, no server. Runs on the CPU by default, so
               no WebGPU is needed; WebGPU below is an optional, opt-in
               alternative that's faster where it's supported. Downloads once,
-              then generates speech entirely on this device. Download it ahead
-              of time here so the first turn read aloud doesn't have to wait on
-              it.
+              then generates speech entirely on this device. Download it
+              ahead of time here so the first turn read aloud doesn't have to
+              wait on it.
             </>
           }
         >

@@ -18,3 +18,29 @@ summarizationCadence: 15
 ---
 
 `
+
+/**
+ * Literal `settings.md` frontmatter in the full shape `CampaignSettings` had immediately before
+ * issue #77 (verified against `src/types/campaign.ts` as it stood at commit `b7beefa`, this PR's
+ * base — every field except `summarizationCadence` moved to the new global,
+ * localStorage-backed store in `src/lib/settings/globalSettings.ts`). Deliberately populated with
+ * non-default values throughout (aiMode `api`, a non-default Claude model, ElevenLabs for both
+ * STT and TTS, both voice IDs set) rather than values that happen to match
+ * `DEFAULT_GLOBAL_SETTINGS` — a fixture built from defaults couldn't tell "the migration actually
+ * read this campaign's values" apart from "the migration silently did nothing and defaults filled
+ * in on their own," which is exactly the distinction issue #77's migration behavior needs a test
+ * to prove. A campaign whose settings.md a real user saved under any pre-#77 client still has
+ * exactly this shape sitting in their Drive today.
+ */
+export const PRE_GLOBAL_SETTINGS_SETTINGS_MD = `---
+aiMode: api
+claudeModel: claude-opus-5
+localModelId: onnx-community/Qwen2.5-1.5B-Instruct
+sttProvider: elevenlabs
+ttsProvider: elevenlabs
+elevenLabsVoiceId: legacy-eleven-voice-id
+kokoroVoiceId: legacy-kokoro-voice-id
+summarizationCadence: 20
+---
+
+`
