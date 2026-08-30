@@ -3,7 +3,7 @@ import { installGoogleApiMock } from "./mocks/googleApi";
 import {
   installControllableAudioPlayback,
   installFakeAudioPlayback,
-} from "./mocks/elevenLabs";
+} from "./mocks/audioPlayback";
 import {
   getKokoroWorker,
   installControllableWebAudioPlayback,
@@ -165,8 +165,7 @@ test.describe("Kokoro voice picker", () => {
     await installGoogleApiMock(page);
     await installFakeKokoroModule(page);
     // Not the auto-ending fake — the preview toggle needs a window to click "stop"/observe
-    // "Stop preview of…" before playback would resolve on its own (same reasoning as the
-    // ElevenLabs picker's equivalent test in voice-elevenlabs.spec.ts).
+    // "Stop preview of…" before playback would resolve on its own.
     await installControllableAudioPlayback(page);
 
     await createRandomCampaign(page);

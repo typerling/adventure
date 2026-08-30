@@ -56,8 +56,7 @@ const NO_WEBGPU_MESSAGE =
  * way on *every* turn: run on WebGPU, lose the device partway, throw the partial reply away, then
  * fall back. Once a model has fallen back here, later turns start on the CPU directly. Kept in
  * localStorage rather than settings.md because it describes this device, not the campaign — the
- * same campaign opened on a desktop should still use the GPU (same reasoning as elevenLabsKey.ts,
- * for a different cause).
+ * same campaign opened on a desktop should still use the GPU.
  */
 const BACKEND_STORAGE_KEY = 'adventure:local-model-backend'
 

@@ -94,9 +94,9 @@ export function Play() {
   const setHeaderContext = usePlayHeaderStore((s) => s.setContext)
   const sttProviderRef = useRef<SttProvider | null>(null)
   /** Kept alongside the provider *kind* so a settings change gets a fresh instance, but repeated
-   * speak() calls for the same kind reuse one — ElevenLabs/Kokoro track their currently-playing
-   * audio per instance, so a fresh instance per call meant stop() could never reach audio started
-   * by an earlier instance. */
+   * speak() calls for the same kind reuse one — Kokoro tracks its currently-playing audio per
+   * instance, so a fresh instance per call meant stop() could never reach audio started by an
+   * earlier instance. */
   const ttsProviderRef = useRef<{ kind: TtsProviderKind; provider: TtsProvider } | null>(null)
   /** The text/turn most recently handed to speakText() — lets the OS-level Media Session "play"
    * control (see mediaSession.ts) restart narration after a "pause", since no TtsProvider
@@ -205,8 +205,8 @@ export function Play() {
 
   /** Stops the underlying audio like stopPlayback, but — unlike it — deliberately leaves the Media
    * Session's metadata and action handlers in place, only moving its playback state to 'paused'.
-   * This exists solely for the OS "pause" media control: none of the three TtsProvider
-   * implementations support real pause/resume (see types.ts), so there's no way to actually resume
+   * This exists solely for the OS "pause" media control: neither TtsProvider implementation
+   * supports real pause/resume (see types.ts), so there's no way to actually resume
    * mid-utterance — but a "pause" tap that made the whole Now Playing notification vanish (as a
    * full stop would) leaves no way to resume at all, since its "play" button would vanish with it.
    * Keeping the session alive means the OS "play" control (wired in speakText below) can still
@@ -245,8 +245,8 @@ export function Play() {
    *
    * Also drives the OS-level Media Session (see mediaSession.ts) for whichever provider is
    * speaking — real `navigator.mediaSession` metadata/action handlers, not a parallel mechanism,
-   * so Android's "Now Playing" notification/lock-screen controls work the same way for
-   * `browser`/`elevenlabs`/`huggingface-local` alike. */
+   * so Android's "Now Playing" notification/lock-screen controls work the same way for `browser`/
+   * `huggingface-local` alike. */
   const speakText = useCallback(
     (text: string, turn?: number) => {
       const kind = globalSettings.ttsProvider
@@ -289,15 +289,7 @@ export function Play() {
         onPause: pausePlayback,
         onStop: stopPlayback,
       })
-      // Each provider that supports voice selection keys off its own global setting —
-      // elevenLabsVoiceId/kokoroVoiceId are independent choices, not a shared field, since
-      // switching providers doesn't lose either one's pick.
-      const voice =
-        kind === 'elevenlabs'
-          ? globalSettings.elevenLabsVoiceId
-          : kind === 'huggingface-local'
-            ? globalSettings.kokoroVoiceId
-            : undefined
+      const voice = kind === 'huggingface-local' ? globalSettings.kokoroVoiceId : undefined
       provider
         .speak(text, { voice })
         .catch((err) => {

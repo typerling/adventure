@@ -5,13 +5,13 @@
  * play/pause/stop controls while a turn is being read aloud.
  *
  * Deliberately provider-agnostic: this is presentation (what the OS shows), not playback (what
- * actually plays), so it applies identically to all three `TtsProvider` implementations
- * (`browser`, `elevenlabs`, `huggingface-local`/Kokoro) regardless of whether the underlying audio
- * is `SpeechSynthesisUtterance` or a real `HTMLAudioElement`. See `Play.tsx` for the call sites —
+ * actually plays), so it applies identically to both `TtsProvider` implementations (`browser`,
+ * `huggingface-local`/Kokoro) regardless of whether the underlying audio is a
+ * `SpeechSynthesisUtterance` or a real `HTMLAudioElement`. See `Play.tsx` for the call sites —
  * every call goes through the *same* play/stop paths the app already uses (`ttsProviderRef`,
  * `toggleTurnPlayback`, the read-aloud auto-narrate effect), not a parallel mechanism.
  *
- * None of the three `TtsProvider` implementations support true pause/resume (each only exposes
+ * Neither `TtsProvider` implementation supports true pause/resume (each only exposes
  * `speak()`/`stop()` — see `types.ts`), so there is no way to genuinely resume mid-utterance.
  * `Play.tsx` reflects that honestly: its Media Session `pause` handler stops the audio but
  * deliberately leaves metadata/handlers in place (just moves playback state to `'paused'`), and

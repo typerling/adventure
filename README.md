@@ -10,11 +10,14 @@ everything tabular), with no server or database of its own.
 Phase 1 (MVP) is implemented: campaign setup wizard, the manual copy/paste DM turn loop, the
 deterministic state validator, and the Codex/Dashboard screens. Phase 2 is underway: voice is
 implemented with a mic button on the Play screen plus a "read aloud" toggle that narrates new
-turns (and a play/stop button on each turn to replay it), swappable per campaign — speech-to-text
-via the browser (Web Speech API, zero config) or ElevenLabs, and text-to-speech via the browser,
-ElevenLabs, or **Kokoro** (a small on-device model, no key and no server, and no WebGPU needed).
-The map graph view is the only remaining stub (see DESIGN.md §11). Phase 3's direct AI mode is
-implemented with two options per campaign, both skipping the copy/paste step: **Claude** (needs an
+turns (and a play/stop button on each turn to replay it), swappable in Settings — global to this
+device (not per campaign) — speech-to-text via the browser (Web Speech API, zero config), and
+text-to-speech via the browser or **Kokoro** (a small on-device model, no key and no server, and no
+WebGPU needed). An ElevenLabs option existed briefly but was removed outright (issue #97) so
+Kokoro is the app's only non-browser voice provider. The map graph view is the only remaining stub
+(see DESIGN.md §11). Phase 3's direct AI mode is
+implemented with two options (a global, device-scoped preference, same as voice — not per
+campaign), both skipping the copy/paste step: **Claude** (needs an
 API key, billed to you directly by Anthropic) and a **local on-device model** — pick from several
 (see below), each needing a WebGPU-capable browser, no key, no server, running fully on your
 device — noticeably weaker at following the reply format than Claude, more so for the smaller
@@ -33,13 +36,9 @@ fallback.
 Without step 2/3, the app boots to a "Google Drive isn't configured yet" screen rather than
 crashing — everything else is wired up and ready as soon as credentials are added.
 
-To use ElevenLabs instead of the browser for voice, pick ElevenLabs as the STT/TTS provider in a
-campaign's Settings; the API key field then appears on that page (it's hidden until something
-actually needs it). The key is global rather than per-campaign, and stored only in this browser's
-`localStorage`, never written to Drive.
-
-For Kokoro text-to-speech, no key or setup at all: pick "Kokoro (on-device, runs locally)" as a
-campaign's text-to-speech provider. The model downloads once on first use and then runs entirely
+For Kokoro text-to-speech, no key or setup at all: pick "Kokoro (on-device, runs locally)" as the
+text-to-speech provider in Settings (a global, device-scoped preference — same page whether or not
+a campaign is open). The model downloads once on first use and then runs entirely
 on your device; use "Download voice model now" under **Kokoro voice model** in Settings to fetch it
 ahead of time, with a progress bar, and to remove it again later. One caveat: Kokoro relies on the
 browser cache, which requires HTTPS or localhost — served over a plain-HTTP LAN address it still

@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { installGoogleApiMock } from './mocks/googleApi'
+import { installFakeWebSpeechApi } from './mocks/webSpeech'
 import { seedLegacyCampaign } from './fixtures/backward-compat/seedLegacyCampaign'
 import { PHASE1_SETTINGS_MD, PRE_GLOBAL_SETTINGS_SETTINGS_MD } from './fixtures/backward-compat/legacySettingsMd'
 import {
@@ -78,7 +79,7 @@ test('a campaign.md missing a CampaignMeta field entirely still loads (synthetic
 })
 
 test.describe('issue #77: legacy settings.md seeds the global settings store on first load', () => {
-  test("a pre-#77 settings.md's non-default aiMode/model/provider/voice values are migrated into the global store", async ({
+  test("a pre-#77 settings.md's non-default aiMode/model/voice values are migrated into the global store, but its since-removed ElevenLabs sttProvider/ttsProvider values (issue #97) are skipped in favor of working defaults", async ({
     page,
   }) => {
     const store = await installGoogleApiMock(page)
@@ -99,18 +100,56 @@ test.describe('issue #77: legacy settings.md seeds the global settings store on 
     // the DEFAULT_GLOBAL_SETTINGS Sonnet 5 default.
     await expect(triggers.first()).toContainText('Direct API key (Claude)')
     await expect(triggers.nth(1)).toContainText('Opus 5')
-    // sttProvider/ttsProvider (elevenlabs/elevenlabs) migrated -> the ElevenLabs voice field (a
-    // single field, since both providers are ElevenLabs here) shows the migrated voice ID.
-    await expect(page.locator('#voiceId')).toHaveValue('legacy-eleven-voice-id')
 
-    // Switch to Kokoro to read the migrated kokoroVoiceId too — a real value, not the fixture's
-    // ttsProvider (ElevenLabs isn't what's being checked here, just that this independent field
-    // also migrated correctly). Trigger order here is [aiMode, claudeModel, sttProvider,
-    // ttsProvider] — the migrated aiMode 'api' inserts the Claude-model select before STT/TTS,
-    // unlike the 'manual' trigger order ([aiMode, sttProvider, ttsProvider]) other tests assume.
+    // The fixture's sttProvider/ttsProvider are both the since-removed 'elevenlabs' (issue #97) —
+    // `pickLegacyGlobalFields`' `isOneOf` checks against the now-narrowed STT_PROVIDERS/
+    // TTS_PROVIDERS unions fail for that value exactly like any other unrecognized/missing field,
+    // so it's skipped here and DEFAULT_GLOBAL_SETTINGS' 'browser'/'browser' apply instead — a
+    // *working* fallback, not a null/dead provider. Trigger order here is [aiMode, claudeModel,
+    // sttProvider, ttsProvider] — the migrated aiMode 'api' inserts the Claude-model select before
+    // STT/TTS, unlike the 'manual' trigger order ([aiMode, sttProvider, ttsProvider]) other tests
+    // assume.
+    await expect(triggers.nth(2)).toContainText('Browser (Web Speech API)')
+    await expect(triggers.nth(3)).toContainText('Browser (SpeechSynthesis)')
+    // There's no ElevenLabs voice ID field to migrate into any more — CampaignSettings/
+    // GlobalSettings' elevenLabsVoiceId field was removed along with the provider (issue #97).
+    await expect(page.locator('#voiceId')).toHaveCount(0)
+
+    // The independent kokoroVoiceId field still migrates correctly regardless — it's a free
+    // string, not validated against an enum, so ElevenLabs' removal doesn't touch it. Switch to
+    // Kokoro to read it.
     await triggers.nth(3).click()
     await page.getByRole('option', { name: 'Kokoro (on-device, runs locally)' }).click()
     await expect(page.locator('#kokoroVoiceId')).toHaveValue('legacy-kokoro-voice-id')
+  })
+
+  test('issue #97: that same pre-#77, ElevenLabs-picking settings.md still resolves to a genuinely working mic button and read-aloud toggle on Play, not just a non-throwing load', async ({
+    page,
+  }) => {
+    // Guarantees isSttProviderAvailable('browser')/isTtsProviderAvailable('browser') resolve true
+    // in this headless run — without it, whether the coerced/defaulted providers are genuinely
+    // "available" would depend on whatever (un)supported Web Speech API headless Chromium happens
+    // to ship, making the assertions below flaky rather than a real proof this lands on *working*
+    // providers.
+    await installFakeWebSpeechApi(page, { sttSupported: true, ttsSupported: true })
+    const store = await installGoogleApiMock(page)
+    const { folderId } = seedLegacyCampaign(store, {
+      slug: 'pre-global-settings-elevenlabs-play',
+      campaignMd: CAMPAIGN_MD_MISSING_CURRENT_LOCATION,
+      settingsMd: PRE_GLOBAL_SETTINGS_SETTINGS_MD,
+    })
+
+    await page.goto(`/play/${folderId}`)
+    await expect(page.getByText("Couldn't load this campaign", { exact: false })).toHaveCount(0)
+    // The mic button only renders when isSttProviderAvailable(globalSettings.sttProvider) is true
+    // (Play.tsx's sttAvailable) — for the fixture's literal `sttProvider: elevenlabs`,
+    // isSttProviderAvailable now returns false unconditionally (the case removed), so this button
+    // would be entirely absent without the fallback onto 'browser'.
+    await expect(page.getByRole('button', { name: 'Speak your action' })).toBeVisible()
+    // Same reasoning for the header's read-aloud toggle (Play.tsx's showReadAloudToggle ties
+    // directly to ttsAvailable) — the fixture's literal `ttsProvider: elevenlabs` would otherwise
+    // leave it permanently hidden, not just defaulted to off.
+    await expect(page.getByRole('button', { name: 'Read new turns aloud' })).toBeVisible()
   })
 
   test('only the first campaign whose settings.md is ever read seeds the global store — a second, differently-configured legacy campaign does not overwrite it', async ({

@@ -55,14 +55,6 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Progress } from "@/components/ui/progress";
 import { useGoogleAuth } from "@/lib/google/authStore";
-import {
-  getElevenLabsApiKey,
-  setElevenLabsApiKey,
-} from "@/lib/voice/elevenLabsKey";
-import {
-  listElevenLabsVoicesForStoredKey,
-  type ElevenLabsVoice,
-} from "@/lib/voice/elevenLabsVoices";
 import { getClaudeApiKey, setClaudeApiKey } from "@/lib/ai/claudeKey";
 import { formatBytes } from "@/lib/modelDownloadProgress";
 import {
@@ -140,9 +132,6 @@ export function Settings() {
     getGlobalSettings(),
   );
   const [savingGlobal, setSavingGlobal] = useState(false);
-  const [elevenLabsKey, setElevenLabsKeyInput] = useState(
-    () => getElevenLabsApiKey() ?? "",
-  );
   const [claudeKey, setClaudeKeyInput] = useState(
     () => getClaudeApiKey() ?? "",
   );
@@ -175,15 +164,6 @@ export function Settings() {
   const [voiceDevice, setVoiceDevice] = useState<KokoroDevice>(() =>
     getKokoroDevice(),
   );
-  const [voicePickerOpen, setVoicePickerOpen] = useState(false);
-  const [voices, setVoices] = useState<ElevenLabsVoice[]>([]);
-  const [voicesLoadState, setVoicesLoadState] = useState<
-    "idle" | "loading" | "error" | "loaded"
-  >("idle");
-  const [previewingVoiceId, setPreviewingVoiceId] = useState<string | null>(
-    null,
-  );
-  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const [kokoroVoicePickerOpen, setKokoroVoicePickerOpen] = useState(false);
   const [kokoroVoices, setKokoroVoices] = useState<KokoroVoice[]>([]);
   const [kokoroVoicesLoadState, setKokoroVoicesLoadState] = useState<
@@ -256,7 +236,6 @@ export function Settings() {
   // Leaving the page mid-preview shouldn't leave a voice sample playing in the background.
   useEffect(() => {
     return () => {
-      previewAudioRef.current?.pause();
       kokoroPreviewAudioRef.current?.pause();
       if (kokoroPreviewUrlRef.current) {
         URL.revokeObjectURL(kokoroPreviewUrlRef.current);
@@ -331,78 +310,6 @@ export function Settings() {
     } finally {
       setSavingGlobal(false);
     }
-  }
-
-  function saveElevenLabsKey() {
-    setElevenLabsApiKey(elevenLabsKey);
-    // A new/cleared key invalidates any voice list already loaded under the old one — without
-    // this, reopening the picker would keep showing the previous account's voices instead of
-    // refetching under the key just saved.
-    setVoices([]);
-    setVoicesLoadState("idle");
-    toast.success(
-      elevenLabsKey.trim()
-        ? "ElevenLabs API key saved."
-        : "ElevenLabs API key cleared.",
-    );
-  }
-
-  function stopVoicePreview() {
-    previewAudioRef.current?.pause();
-    previewAudioRef.current = null;
-    setPreviewingVoiceId(null);
-  }
-
-  function togglePreview(voice: ElevenLabsVoice) {
-    if (previewingVoiceId === voice.voiceId) {
-      stopVoicePreview();
-      return;
-    }
-    if (!voice.previewUrl) return;
-    previewAudioRef.current?.pause();
-    const audio = new Audio(voice.previewUrl);
-    audio.onended = () =>
-      setPreviewingVoiceId((current) =>
-        current === voice.voiceId ? null : current,
-      );
-    audio.onerror = () => {
-      toast.error("Couldn't play that voice preview.");
-      setPreviewingVoiceId((current) =>
-        current === voice.voiceId ? null : current,
-      );
-    };
-    previewAudioRef.current = audio;
-    setPreviewingVoiceId(voice.voiceId);
-    // Switching previews quickly pauses the previous Audio before its play() promise settles,
-    // which rejects with an AbortError — not a real playback failure (onerror above handles
-    // those), so it's swallowed here rather than left as an unhandled rejection.
-    void audio.play().catch(() => {});
-  }
-
-  async function openVoicePicker() {
-    setVoicePickerOpen(true);
-    // Skip re-fetching once a load has already succeeded, and also while one is still in
-    // flight — otherwise a second click before the first request resolves fires a duplicate,
-    // undeduplicated fetch, and if that redundant call fails after the first one already
-    // succeeded, its error would wrongly clobber a good "loaded" state.
-    if (voicesLoadState === "loaded" || voicesLoadState === "loading") return;
-    setVoicesLoadState("loading");
-    try {
-      const list = await listElevenLabsVoicesForStoredKey();
-      setVoices(list);
-      setVoicesLoadState("loaded");
-    } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : "Failed to load ElevenLabs voices.",
-      );
-      setVoicesLoadState("error");
-    }
-  }
-
-  function selectVoice(voice: ElevenLabsVoice) {
-    setGlobalForm({ ...globalForm, elevenLabsVoiceId: voice.voiceId });
-    stopVoicePreview();
-    setVoicePickerOpen(false);
   }
 
   function stopKokoroPreview() {
@@ -833,9 +740,7 @@ export function Settings() {
                 <SelectContent>
                   {STT_PROVIDERS.map((p) => (
                     <SelectItem key={p} value={p}>
-                      {p === "browser"
-                        ? "Browser (Web Speech API)"
-                        : "ElevenLabs (Scribe)"}
+                      Browser (Web Speech API)
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -861,9 +766,7 @@ export function Settings() {
                     <SelectItem key={p} value={p}>
                       {p === "browser"
                         ? "Browser (SpeechSynthesis)"
-                        : p === "elevenlabs"
-                          ? "ElevenLabs"
-                          : "Kokoro (on-device, runs locally)"}
+                        : "Kokoro (on-device, runs locally)"}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -874,51 +777,12 @@ export function Settings() {
                   backgrounded or the screen locks — a platform limitation of
                   the Web Speech API itself (its audio isn&apos;t exposed as a
                   real media stream, so it can&apos;t hold background audio
-                  focus the way ElevenLabs/Kokoro&apos;s playback does), not a
-                  bug in this app. Switch to ElevenLabs or Kokoro if you need
-                  narration to keep playing with the screen off or another app
-                  in front.
+                  focus the way Kokoro&apos;s playback does), not a bug in
+                  this app. Switch to Kokoro if you need narration to keep
+                  playing with the screen off or another app in front.
                 </p>
               )}
             </div>
-
-            {(globalForm.sttProvider === "elevenlabs" ||
-              globalForm.ttsProvider === "elevenlabs") && (
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="voiceId">ElevenLabs voice ID (optional)</Label>
-                <div className="flex gap-2">
-                  <Input
-                    id="voiceId"
-                    value={globalForm.elevenLabsVoiceId ?? ""}
-                    onChange={(e) =>
-                      setGlobalForm({
-                        ...globalForm,
-                        elevenLabsVoiceId: e.target.value.trim() || undefined,
-                      })
-                    }
-                    placeholder="Defaults to a standard ElevenLabs voice if left blank"
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => void openVoicePicker()}
-                  >
-                    Browse voices
-                  </Button>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {voicesLoadState === "loaded" &&
-                    globalForm.elevenLabsVoiceId &&
-                    (() => {
-                      const name = voices.find(
-                        (v) => v.voiceId === globalForm.elevenLabsVoiceId,
-                      )?.name;
-                      return name ? `Currently: ${name}. ` : "";
-                    })()}
-                  Only used for text-to-speech.
-                </p>
-              </div>
-            )}
 
             {globalForm.ttsProvider === "huggingface-local" && (
               <div className="flex flex-col gap-2">
@@ -959,90 +823,6 @@ export function Settings() {
                 </p>
               </div>
             )}
-
-            <Dialog
-              open={voicePickerOpen}
-              onOpenChange={(open) => {
-                setVoicePickerOpen(open);
-                if (!open) stopVoicePreview();
-              }}
-            >
-              <DialogContent className="sm:max-w-md">
-                <DialogHeader>
-                  <DialogTitle>Choose an ElevenLabs voice</DialogTitle>
-                  <DialogDescription>
-                    Preview plays ElevenLabs' hosted sample clip for each
-                    voice — no text-to-speech call is made just to listen.
-                  </DialogDescription>
-                </DialogHeader>
-                {voicesLoadState === "loading" && (
-                  <div className="flex items-center justify-center gap-2 py-8 text-sm text-muted-foreground">
-                    <Loader2 className="size-4 animate-spin" />
-                    Loading voices…
-                  </div>
-                )}
-                {voicesLoadState === "error" && (
-                  <p className="py-4 text-sm text-muted-foreground">
-                    Couldn't load voices. Make sure your ElevenLabs API key
-                    (below) is saved and valid, then try again.
-                  </p>
-                )}
-                {voicesLoadState === "loaded" &&
-                  (voices.length === 0 ? (
-                    <p className="py-4 text-sm text-muted-foreground">
-                      No voices found on this ElevenLabs account.
-                    </p>
-                  ) : (
-                    <ScrollArea className="h-80 pr-3">
-                      <div className="flex flex-col gap-1">
-                        {voices.map((voice) => (
-                          <div
-                            key={voice.voiceId}
-                            className="flex items-center gap-2 rounded-md p-2 hover:bg-muted/50"
-                          >
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              size="icon"
-                              className="shrink-0"
-                              disabled={!voice.previewUrl}
-                              onClick={() => togglePreview(voice)}
-                              aria-label={
-                                previewingVoiceId === voice.voiceId
-                                  ? `Stop preview of ${voice.name}`
-                                  : `Preview ${voice.name}`
-                              }
-                            >
-                              {previewingVoiceId === voice.voiceId ? (
-                                <Square className="size-4" />
-                              ) : (
-                                <Play className="size-4" />
-                              )}
-                            </Button>
-                            <button
-                              type="button"
-                              className="flex-1 truncate text-left text-sm"
-                              onClick={() => selectVoice(voice)}
-                            >
-                              {voice.name}
-                              {voice.category && (
-                                <span className="ml-1.5 text-xs text-muted-foreground">
-                                  {voice.category}
-                                </span>
-                              )}
-                            </button>
-                            {globalForm.elevenLabsVoiceId === voice.voiceId && (
-                              <span className="shrink-0 text-xs text-muted-foreground">
-                                Selected
-                              </span>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </ScrollArea>
-                  ))}
-              </DialogContent>
-            </Dialog>
 
             <Dialog
               open={kokoroVoicePickerOpen}
@@ -1175,40 +955,6 @@ export function Settings() {
                 className="self-start"
               >
                 {claudeKey.trim() ? "Save key" : "Clear key"}
-              </Button>
-            </CardContent>
-          </Card>
-        )}
-
-        {(globalForm.sttProvider === "elevenlabs" ||
-          globalForm.ttsProvider === "elevenlabs") && (
-          <Card>
-            <CardHeader>
-              <CardTitle>ElevenLabs</CardTitle>
-              <CardDescription>
-                Needed since your speech-to-text or text-to-speech provider
-                above is set to ElevenLabs. Stored only in this browser's
-                local storage — never written to Drive.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-col gap-3">
-              <div className="flex flex-col gap-2">
-                <Label htmlFor="elevenLabsKey">API key</Label>
-                <Input
-                  id="elevenLabsKey"
-                  type="password"
-                  autoComplete="off"
-                  value={elevenLabsKey}
-                  onChange={(e) => setElevenLabsKeyInput(e.target.value)}
-                  placeholder="sk_…"
-                />
-              </div>
-              <Button
-                variant="outline"
-                onClick={saveElevenLabsKey}
-                className="self-start"
-              >
-                {elevenLabsKey.trim() ? "Save key" : "Clear key"}
               </Button>
             </CardContent>
           </Card>

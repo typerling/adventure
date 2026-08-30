@@ -1,7 +1,7 @@
 /**
- * Claude API key storage — localStorage, not sessionStorage or Drive. Same reasoning as
- * elevenLabsKey.ts: a key the player shouldn't have to re-enter every browser session, but
- * that must never be written to Drive (settings.md is shared/synced storage).
+ * Claude API key storage — localStorage, not sessionStorage or Drive: a key the player shouldn't
+ * have to re-enter every browser session, but that must never be written to Drive (settings.md is
+ * shared/synced storage).
  */
 
 const STORAGE_KEY = 'adventure:claude-api-key'
