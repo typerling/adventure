@@ -28,10 +28,15 @@ export const LOCAL_MODEL_IDS = [
 ] as const
 export type LocalModelId = (typeof LOCAL_MODEL_IDS)[number]
 
-export const STT_PROVIDERS = ['browser', 'elevenlabs'] as const
+/** ElevenLabs was removed entirely (issue #97), as part of the multi-voice narration initiative
+ * (epic #36) — Kokoro (`'huggingface-local'`) is now the app's only non-browser voice provider, so
+ * there's one voice stack to grow per-speaker voices on rather than two to maintain in parallel.
+ * See `src/lib/settings/globalSettings.ts`'s coercion of a legacy `'elevenlabs'` value already
+ * sitting in a player's stored settings/`GlobalSettings` blob. */
+export const STT_PROVIDERS = ['browser'] as const
 export type SttProvider = (typeof STT_PROVIDERS)[number]
 
-export const TTS_PROVIDERS = ['browser', 'elevenlabs', 'huggingface-local'] as const
+export const TTS_PROVIDERS = ['browser', 'huggingface-local'] as const
 export type TtsProvider = (typeof TTS_PROVIDERS)[number]
 
 /** Frontmatter of campaigns/<slug>/campaign.md — the rest of the file is free-form prose:

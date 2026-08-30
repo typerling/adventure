@@ -17,8 +17,8 @@ implementation starts.
 | Area | Decision |
 |---|---|
 | AI backend | **Hybrid.** Phase 1 ships a "manual bridge": the app builds the full DM prompt, you copy it into claude.ai/chatgpt.com yourself, paste the reply back in. The AI call itself sits behind one `AIProvider` interface so a `claude-api` / `openai-api` provider (your own key) can be dropped in later with zero changes to the rest of the app. |
-| Speech-to-text | Default: browser-native (Web Speech API), free, no setup. Toggle to ElevenLabs (Scribe) STT if you add a key. |
-| Text-to-speech | Toggle between three providers at any time: browser-native (`SpeechSynthesis`), ElevenLabs, or a local Hugging Face model running in-browser (via `transformers.js`, WASM/WebGPU — no server). |
+| Speech-to-text | Browser-native (Web Speech API), free, no setup — the only STT provider (ElevenLabs was removed, issue #97). |
+| Text-to-speech | Toggle between two providers at any time: browser-native (`SpeechSynthesis`) or Kokoro, a local Hugging Face model running in-browser (via `kokoro-js`/`transformers.js`, WASM/WebGPU — no server). |
 | Backend / storage | **No server, no database.** Google Drive is the only backend. You pick a Drive folder in Settings; the app bootstraps it. **Markdown files** hold prose (campaign setup, story transcript, rolling summary, long lore write-ups). **Google Sheets** hold everything tabular/list-like (inventory, stats, skills, NPCs, monsters, timeline, quests, map nodes) — one spreadsheet per campaign, one tab per entity type, read/written via the Sheets API. |
 | UI stack | React + TypeScript + **Tailwind CSS** + **shadcn/ui** components. |
 | Hosting | Static single-page app (Vite + React + TypeScript), deployable anywhere static (or run locally). Installable as a PWA so it behaves like an app on your phone. |
@@ -252,8 +252,9 @@ visual diff):
    4s), and `<Toaster/>` (mounted once at the app root, same as before) subscribes and renders.
    Renamed sonner's `data-sonner-toaster`/`data-sonner-toast` to `data-toast-viewport`/`data-toast`
    across every reference (`tests/helpers.ts`, `tests/voice-kokoro.spec.ts`,
-   `tests/voice-elevenlabs.spec.ts`, `tests/media-session.spec.ts`) — a deliberate rename since
-   this is no longer sonner, not a drift. `next-themes` (previously imported only to feed sonner's
+   `tests/voice-elevenlabs.spec.ts` at the time (since deleted outright, issue #97),
+   `tests/media-session.spec.ts`) — a deliberate rename since this is no longer sonner, not a
+   drift. `next-themes` (previously imported only to feed sonner's
    own `theme` prop) is removed from `package.json`: this app's real dark/light state is the
    `.dark`/`.light` class toggle, which `.alert-success`/`.alert-error` already track for free
    through tier 1's dark-mode bridge (`src/index.css`) — verified against that bridge's existing
@@ -658,13 +659,15 @@ interface TTSProvider { speak(text: string, opts?: {voice?: string}): Promise<vo
 
 - `browser` STT/TTS: `webkitSpeechRecognition` / `speechSynthesis` — zero config, works
   offline-ish, quality varies by OS/browser.
-- `elevenlabs` STT/TTS: needs an API key (entered in Settings, stored only in
-  `localStorage`, never written to Drive). TTS lets you assign different ElevenLabs voices to
-  the narrator vs. recurring named NPCs for a real audiobook-cast feel.
-- `huggingface-local` TTS: a small distilled model (e.g. an MMS-TTS or Kokoro-class model)
-  run fully client-side via `transformers.js`. Free, private, no key — but multi-hundred-MB
-  model download on first use and noticeably slower/lower quality on a phone; documented as
-  the "no budget at all" fallback rather than the default.
+- `huggingface-local` TTS: Kokoro, a small distilled model run fully client-side via
+  `kokoro-js`/`transformers.js`. Free, private, no key — but a multi-hundred-MB model download on
+  first use and noticeably slower/lower quality on a phone than a hosted API would be. This is the
+  app's only non-browser voice provider: ElevenLabs STT/TTS was removed (issue #97) as part of the
+  multi-voice narration initiative (epic #36), so there is one voice stack to grow per-speaker
+  voices on rather than two to maintain in parallel — see CLAUDE.md's "Removing ElevenLabs" note
+  for the backward-compatibility work that took (a legacy `sttProvider`/`ttsProvider: elevenlabs`
+  value, wherever it's still sitting, is coerced onto a supported provider rather than silently
+  resolving to a dead `null` provider).
 
 ---
 
@@ -721,8 +724,8 @@ Sources: [DriveThruRPG — PbtA introduction](https://pages.drivethrurpg.com/pow
 1. **Phase 1 (MVP):** Drive auth + folder bootstrap, campaign setup wizard, play screen in
    manual-bridge mode, deterministic state validator, Codex panels, rolling summary. No voice,
    no map yet — get the core loop and data model solid first.
-2. **Phase 2:** Voice (browser STT/TTS first, then ElevenLabs + local HF toggles), world map
-   view.
+2. **Phase 2:** Voice (browser STT/TTS first, then ElevenLabs + local HF toggles — ElevenLabs was
+   later removed entirely, issue #97, leaving browser + local HF/Kokoro), world map view.
 3. **Phase 3:** Direct API provider (Claude/OpenAI key) as an `AIProvider` alongside manual
    bridge, optional critic/review pass, PWA install polish.
 

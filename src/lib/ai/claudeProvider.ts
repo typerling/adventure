@@ -25,7 +25,7 @@ interface MessagesResponse {
  * (undocumented-but-real header, verified against Anthropic's SDK source) since the API
  * otherwise blocks cross-origin browser requests: the API key is visible in DevTools to
  * anyone with access to this browser, which is the accepted tradeoff of a bring-your-own-key
- * client-only app (same reasoning as ElevenLabs — see claudeKey.ts).
+ * client-only app (see claudeKey.ts).
  */
 export async function generateClaudeReply(prompt: string, model: ClaudeModel): Promise<string> {
   const apiKey = getClaudeApiKey()

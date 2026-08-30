@@ -1,7 +1,7 @@
 /**
  * Voice provider interfaces (DESIGN.md §8) — swappable per-function in Settings. All are
- * implemented: STT via `browser` (Web Speech API) or `elevenlabs`; TTS via `browser`,
- * `elevenlabs`, or `huggingface-local` (Kokoro, on-device — see kokoroTts.ts).
+ * implemented: STT via `browser` (Web Speech API); TTS via `browser` or `huggingface-local`
+ * (Kokoro, on-device — see kokoroTts.ts).
  */
 
 export interface SttProvider {

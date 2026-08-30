@@ -29,8 +29,9 @@ import { cn } from "@/lib/utils"
  * `data-sonner-toaster`/`data-sonner-toast`, since this is no longer sonner) — every reference is
  * updated alongside this file: `tests/helpers.ts` (`hideToasts`, `recordToasts`/
  * `getRecordedToasts`, `createRandomCampaign`'s inline hide/remove), `tests/voice-kokoro.spec.ts`,
- * `tests/voice-elevenlabs.spec.ts`, `tests/media-session.spec.ts`. A repo-wide grep for the old
- * `data-sonner-*` names after this change should turn up nothing outside this comment.
+ * `tests/media-session.spec.ts` (`tests/voice-elevenlabs.spec.ts` also needed it at the time, but
+ * that file was since deleted outright — issue #97). A repo-wide grep for the old `data-sonner-*`
+ * names after this change should turn up nothing outside this comment.
  *
  * `next-themes`'s `useTheme()` — previously imported here purely to feed sonner's own `theme`
  * prop (verified via grep that nothing else in the app used the package) — is gone along with the

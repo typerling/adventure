@@ -10,7 +10,7 @@
  * `tts.generate()` call at a time with real `<audio>` playback in between, which incidentally gave
  * the main thread breathing room every sentence. Issue #44 then moved to generating a whole turn's
  * narration up front — every chunk's `tts.generate()` back-to-back with nothing interleaved at all,
- * so it could be stitched into one continuous clip and played gaplessly, matching ElevenLabs.
+ * so it could be stitched into one continuous clip and played gaplessly.
  * Measured (not assumed) against a representative ~700-character turn on this model's `q8` build:
  * tens of seconds of unbroken CPU-bound inference — comfortably enough to freeze the whole UI for
  * the entire pre-generation wait if left on the main thread. (Measured via kokoro-js's

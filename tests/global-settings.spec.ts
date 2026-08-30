@@ -1,11 +1,14 @@
 import { test, expect } from "@playwright/test";
 import { installGoogleApiMock } from "./mocks/googleApi";
+import { installFakeWebSpeechApi } from "./mocks/webSpeech";
 import {
   createRandomCampaign,
   expandSettingsCard,
   setCampaignAiMode,
   setCampaignVoiceProviders,
 } from "./helpers";
+
+const GLOBAL_SETTINGS_STORAGE_KEY = "adventure:global-settings";
 
 /**
  * Issue #77: every field that used to live in `CampaignSettings`/`settings.md` except
@@ -271,5 +274,90 @@ test.describe("a global setting changed for one campaign is visible for another 
     const triggers = page.locator('[data-testid="global-settings"] [data-slot="select-trigger"]');
     await expect(triggers.nth(2)).toContainText("Kokoro");
     await expect(page.locator("#kokoroVoiceId")).toHaveValue("am_adam");
+  });
+});
+
+/**
+ * Issue #97 removed ElevenLabs entirely (`STT_PROVIDERS`/`TTS_PROVIDERS` narrowed, the provider
+ * implementations deleted). `tests/backward-compat-frontmatter.spec.ts` covers the PRE-#77 case (a
+ * `settings.md` still naming ElevenLabs) — `pickLegacyGlobalFields`'s `isOneOf` checks already make
+ * that safe for free, since an old settings.md is only ever read through that validating path.
+ *
+ * This covers the *other*, genuinely new gap #77 introduced: a real `adventure:global-settings`
+ * `localStorage` blob written directly by a build shipped AFTER #77 (global settings already
+ * exist) but BEFORE #97 (ElevenLabs still a valid choice) — a player who had actually picked it.
+ * `getGlobalSettings()`'s `{ ...DEFAULT_GLOBAL_SETTINGS, ...parsed }` merge only fills in *missing*
+ * keys, so a *present* `'elevenlabs'` value in that blob is never touched by the merge itself —
+ * this is what `coerceLegacyVoiceProviders` (called at the end of `getGlobalSettings()`) exists to
+ * fix. See `src/lib/settings/globalSettings.ts` for the implementation.
+ */
+test.describe("issue #97: a stored GlobalSettings blob naming the since-removed ElevenLabs provider still resolves to working providers", () => {
+  test("a post-#77-pre-#97 localStorage blob with sttProvider/ttsProvider: 'elevenlabs' coerces to Settings showing Browser/Browser, not a broken/blank select", async ({
+    page,
+  }) => {
+    await installGoogleApiMock(page);
+    // Seeds the *current*-format storage key directly, before any app script runs — simulating a
+    // real earlier build of this exact app having already written this blob (not a settings.md,
+    // not something pickLegacyGlobalFields ever sees).
+    await page.addInitScript(
+      ({ key, value }) => window.localStorage.setItem(key, value),
+      {
+        key: GLOBAL_SETTINGS_STORAGE_KEY,
+        value: JSON.stringify({
+          aiMode: "manual",
+          claudeModel: "claude-sonnet-5",
+          localModelId: "onnx-community/gemma-3-1b-it-ONNX",
+          sttProvider: "elevenlabs",
+          ttsProvider: "elevenlabs",
+          elevenLabsVoiceId: "legacy-eleven-voice-id",
+        }),
+      },
+    );
+
+    await page.goto("/settings");
+    const triggers = page.locator(
+      '[data-testid="global-settings"] [data-slot="select-trigger"]',
+    );
+    // aiMode is 'manual' here (unaffected by the coercion), so trigger order is
+    // [aiMode, sttProvider, ttsProvider] — no Claude-model select inserted.
+    await expect(triggers.nth(1)).toContainText("Browser (Web Speech API)");
+    await expect(triggers.nth(2)).toContainText("Browser (SpeechSynthesis)");
+    // No ElevenLabs voice ID field exists any more to reflect the stale value from either.
+    await expect(page.locator("#voiceId")).toHaveCount(0);
+  });
+
+  test("that same stored blob resolves to a genuinely working mic button and read-aloud toggle on Play, not just a non-broken Settings page", async ({
+    page,
+  }) => {
+    // Guarantees isSttProviderAvailable('browser')/isTtsProviderAvailable('browser') resolve true
+    // in this headless run, so the assertions below prove a *working* fallback, not one that
+    // happens to pass only because headless Chromium's own Web Speech support is flaky.
+    await installFakeWebSpeechApi(page, { sttSupported: true, ttsSupported: true });
+    await installGoogleApiMock(page);
+    await page.addInitScript(
+      ({ key, value }) => window.localStorage.setItem(key, value),
+      {
+        key: GLOBAL_SETTINGS_STORAGE_KEY,
+        value: JSON.stringify({
+          aiMode: "manual",
+          claudeModel: "claude-sonnet-5",
+          localModelId: "onnx-community/gemma-3-1b-it-ONNX",
+          sttProvider: "elevenlabs",
+          ttsProvider: "elevenlabs",
+        }),
+      },
+    );
+
+    await createRandomCampaign(page);
+    // Play.tsx's sttAvailable/showReadAloudToggle gate the mic button/read-aloud toggle on
+    // isSttProviderAvailable/isTtsProviderAvailable(globalSettings.sttProvider/ttsProvider) —
+    // both return false unconditionally for 'elevenlabs' now (the case removed), so without
+    // coerceLegacyVoiceProviders these would be silently, permanently absent.
+    await expect(
+      page.getByRole("button", { name: "Speak your action" }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Read new turns aloud" }),
+    ).toBeVisible();
   });
 });

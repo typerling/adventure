@@ -22,7 +22,8 @@ export interface TurnPagerPage {
    * Deliberately stays with its own page rather than following "current page" the way turnLabel
    * does: every page's button needs to exist at once regardless of which is current, since a
    * player can start one historical turn's playback and then start another's (see
-   * voice-elevenlabs.spec.ts's "starting another turn stops the first" coverage). */
+   * media-session.spec.ts's "a second turn starting playback replaces (not stacks on) the first
+   * turn's Media Session state" coverage). */
   actions?: ReactNode
   blocks: TurnBlock[]
   /** Present only for the live/last turn — historical pages render read-only, matching

@@ -13,10 +13,13 @@ kept in sync with the implementation.
 
 Phase 1 (MVP, implemented): campaign setup wizard, manual copy/paste DM turn loop, deterministic
 state validator, Codex/Dashboard/Settings screens. Phase 2 is in progress: voice is implemented
-for all three TTS providers (browser, ElevenLabs, and on-device Kokoro) and both STT providers
-(browser, ElevenLabs); the map graph view is the only remaining stub. Phase 3's direct AI mode is
-implemented with two options alongside manual copy/paste (which still works, as the no-setup
-fallback): the Claude API, and a choice of several fully on-device models over WebGPU — see
+for both TTS providers (browser and on-device Kokoro) and the one STT provider (browser) — an
+ElevenLabs TTS/STT option existed briefly but was removed outright (issue #97), as part of the
+multi-voice narration initiative (epic #36), so there is one voice stack to grow per-speaker
+voices on rather than two to maintain in parallel; the map graph view is the only remaining stub.
+Phase 3's direct AI mode is implemented with two options alongside manual copy/paste (which still
+works, as the no-setup fallback): the Claude API, and a choice of several fully on-device models
+over WebGPU — see
 "Direct AI mode" below. OpenAI was not requested and isn't implemented.
 
 ## Commands
@@ -166,14 +169,13 @@ per-campaign, since issue #77.
 - **`'api'`** — `src/lib/ai/claudeProvider.ts`'s `generateClaudeReply(prompt, model)` calls
   `POST https://api.anthropic.com/v1/messages` with a plain `fetch` — no `@anthropic-ai/sdk`
   dependency, matching this repo's established thin-fetch-client convention (same as
-  `driveApi.ts`/`sheetsApi.ts` and the ElevenLabs voice providers) and DESIGN.md §11's explicit "no
-  build-time dependency on any AI vendor SDK" call. Calling the Messages API directly from a
-  browser needs the `anthropic-dangerous-direct-browser-access: true` header (undocumented in
-  Anthropic's official reference at time of writing; verified against the SDK's own source and
-  community reporting) — without it the request is blocked as cross-origin. The API key
-  (`src/lib/ai/claudeKey.ts`) is `localStorage`-only, same reasoning as `elevenLabsKey.ts`; the
-  model choice (`GlobalSettings.claudeModel`, one of `CLAUDE_MODELS`, default `claude-sonnet-5`)
-  is global like `elevenLabsVoiceId` (issue #77 — previously per-campaign).
+  `driveApi.ts`/`sheetsApi.ts`) and DESIGN.md §11's explicit "no build-time dependency on any AI
+  vendor SDK" call. Calling the Messages API directly from a browser needs the
+  `anthropic-dangerous-direct-browser-access: true` header (undocumented in Anthropic's official
+  reference at time of writing; verified against the SDK's own source and community reporting) —
+  without it the request is blocked as cross-origin. The API key (`src/lib/ai/claudeKey.ts`) is
+  `localStorage`-only; the model choice (`GlobalSettings.claudeModel`, one of `CLAUDE_MODELS`,
+  default `claude-sonnet-5`) is global like `kokoroVoiceId` (issue #77 — previously per-campaign).
 - **`'local'`** — `src/lib/ai/localModel.ts`'s `generateLocalReply(modelId, prompt, opts)` runs one
   of several small instruction-tuned models entirely in-browser via `@huggingface/transformers`
   over WebGPU — no key, no server. `LOCAL_MODELS` is the catalog (Hugging Face repo ID → display
@@ -392,26 +394,21 @@ only adds a small per-campaign summarization-cadence card on top). `AuthGate`
 (`src/components/AuthGate.tsx`) wraps the whole app shell and gates everything on Google sign-in
 state.
 
-### Voice (Phase 2: browser, ElevenLabs, and on-device Kokoro)
+### Voice (Phase 2: browser and on-device Kokoro)
 
 `src/lib/voice/types.ts` defines the swappable `SttProvider`/`TtsProvider` interfaces from
 DESIGN.md §8 — the same "drop in another implementation with zero changes to the rest of the app"
-philosophy as the AI backend. Three implementations exist (Kokoro is TTS-only):
+philosophy as the AI backend. Two implementations exist (Kokoro is TTS-only); an ElevenLabs
+STT/TTS implementation existed briefly but was removed outright (issue #97) rather than left as a
+second TTS stack that could never grow per-speaker voices, per the multi-voice narration
+initiative (epic #36) — see "Removing ElevenLabs" below for the backward-compatibility work that
+took:
 
 - **`browser`** (`browserStt.ts`, `browserTts.ts`) — Web Speech API, zero config. `SpeechRecognition`
   isn't in TypeScript's DOM lib (Safari-only-prefixed, non-standard enough that TS hasn't added
   it) — ambient-typed in `speech-recognition-types.d.ts`, same pattern as `gis-types.d.ts` for
   Google Identity Services. STT gives live interim results; recognition auto-ends after one
   utterance (`continuous = false`).
-- **`elevenlabs`** (`elevenLabsStt.ts`, `elevenLabsTts.ts`) — needs an API key, stored via
-  `elevenLabsKey.ts` in `localStorage` only (never written to Drive/settings.md — see the comment
-  there for why this is `localStorage` and Google's OAuth token in `authStore.ts` is
-  localStorage too, for a different reason — see that file). TTS is one `fetch` + `Audio` playback. STT is fundamentally different
-  from browser STT: no live transcript, it records the whole utterance via `getUserMedia` +
-  `MediaRecorder` and only transcribes (one HTTP upload) once `stop()` is called — so unlike
-  browser STT, the user must click the mic button again to end recording. The chosen voice
-  (`GlobalSettings.elevenLabsVoiceId`) is optional and global to the device (localStorage, issue
-  #77 — previously per-campaign in settings.md), same storage as the API key.
 - **`huggingface-local`** (`kokoroTts.ts`) — TTS only, via `kokoro-js`: a small on-device model, no
   key and no server, run over **WASM rather than WebGPU**, so unlike the local text models
   there's no hard support gate. Dynamically imported (it bundles its own ONNX runtime). Read the
@@ -554,9 +551,47 @@ newly-applied turn's narrative via `TtsProvider.speak`, tracked with a `spokenTu
 a campaign never narrates history and turning the toggle on mid-session only narrates turns from
 that point forward. Each turn also has its own play/stop button for replaying it on demand — note
 that `Play.tsx` caches **one provider instance per provider kind** (`ttsProviderRef`) rather than
-calling `getTtsProvider` per playback: ElevenLabs and Kokoro track their currently-playing `Audio`
-per instance, so a fresh instance per call would leave `stop()` unable to reach audio an earlier
-instance started.
+calling `getTtsProvider` per playback: Kokoro tracks its currently-playing `Audio` per instance, so
+a fresh instance per call would leave `stop()` unable to reach audio an earlier instance started.
+
+**Removing ElevenLabs (issue #97).** The project owner decided the app would not use ElevenLabs
+going forward — part of the multi-voice narration initiative (epic #36), where Kokoro becomes the
+only non-browser voice provider so there's one voice stack to grow per-speaker voices on, not two.
+Deleted outright: `elevenLabsTts.ts`, `elevenLabsStt.ts`, `elevenLabsKey.ts`, `elevenLabsVoices.ts`,
+the `'elevenlabs'` branches in `getProvider.ts`, `GlobalSettings.elevenLabsVoiceId`, and all of
+Settings' API-key field/voice picker/provider options for it. The load-bearing part, per this
+file's Google Drive/Sheets backward-compatibility rule above, is complicated by issue #77 landing
+*before* this removal: `sttProvider`/`ttsProvider`/voice-ID choices no longer live in
+`CampaignSettings`/`settings.md` at all, they live in the global, `localStorage`-backed
+`GlobalSettings` (`src/lib/settings/globalSettings.ts`) — so removing an enum value already live in
+a user's *stored data* means covering two distinct legacy shapes, not one:
+
+- A `settings.md` from **before #77** can still have `sttProvider: elevenlabs`/
+  `ttsProvider: elevenlabs`/`elevenLabsVoiceId` sitting in its frontmatter. This turns out to be
+  safe for free: `globalSettings.ts`'s `pickLegacyGlobalFields` (the one-time migration
+  `seedGlobalSettingsFromLegacyIfNeeded` runs against that frontmatter) validates every field with
+  `isOneOf` against the CURRENT `STT_PROVIDERS`/`TTS_PROVIDERS` unions — an `'elevenlabs'` value
+  simply fails that check and is skipped, exactly like any other unrecognized or missing value,
+  and `DEFAULT_GLOBAL_SETTINGS` fills in (`'browser'` STT, `'browser'` TTS). No code change was
+  needed here beyond narrowing the unions themselves; a stale `elevenLabsVoiceId` key in the old
+  frontmatter is left alone — it isn't part of `GlobalSettings` any more, so it's just an inert
+  extra property.
+- A real `adventure:global-settings` `localStorage` blob written by a build **after #77 but before
+  #97** is the gap #77 actually introduced: `getGlobalSettings()`'s
+  `{ ...DEFAULT_GLOBAL_SETTINGS, ...parsed }` merge only fills in *missing* keys, so a *present*
+  `sttProvider`/`ttsProvider: elevenlabs` in that blob survives the merge completely untouched —
+  without a fix, such a player would open the app to `getSttProvider`/`getTtsProvider` silently
+  resolving `null` forever (the mic button and read-aloud toggle just vanish). `globalSettings.ts`
+  now runs a real coercion step (`coerceLegacyVoiceProviders`) at the end of `getGlobalSettings()`:
+  any `sttProvider`/`ttsProvider` value outside the current unions falls back to
+  `DEFAULT_GLOBAL_SETTINGS`' value for that field.
+
+Covered by tests in `tests/backward-compat-frontmatter.spec.ts` (the pre-#77 settings.md case,
+reusing `PRE_GLOBAL_SETTINGS_SETTINGS_MD` — already ElevenLabs-shaped since it predates issue #77
+too) and `tests/global-settings.spec.ts` (the post-#77-pre-#97 stored-blob case, seeding
+`localStorage` directly). The orphaned ElevenLabs API key already sitting in some players'
+`localStorage` (from the now-deleted `elevenLabsKey.ts`) is left alone rather than purged —
+simplest, and harmless, since nothing reads that storage key any more.
 
 Both kinds of on-device model (the local text models, Kokoro for voice) expose the same download-management
 surface — `preload*`/`has*Downloaded*`/`remove*` plus a progress callback formatted through

@@ -22,7 +22,8 @@ import { expect } from "@playwright/test";
  * per-file fix (as PR #94 originally shipped, only in `play-dialog-responsive.spec.ts`) left
  * roughly a dozen other callers still exposed.
  *
- * Uses `page.addStyleTag` (see the identical pattern in voice-elevenlabs.spec.ts), *not*
+ * Uses `page.addStyleTag` (see the identical pattern in tests that need a toast visible *first*,
+ * then out of the way — e.g. voice-kokoro.spec.ts), *not*
  * `hideToasts`'s `addInitScript`: an init script survives every later navigation for the rest of
  * the test, and several callers go on to call `setCampaignVoiceProviders`/`setCampaignAiMode`
  * afterward, which wait for a "Settings saved." toast to become *visible* — permanently
@@ -76,8 +77,8 @@ export async function submitFreeTextTurn(
 export async function setCampaignVoiceProviders(
   page: Page,
   opts: {
-    stt?: "browser" | "elevenlabs";
-    tts?: "browser" | "elevenlabs" | "huggingface-local";
+    stt?: "browser";
+    tts?: "browser" | "huggingface-local";
   },
 ): Promise<void> {
   const match = page.url().match(/\/(?:play|codex|settings)\/([^/?#]+)/);
@@ -94,12 +95,7 @@ export async function setCampaignVoiceProviders(
   if (opts.stt) {
     await triggers.nth(1).click();
     await page
-      .getByRole("option", {
-        name:
-          opts.stt === "browser"
-            ? "Browser (Web Speech API)"
-            : "ElevenLabs (Scribe)",
-      })
+      .getByRole("option", { name: "Browser (Web Speech API)" })
       .click();
   }
   if (opts.tts) {
@@ -109,9 +105,7 @@ export async function setCampaignVoiceProviders(
         name:
           opts.tts === "browser"
             ? "Browser (SpeechSynthesis)"
-            : opts.tts === "elevenlabs"
-              ? "ElevenLabs"
-              : "Kokoro (on-device, runs locally)",
+            : "Kokoro (on-device, runs locally)",
       })
       .click();
   }
@@ -222,8 +216,8 @@ export async function getRecordedToasts(page: Page): Promise<string[]> {
  * never has, so it never fired *at all* headless; the replacement's timer isn't focus-gated, so
  * it does eventually fire, but a few seconds is still long enough to need this helper for a test
  * moving faster than that.) Use this when a test has no reason to assert anything about toast
- * content; see the mid-test `addStyleTag` variant in voice-elevenlabs.spec.ts for a test that
- * needs a toast visible *first*, then out of the way.
+ * content; see the mid-test `addStyleTag` variant in voice-kokoro.spec.ts for a test that needs a
+ * toast visible *first*, then out of the way.
  */
 export async function hideToasts(page: Page): Promise<void> {
   await page.addInitScript(() => {

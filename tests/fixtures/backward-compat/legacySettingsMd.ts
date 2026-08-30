@@ -31,6 +31,13 @@ summarizationCadence: 15
  * in on their own," which is exactly the distinction issue #77's migration behavior needs a test
  * to prove. A campaign whose settings.md a real user saved under any pre-#77 client still has
  * exactly this shape sitting in their Drive today.
+ *
+ * Doubles, since issue #97, as the fixture for that issue's "Case A" backward-compat requirement:
+ * ElevenLabs was removed entirely (and `STT_PROVIDERS`/`TTS_PROVIDERS` narrowed accordingly), so
+ * this fixture's literal `sttProvider: elevenlabs`/`ttsProvider: elevenlabs` now exercises "does a
+ * legacy value naming a since-removed provider get skipped safely" rather than "does it migrate
+ * through unchanged" — see `tests/backward-compat-frontmatter.spec.ts` and
+ * `src/lib/settings/globalSettings.ts`'s `pickLegacyGlobalFields` doc comment.
  */
 export const PRE_GLOBAL_SETTINGS_SETTINGS_MD = `---
 aiMode: api
