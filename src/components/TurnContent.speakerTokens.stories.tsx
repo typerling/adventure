@@ -105,10 +105,11 @@ export const UnclosedTagEndsAtParagraphBreak: Story = {
 
     expect(segments).toHaveLength(2)
     expect(segments[0].speaker).toBe('Kael')
-    expect(segments[0].text).toContain("Wait, don't go that way")
+    // Exact text: no fabricated/doubled punctuation around the real closing quote-plus-period.
+    expect(segments[0].text).toBe('"Wait, don\'t go that way."')
     // The never-closed tag does NOT bleed into the next paragraph — that stays narration.
     expect(segments[1].speaker).toBeNull()
-    expect(segments[1].text).toContain('corridor beyond is unlit and cold')
+    expect(segments[1].text).toBe('The corridor beyond is unlit and cold.')
     // No literal token markup survives anywhere, matched or not.
     expect(markdown).toContain('{{v:Kael}}') // sanity: the input really did have the token
     for (const s of segments) {
@@ -157,9 +158,11 @@ export const NestedOpenerIsTreatedAsSpeakerChange: Story = {
     // the final `{{/v}}` (which would have closed A under a stack-based model) is then just a
     // stray closer over already-narration text — dropped, per the rule above.
     expect(segments.map((s) => s.speaker)).toEqual(['A', 'B', null])
-    expect(segments[0].text).toContain('Hi')
-    expect(segments[1].text).toContain('there')
-    expect(segments[2].text).toContain('friend')
+    // Exact text: none of these fragments end at a real sentence boundary, so none should gain a
+    // fabricated period.
+    expect(segments[0].text).toBe('Hi')
+    expect(segments[1].text).toBe('there')
+    expect(segments[2].text).toBe('friend')
     for (const s of segments) {
       expect(s.text).not.toContain('{{')
     }
@@ -179,18 +182,73 @@ export const MidSentenceTokenSplitsTheSentence: Story = {
     const segments = buildSpokenSegments(args.blocks)
 
     expect(segments.map((s) => s.speaker)).toEqual([null, 'Guard', null])
-    expect(segments[0].text).toContain('muttering')
-    expect(segments[1].text).toContain('move along')
-    expect(segments[2].text).toContain('without looking twice')
-    // Nothing from the sentence was dropped — every word survives somewhere in order.
-    const joined = segments.map((s) => s.text).join(' ')
-    expect(joined).toContain('The guard barely glances up')
-    expect(joined).toContain('move along')
-    expect(joined).toContain('without looking twice')
+    // Exact text, not just toContain: a token boundary landing mid-sentence must not fabricate
+    // punctuation at the cut point (found in independent review of this feature's first version —
+    // stripMarkdownToPlainText's "force a period on anything that doesn't already end in one" rule
+    // was firing on every span, not just genuine paragraph ends, producing
+    // 'muttering. "move along". without looking twice.'). Every span here ends mid-sentence except
+    // the last, so none but the last should gain a period that wasn't already in the source text.
+    expect(segments[0].text).toBe('The guard barely glances up, muttering')
+    expect(segments[1].text).toBe('"move along"')
+    expect(segments[2].text).toBe('without looking twice.')
+    // Flattened, this must read exactly as if the token were never there at all.
+    expect(segments.map((s) => s.text).join(' ')).toBe(
+      'The guard barely glances up, muttering "move along" without looking twice.',
+    )
 
     const canvas = within(canvasElement)
     await expect(canvas.getByText(/move along/)).toBeVisible()
     expect(canvasElement.textContent).not.toContain('{{v:')
+  },
+}
+
+// ---------------------------------------------------------------------------------------------
+// 6b. Regression coverage for the above: a token boundary must never fabricate terminal
+//     punctuation, including when the dialogue itself already ends in a real period before the
+//     closing tag (the fabricated-period bug doubled up as "...come free.".", not just missing
+//     punctuation) — found in independent review of this feature's first version.
+// ---------------------------------------------------------------------------------------------
+
+const REAL_PERIOD_BEFORE_CLOSE_NARRATIVE =
+  'Old Maren leans in. {{v:Old Maren}}"Keys like that one don\'t come free."{{/v}} She waits.'
+
+export const TokenBoundaryNeverFabricatesPunctuation: Story = {
+  args: { blocks: prose(REAL_PERIOD_BEFORE_CLOSE_NARRATIVE) },
+  play: async ({ args }) => {
+    const segments = buildSpokenSegments(args.blocks)
+
+    expect(segments.map((s) => s.speaker)).toEqual([null, 'Old Maren', null])
+    expect(segments[0].text).toBe('Old Maren leans in.')
+    // No doubled/fabricated punctuation after the dialogue's own closing quote — not
+    // '"...come free.".' (a real period plus a fabricated one).
+    expect(segments[1].text).toBe('"Keys like that one don\'t come free."')
+    expect(segments[2].text).toBe('She waits.')
+    expect(segments.map((s) => s.text).join(' ')).toBe(
+      'Old Maren leans in. "Keys like that one don\'t come free." She waits.',
+    )
+  },
+}
+
+// ---------------------------------------------------------------------------------------------
+// 6c. A multi-paragraph block with zero tokens still collapses to exactly one narration segment
+//     (not one per paragraph) — the invariant buildSpokenSegments' own doc comment promises, and
+//     which a naive per-paragraph emission would silently break even though buildSpokenScript's
+//     flattened output would look the same either way.
+// ---------------------------------------------------------------------------------------------
+
+const MULTI_PARAGRAPH_NO_TOKENS = 'The hall stretches into darkness.\n\nSomewhere, water drips.'
+
+export const MultiParagraphNoTokensStillOneSegment: Story = {
+  args: { blocks: prose(MULTI_PARAGRAPH_NO_TOKENS) },
+  play: async ({ args }) => {
+    const segments = buildSpokenSegments(args.blocks)
+    const proseBlock = args.blocks.find((b) => b.type === 'prose')
+    if (!proseBlock || proseBlock.type !== 'prose') throw new Error('expected a prose block')
+
+    expect(segments).toHaveLength(1)
+    expect(segments[0].speaker).toBeNull()
+    expect(segments[0].text).toBe(stripMarkdownToPlainText(proseBlock.markdown))
+    expect(segments[0].text).toBe('The hall stretches into darkness. Somewhere, water drips.')
   },
 }
 

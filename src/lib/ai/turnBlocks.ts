@@ -64,10 +64,21 @@ export function splitNarrativeIntoBlocks(narrative: string, options: TurnOption[
 }
 
 /** A raw (still markdown-ish, not yet TTS-normalized) speaker-attributed slice, produced by
- * parseSpokenSegments before stripMarkdownToPlainText is applied per-piece. */
+ * parseSpokenSegments before stripMarkdownToPlainText is applied per-piece.
+ *
+ * `endsAtRealBreak` distinguishes two reasons a span can end where it does: a genuine paragraph
+ * break (or the end of the block's text) versus being cut short by an upcoming speaker token —
+ * see buildSpokenSegments' doc comment for why that distinction is load-bearing (found in
+ * independent review of the first version of this feature): stripMarkdownToPlainText's "append a
+ * period if this paragraph doesn't already end in one" rule is only correct when the text handed
+ * to it genuinely IS a whole paragraph. A span like "muttering " that only ends where it does
+ * because a `{{v:Guard}}` token happens to start right there is not a complete paragraph — forcing
+ * terminal punctuation on it fabricates a full stop mid-sentence. `false` here means "this span's
+ * last internal chunk was truncated by a token, not a real break — don't force punctuation there." */
 interface RawSpan {
   text: string
   speaker: string | null
+  endsAtRealBreak: boolean
 }
 
 /** A blank line (two-or-more newlines) — the same paragraph-break definition
@@ -75,6 +86,11 @@ interface RawSpan {
  * the same thing in both places. Never given the `g` flag: it's only ever used via a single
  * `.exec()` per call, and a stateful `lastIndex` would corrupt the next call. */
 const PARAGRAPH_BREAK_RE = /\n{2,}/
+/** Whether a chunk ends with a run of blank lines (with only trailing whitespace after it, if
+ * any) — i.e. it genuinely reaches a paragraph boundary rather than being cut off mid-paragraph
+ * by an upcoming speaker token. Anchored, unlike PARAGRAPH_BREAK_RE, which only needs to find a
+ * break *somewhere* for the force-close check above. */
+const ENDS_AT_BREAK_RE = /\n{2,}\s*$/
 
 /** Merges consecutive same-speaker spans together (e.g. a stray `{{/v}}` with nothing open just
  * disappears rather than leaving a pointless zero-width split in otherwise-continuous narration).
@@ -84,7 +100,10 @@ function mergeAdjacentSpans<T extends { text: string; speaker: string | null }>(
   for (const span of spans) {
     const last = merged[merged.length - 1]
     if (last && last.speaker === span.speaker) {
-      last.text += span.text
+      // Any field beyond text/speaker (e.g. RawSpan's endsAtRealBreak) takes the *later* span's
+      // value, not the earlier one's — a merged run's properties describe where it actually ends
+      // now, which is wherever the last constituent span ended, not the first.
+      merged[merged.length - 1] = { ...last, ...span, text: last.text + span.text }
     } else {
       merged.push({ ...span })
     }
@@ -122,42 +141,51 @@ function parseSpokenSegments(text: string): RawSpan[] {
   let match: RegExpExecArray | null
 
   // Pushes the literal text between the previous token and this one, honoring the paragraph-break
-  // force-close rule above when a speaker is currently open.
-  const pushBetween = (chunk: string, speaker: string | null) => {
+  // force-close rule above when a speaker is currently open. `isFinalChunk` is true only for the
+  // trailing slice after the last token (or the whole text, if there are no tokens at all) — i.e.
+  // nothing else follows in this block, so ending there is never an artificial token-boundary cut.
+  const pushBetween = (chunk: string, speaker: string | null, isFinalChunk: boolean) => {
     if (speaker !== null) {
       const breakMatch = PARAGRAPH_BREAK_RE.exec(chunk)
       if (breakMatch) {
         const spoken = chunk.slice(0, breakMatch.index)
         const rest = chunk.slice(breakMatch.index + breakMatch[0].length)
-        if (spoken) spans.push({ text: spoken, speaker })
-        if (rest) spans.push({ text: rest, speaker: null })
+        // `spoken` ends exactly at the break that forced this close — always a real break.
+        if (spoken) spans.push({ text: spoken, speaker, endsAtRealBreak: true })
+        if (rest) {
+          spans.push({ text: rest, speaker: null, endsAtRealBreak: isFinalChunk || ENDS_AT_BREAK_RE.test(rest) })
+        }
         return
       }
     }
-    if (chunk) spans.push({ text: chunk, speaker })
+    if (chunk) {
+      spans.push({ text: chunk, speaker, endsAtRealBreak: isFinalChunk || ENDS_AT_BREAK_RE.test(chunk) })
+    }
   }
 
   SPEAKER_TOKEN_RE.lastIndex = 0
   while ((match = SPEAKER_TOKEN_RE.exec(text))) {
-    pushBetween(text.slice(cursor, match.index), currentSpeaker)
+    pushBetween(text.slice(cursor, match.index), currentSpeaker, false)
     cursor = match.index + match[0].length
     const isOpen = match[1] !== undefined
     currentSpeaker = isOpen ? match[1].trim() : null
   }
-  pushBetween(text.slice(cursor), currentSpeaker)
+  pushBetween(text.slice(cursor), currentSpeaker, true)
 
   return mergeAdjacentSpans(spans)
 }
 
-/** Strips common markdown markup down to plain text, for speaking a prose block aloud — a TTS
- * provider reading literal asterisks/hashes/brackets would sound broken. Not a full markdown
- * parser; just enough to handle what the AI is realistically going to produce (headers, emphasis,
- * lists, links, code, blockquotes). Also strips any speaker token (issue #96) that reaches it
- * directly — the normal path (buildSpokenSegments) never hands it one, since token matches are
- * already excluded before this runs, but this stays a second, defensive line so no other/future
- * caller of this function can leak the literal `{{v:...}}`/`{{/v}}` markup into spoken text. */
-export function stripMarkdownToPlainText(markdown: string): string {
-  const withoutMarkup = stripSpeakerTokens(markdown)
+/** Strips common markdown markup down to plain text — a TTS provider reading literal asterisks/
+ * hashes/brackets would sound broken. Not a full markdown parser; just enough to handle what the
+ * AI is realistically going to produce (headers, emphasis, lists, links, code, blockquotes). Also
+ * strips any speaker token (issue #96) that reaches it directly — normal callers never hand it
+ * one (token matches are already excluded before this runs), but this stays a second, defensive
+ * line so no other/future caller can leak the literal `{{v:...}}`/`{{/v}}` markup into spoken
+ * text. Shared by stripMarkdownToPlainText (below) and buildSpokenSegments' per-span path, which
+ * needs the markup stripped without the paragraph-level punctuation step that follows it there —
+ * see normalizeSpokenParagraph and buildSpokenSegments' doc comment for why those are separate. */
+function stripMarkdownMarkup(text: string): string {
+  return stripSpeakerTokens(text)
     .replace(/```[\s\S]*?```/g, ' ') // fenced code blocks
     .replace(/`([^`]+)`/g, '$1') // inline code
     .replace(/^#{1,6}\s+/gm, '') // headers
@@ -170,15 +198,41 @@ export function stripMarkdownToPlainText(markdown: string): string {
     .replace(/(\*\*|__)(.+?)\1/g, '$2') // bold
     .replace(/(\*|_)(.+?)\1/g, '$2') // italic
     .replace(/~~(.+?)~~/g, '$1') // strikethrough
+}
 
+/** Terminal punctuation, optionally followed by a closing quote/bracket — so a paragraph/span
+ * ending in reported or quoted dialogue (`she says, "Come with me."`) is recognized as already
+ * complete instead of getting a redundant period appended after the closing mark. Pre-existing
+ * gap in the original (pre-issue-#96) stripMarkdownToPlainText, fixed here rather than left in
+ * place: the plain `/[.!?]$/` check only ever looked at the literal last character, so any
+ * quote-terminated paragraph — tokens or not — already produced a doubled `.".` before this. */
+const TERMINAL_PUNCTUATION_RE = /[.!?]["'”’)\]]*$/
+
+/** Normalizes one already-markup-stripped paragraph-shaped chunk into its final spoken form:
+ * collapses internal newlines/whitespace and trims, then — only when `forceTerminalPunctuation`
+ * is true — appends a period if the chunk doesn't already end in terminal punctuation, the same
+ * "paragraph breaks become a pause" rule stripMarkdownToPlainText has always applied, just
+ * factored out so it can be applied selectively (see buildSpokenSegments). Forcing this on a chunk
+ * that ISN'T actually a whole paragraph — one that only ends where it does because a speaker token
+ * starts right there — would fabricate a full stop mid-sentence, which is exactly the regression
+ * independent review caught in this feature's first version. */
+function normalizeSpokenParagraph(text: string, forceTerminalPunctuation: boolean): string {
+  const collapsed = text.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!collapsed || !forceTerminalPunctuation) return collapsed
+  return TERMINAL_PUNCTUATION_RE.test(collapsed) ? collapsed : `${collapsed}.`
+}
+
+/** Strips common markdown markup down to plain text, for speaking a prose block aloud. See
+ * stripMarkdownMarkup for the markup-stripping rules this applies. */
+export function stripMarkdownToPlainText(markdown: string): string {
   // Paragraph breaks become a pause (a period) — but only where the paragraph doesn't already
   // end in terminal punctuation, or a TTS provider reads an audible-if-subtle double stop
-  // ("rhythm.. An altar" instead of "rhythm. An altar").
-  return withoutMarkup
+  // ("rhythm.. An altar" instead of "rhythm. An altar"). Always forced here: stripMarkdownToPlainText
+  // is only ever given a genuinely complete block/paragraph, never a token-truncated fragment.
+  return stripMarkdownMarkup(markdown)
     .split(/\n{2,}/)
-    .map((paragraph) => paragraph.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim())
+    .map((paragraph) => normalizeSpokenParagraph(paragraph, true))
     .filter((paragraph) => paragraph.length > 0)
-    .map((paragraph) => (/[.!?]$/.test(paragraph) ? paragraph : `${paragraph}.`))
     .join(' ')
     .trim()
 }
@@ -218,9 +272,39 @@ export function buildSpokenSegments(blocks: TurnBlock[]): SpokenSegment[] {
       if (text) segments.push({ text, speaker: null })
       continue
     }
+    // Built per-block, then merged, so a multi-paragraph block with zero tokens collapses back
+    // into a single segment — see the merge step below for why that's not just a nicety.
+    const blockSegments: SpokenSegment[] = []
     for (const span of parseSpokenSegments(block.markdown)) {
-      const text = stripMarkdownToPlainText(span.text)
-      if (text) segments.push({ text, speaker: span.speaker })
+      // A span's raw text can itself contain more than one real paragraph (e.g. two narration
+      // paragraphs with no token between them, still one RawSpan) — split those out here so each
+      // gets its own terminal-punctuation treatment, same as stripMarkdownToPlainText would if
+      // given this span's text as a whole block. Only the span's *last* internal chunk needs
+      // `endsAtRealBreak` to decide whether forcing punctuation is safe; every earlier internal
+      // chunk ends at a `\n{2,}` by construction (that's what split just found), so it's always a
+      // genuine paragraph end regardless of why the span itself ends where it does.
+      const chunks = stripMarkdownMarkup(span.text).split(/\n{2,}/)
+      chunks.forEach((chunk, i) => {
+        const isLastChunk = i === chunks.length - 1
+        const text = normalizeSpokenParagraph(chunk, !isLastChunk || span.endsAtRealBreak)
+        if (text) blockSegments.push({ text, speaker: span.speaker })
+      })
+    }
+    // Re-joins adjacent same-speaker paragraph pieces with a space, mirroring
+    // stripMarkdownToPlainText's own `.join(' ')` between paragraphs — without this, a
+    // multi-paragraph, zero-token block would come out as several separate `speaker: null`
+    // segments instead of the single one this function's own doc comment (and
+    // stripMarkdownToPlainText's identical behavior) promises. Plain string concatenation, not
+    // mergeAdjacentSpans' no-separator append: these pieces came from *different* paragraphs, so
+    // the space stripMarkdownToPlainText would have joined them with has to be put back.
+    let last: SpokenSegment | undefined
+    for (const segment of blockSegments) {
+      if (last && last.speaker === segment.speaker) {
+        last.text = `${last.text} ${segment.text}`
+      } else {
+        last = { ...segment }
+        segments.push(last)
+      }
     }
   }
   return segments
