@@ -7,10 +7,15 @@ import { expect } from "@playwright/test";
  *
  * Suppresses the "Randomized a starting point…" toast itself rather than leaving it to each
  * caller: this helper clicks straight through the wizard's remaining "Next" steps with no
- * pause, and at narrower viewports that toast pins to the bottom right, over those buttons.
- * Headless Chromium never fires Sonner's auto-dismiss timer (see `hideToasts`'s own doc
- * comment), so under load the toast can still be sitting there when a click lands, intercepting
- * it. The vulnerable click-loop lives entirely inside this function, so every caller was exposed
+ * pause, and at narrower viewports that toast pins to the bottom right, over those buttons. The
+ * toast lingers for `TOAST_DURATION_MS` (`src/components/ui/toast.tsx`, a few seconds) before
+ * auto-dismissing, so under load — four rapid clicks in a row — it can still be sitting there
+ * when a click lands, intercepting it. (Historical note: this app used sonner before issue #95's
+ * migration, whose own auto-dismiss timer additionally never fired at all in headless Chromium,
+ * since it paused while the document lacked real OS focus, which headless never has — the
+ * hand-rolled replacement's timer isn't gated on focus, so it does eventually fire headless, but
+ * still not fast enough to protect a tight click-loop like this one.) The vulnerable click-loop
+ * lives entirely inside this function, so every caller was exposed
  * regardless of whether it happened to call `hideToasts` separately first — found via
  * independent review of PR #94 (issue #93), which reproduced a real failure with this exact
  * signature in a file the PR hadn't touched (`scrollbar-hidden.spec.ts`) and pointed out that a
@@ -33,7 +38,7 @@ export async function createRandomCampaign(page: Page): Promise<void> {
   await page.goto("/new");
   await page.getByRole("button", { name: "Random campaign" }).click();
   const toastHider = await page.addStyleTag({
-    content: "[data-sonner-toaster] { display: none !important; }",
+    content: "[data-toast-viewport] { display: none !important; }",
   });
   for (let i = 0; i < 4; i++) {
     await page.getByRole("button", { name: "Next" }).click();
@@ -149,9 +154,9 @@ export async function setCampaignAiMode(
 }
 
 /**
- * Records every Sonner toast that renders, so a test can assert one never appeared.
+ * Records every toast that renders, so a test can assert one never appeared.
  *
- * Needed because the obvious spelling — `expect(page.locator('[data-sonner-toast]')).toHaveCount(0)`
+ * Needed because the obvious spelling — `expect(page.locator('[data-toast]')).toHaveCount(0)`
  * — silently can't fail: `toHaveCount` auto-retries, and toasts auto-dismiss after a few seconds,
  * so it passes by *waiting for the toast to disappear*. (Verified: a run whose toast was provably
  * present at assertion time still passed.) A MutationObserver keeps the whole history instead of
@@ -164,11 +169,11 @@ export async function recordToasts(page: Page): Promise<void> {
     const seen: string[] = [];
     (window as unknown as Record<string, unknown>).__toasts = seen;
     // Polling rather than a MutationObserver: a freshly-inserted toast has no layout yet, and
-    // Sonner may not produce a further childList mutation to trigger a rescan, so an
+    // the toaster may not produce a further childList mutation to trigger a rescan, so an
     // observer-only version silently missed toasts. `textContent` (not `innerText`) for the same
     // no-layout-required reason. Toasts live for seconds, so 40ms cannot miss one.
     setInterval(() => {
-      for (const el of document.querySelectorAll("[data-sonner-toast]")) {
+      for (const el of document.querySelectorAll("[data-toast]")) {
         const text = (el.textContent ?? "").trim();
         if (text && !seen.includes(text)) seen.push(text);
       }
@@ -201,24 +206,29 @@ export async function getRecordedToasts(page: Page): Promise<string[]> {
 }
 
 /**
- * Hides Sonner toasts for the rest of the test, from page load onward. Call before navigating
- * (it installs an init script — see the `document.head` guard below, needed because init scripts
- * run before the document exists, so touching `document.documentElement` directly throws and
+ * Hides toasts for the rest of the test, from page load onward. Call before navigating (it
+ * installs an init script — see the `document.head` guard below, needed because init scripts run
+ * before the document exists, so touching `document.documentElement` directly throws and
  * Playwright silently swallows that).
  *
- * Needed because headless Chromium never fires Sonner's auto-dismiss timer, so a toast a test
- * doesn't care about can sit on screen indefinitely — on a phone-width viewport that's directly
- * over Play's input row, and even at desktop-ish heights the story log (h-[max(50svh,calc(100svh-
- * 10rem))] when at the bottom of a turn, see Play.tsx) can leave little enough room below it that
- * a lingering toast intercepts clicks on the Act button. Use this when a test has no reason to
- * assert anything about toast content; see the mid-test `addStyleTag` variant in
- * voice-elevenlabs.spec.ts for a test that needs a toast visible *first*, then out of the way.
+ * Needed because a toast (`TOAST_DURATION_MS`, `src/components/ui/toast.tsx` — a few seconds) a
+ * test doesn't care about can still be on screen when the next assertion/click runs — on a
+ * phone-width viewport that's directly over Play's input row, and even at desktop-ish heights the
+ * story log (h-[max(50svh,calc(100svh-10rem))] when at the bottom of a turn, see Play.tsx) can
+ * leave little enough room below it that a lingering toast intercepts clicks on the Act button.
+ * (This app used sonner before issue #95's migration to a hand-rolled toast — sonner's own
+ * auto-dismiss timer paused while the document lacked real OS focus, which headless Chromium
+ * never has, so it never fired *at all* headless; the replacement's timer isn't focus-gated, so
+ * it does eventually fire, but a few seconds is still long enough to need this helper for a test
+ * moving faster than that.) Use this when a test has no reason to assert anything about toast
+ * content; see the mid-test `addStyleTag` variant in voice-elevenlabs.spec.ts for a test that
+ * needs a toast visible *first*, then out of the way.
  */
 export async function hideToasts(page: Page): Promise<void> {
   await page.addInitScript(() => {
     const inject = () => {
       const style = document.createElement("style");
-      style.textContent = "[data-sonner-toaster] { display: none !important; }";
+      style.textContent = "[data-toast-viewport] { display: none !important; }";
       document.head.appendChild(style);
     };
     if (document.head) inject();

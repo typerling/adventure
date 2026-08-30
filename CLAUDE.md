@@ -40,9 +40,9 @@ fallback): the Claude API, and a choice of several fully on-device models over W
   hamburger-menu nav pattern (`src/components/Header.tsx`) works identically at both widths — the
   trigger opens a real menu with the right items for whether a campaign is open, selecting an item
   navigates and closes the menu, and it closes on outside click/Escape too — plus that no page
-  scrolls sideways at phone width. It hides the Sonner toast layer via `addInitScript`, because
-  toasts pin to the bottom of the viewport and on a phone-width screen genuinely sit over Play's
-  input row and intercept clicks meant for it.
+  scrolls sideways at phone width. It hides the toast layer via `addInitScript`, because toasts
+  pin to the bottom of the viewport and on a phone-width screen genuinely sit over Play's input
+  row and intercept clicks meant for it.
 - `npm run storybook` — Storybook dev server on port 6006, for viewing/developing
   `src/components/**/*.stories.tsx` in isolation (every `src/components/ui/*` primitive, plus
   `Header`). `npm run build-storybook` produces a static `storybook-static/` build (not
@@ -553,25 +553,34 @@ progress-bar / "remove downloaded model" cards.
 Tailwind CSS v4 + shadcn/ui (`src/components/ui/*`, style `radix-nova`, see `components.json` for
 aliases/config — regenerate/add components with the shadcn CLI rather than hand-rolling
 primitives). Path alias `@/*` → `src/*` (configured in both `vite.config.ts` and
-`tsconfig.app.json` — keep in sync if it ever changes). Sonner for toasts (validation errors
-surface this way per `DESIGN.md` §5).
+`tsconfig.app.json` — keep in sync if it ever changes). `src/components/ui/toast.tsx`'s hand-rolled
+`toast.success`/`toast.error` (issue #95, replacing the `sonner` npm package) for toasts
+(validation errors surface this way per `DESIGN.md` §5).
 
 **Migrating to daisyUI (issue #28).** Phase 1 (additive/isolated) added the daisyUI Tailwind v4
 plugin to `src/index.css` (two custom themes, `adventure-light`/`adventure-dark`, hand-derived from
 the existing shadcn palette) and a Storybook-only review surface, `src/components/daisyui-preview/`.
 Phase 2 replaces real `src/components/ui/*` primitives one tier at a time; tier 1 (issue #91,
-`badge`/`separator`/`label`) and tier 2 (issue #93, `button`/`card`/`input`/`textarea`/`progress`)
-are done — every other primitive listed above (Select, Dialog, DropdownMenu, Tabs, etc.) still
-renders shadcn/ui + Radix, unchanged. `src/index.css` also carries the bridge making daisyUI's own
-color tokens track this app's real `.dark`/`.light` toggle (not just `data-theme`, which nothing in
-the real app sets) and a scoped fix for a real `--border` name collision between the two systems,
-now extended to `.btn`/`.input`/`.textarea` alongside `.badge` (`.card`/`.progress` don't need it —
-see `src/index.css`'s comment) — see DESIGN.md §3's tier-1/tier-2 entries for the full story before
-migrating any later tier that touches a daisyUI class reading `--border` as a length. Tier 2 also
-confirmed `Button`'s `asChild`/`Slot` composition inside still-Radix `Dialog`/`DropdownMenu`
-survives the class-only rewrite unaffected (verified empirically, not just reasoned about) and
-dropped Radix's `Progress` primitive entirely in favor of a native `<progress>` element, since it
-was never providing more than ARIA plumbing a native element gets for free.
+`badge`/`separator`/`label`), tier 2 (issue #93, `button`/`card`/`input`/`textarea`/`progress`), and
+tier 3 (issue #95, `collapsible`/`scroll-area`/`sonner`) are done — every other primitive listed
+above (Select, Dialog, DropdownMenu, Tabs) still renders shadcn/ui + Radix, unchanged. `src/index.css`
+also carries the bridge making daisyUI's own color tokens track this app's real `.dark`/`.light`
+toggle (not just `data-theme`, which nothing in the real app sets) and a scoped fix for a real
+`--border` name collision between the two systems, now extended to `.btn`/`.input`/`.textarea`/
+`.alert` alongside `.badge` (`.card`/`.progress`/`.toast` don't need it — see `src/index.css`'s
+comment) — see DESIGN.md §3's tier entries for the full story before migrating any later tier that
+touches a daisyUI class reading `--border` as a length. Tier 2 also confirmed `Button`'s
+`asChild`/`Slot` composition inside still-Radix `Dialog`/`DropdownMenu` survives the class-only
+rewrite unaffected (verified empirically, not just reasoned about) and dropped Radix's `Progress`
+primitive entirely in favor of a native `<progress>` element, since it was never providing more
+than ARIA plumbing a native element gets for free. Tier 3 dropped two more Radix primitives the
+same way (`Collapsible`, `ScrollArea` — both were pure ARIA/visual plumbing over state/behavior the
+app already owned or native scrolling already provides) and replaced `sonner` entirely with a
+hand-rolled `toast.success`/`toast.error` on daisyUI's `.toast`/`.alert` classes
+(`src/components/ui/toast.tsx`) — the first tier to hand-roll actual *state* (toast stacking/
+auto-dismiss) rather than just markup, which introduced a real bug class tiers 1–2 never hit (see
+DESIGN.md §3's tier 3 entry: module-level singleton state leaking between Storybook stories that
+each mount a fresh component instance, fixed by resetting the store on every `Toaster` mount).
 See DESIGN.md's "UI stack migration" section (§3) for the full data-theme-vs-`.dark`/`.light`
 coexistence decision and the proposed Phase 2 component-by-component migration order.
 

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, Link } from "react-router";
-import { toast } from "sonner";
+import { toast } from "@/components/ui/toast";
 import { ArrowLeft, Loader2, Play, Square } from "lucide-react";
 import {
   loadCampaignFile,

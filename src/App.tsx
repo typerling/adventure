@@ -1,5 +1,5 @@
 import { BrowserRouter, Route, Routes } from 'react-router'
-import { Toaster } from '@/components/ui/sonner'
+import { Toaster } from '@/components/ui/toast'
 import { AuthGate } from '@/components/AuthGate'
 import { Header } from '@/components/Header'
 import { Dashboard } from '@/pages/Dashboard'
