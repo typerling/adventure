@@ -164,6 +164,27 @@ export function findMentionedNpcs(npcs: Npc[], playerAction: string): Npc[] {
   })
 }
 
+/** The player character's own name, as it appears in the Character tab. The Character tab holds
+ * one row per stat/status key rather than one row per character (see CharacterRow's own doc
+ * comment), so "the player's name" is just whichever row's key is literally "Name" — the same key
+ * NewCampaign.tsx's setup wizard seeds. Returns null if that row is missing or blank (an
+ * ultra-minimal or hand-edited Character tab). */
+export function playerNameFromSnapshot(snapshot: SheetSnapshot): string | null {
+  const value = snapshot.Character.find((row) => row.key === 'Name')?.value?.trim()
+  return value ? value : null
+}
+
+/** Every name a `{{v:Name}}` speaker token (or the heuristic fallback in turnBlocks.ts) could
+ * plausibly refer to for this campaign right now: the player character's own name, plus every
+ * known NPC's name — the same "name" string `npc_updates`/`new_npcs` match by (issue #96). Not
+ * filtered by NPC status/relationship — even a hostile or merely-glimpsed NPC's name is a valid
+ * thing for the AI to tag dialogue with, this is purely "what names could this token mean." */
+export function namesFromSnapshot(snapshot: SheetSnapshot): string[] {
+  const playerName = playerNameFromSnapshot(snapshot)
+  const npcNames = snapshot.NPCs.map((n) => n.name.trim()).filter(Boolean)
+  return playerName ? [playerName, ...npcNames] : npcNames
+}
+
 export interface BuildPromptInput {
   campaign: CampaignFile
   snapshot: SheetSnapshot
