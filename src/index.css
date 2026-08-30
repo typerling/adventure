@@ -279,8 +279,23 @@
    classes rather than daisyUI's `.label` class, so it's inert here rather than absent); later
    tiers reusing `--border` (`.btn`, `.card`, `.input`, `.select`, ..., and `label.tsx` itself if
    it ever adopts daisyUI's `.label` class) will need adding to this selector list as they
-   migrate — re-check the installed package's compiled CSS at that point, not this comment. */
-.badge {
+   migrate — re-check the installed package's compiled CSS at that point, not this comment.
+
+   Phase 2 tier 2 (issue #93) update: re-checked the installed package's compiled CSS as instructed
+   above rather than assuming tier 1's prediction was exactly right. `.btn`, `.input`, and
+   `.textarea` do read `--border` as a length exactly like `.badge` did (`border-width:var(--border)`
+   / `border:var(--border) solid ...`), so all three are added below. `.card` turned out NOT to need
+   an entry — its compiled `card.css` shows only the `.card-border`/`.card-dash` *modifier* classes
+   read `--border` (`border:var(--border) solid var(--color-base-200)`); plain `.card` itself never
+   references it, and `card.tsx` deliberately doesn't use either modifier (see that file's own
+   comment for why — it keeps this app's existing `ring-1 ring-foreground/10` border treatment
+   instead), so no override was needed there. `.progress` doesn't reference `--border` at all
+   either. Next tier reusing `.select`/`.tabs`/`.modal`/etc: re-check the compiled CSS again rather
+   than trusting this comment's list as exhaustive going forward. */
+.badge,
+.btn,
+.input,
+.textarea {
   --border: 1px;
 }
 

@@ -3,15 +3,44 @@ import { expect } from "@playwright/test";
 
 /** Runs the New Campaign wizard's Random quick-fill and creates the campaign, landing on Play.
  * Shared by tests that just need *a* campaign to exist without caring about its specific
- * content — see new-campaign.spec.ts for the full manual wizard walkthrough. */
+ * content — see new-campaign.spec.ts for the full manual wizard walkthrough.
+ *
+ * Suppresses the "Randomized a starting point…" toast itself rather than leaving it to each
+ * caller: this helper clicks straight through the wizard's remaining "Next" steps with no
+ * pause, and at narrower viewports that toast pins to the bottom right, over those buttons.
+ * Headless Chromium never fires Sonner's auto-dismiss timer (see `hideToasts`'s own doc
+ * comment), so under load the toast can still be sitting there when a click lands, intercepting
+ * it. The vulnerable click-loop lives entirely inside this function, so every caller was exposed
+ * regardless of whether it happened to call `hideToasts` separately first — found via
+ * independent review of PR #94 (issue #93), which reproduced a real failure with this exact
+ * signature in a file the PR hadn't touched (`scrollbar-hidden.spec.ts`) and pointed out that a
+ * per-file fix (as PR #94 originally shipped, only in `play-dialog-responsive.spec.ts`) left
+ * roughly a dozen other callers still exposed.
+ *
+ * Uses `page.addStyleTag` (see the identical pattern in voice-elevenlabs.spec.ts), *not*
+ * `hideToasts`'s `addInitScript`: an init script survives every later navigation for the rest of
+ * the test, and several callers go on to call `setCampaignVoiceProviders`/`setCampaignAiMode`
+ * afterward, which wait for a "Settings saved." toast to become *visible* — permanently
+ * CSS-hiding toasts broke all of those (33 failures, caught by the full e2e run before this
+ * landed). But `addStyleTag` isn't scoped to the page *load* either — this app is a client-routed
+ * SPA (react-router), so "Create campaign" navigates to `/play/:id` without a real page
+ * navigation, and the injected `<style>` node is still sitting in the same document afterward.
+ * Left in place, it silently hid the *next* toast a caller actually wanted to see (e.g. `Turn
+ * applied.` right after `createRandomCampaign` returns — caught the same way, by the full e2e
+ * run). So the style tag is removed again once the wizard is done with it, leaving toasts visible
+ * as normal everywhere after this function returns. */
 export async function createRandomCampaign(page: Page): Promise<void> {
   await page.goto("/new");
   await page.getByRole("button", { name: "Random campaign" }).click();
+  const toastHider = await page.addStyleTag({
+    content: "[data-sonner-toaster] { display: none !important; }",
+  });
   for (let i = 0; i < 4; i++) {
     await page.getByRole("button", { name: "Next" }).click();
   }
   await page.getByRole("button", { name: "Create campaign" }).click();
   await expect(page).toHaveURL(/\/play\/.+/);
+  await toastHider.evaluate((el) => el.remove());
 }
 
 /** Drives the manual copy/paste turn dialog end to end with a minimal, always-valid reply

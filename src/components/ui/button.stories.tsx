@@ -104,3 +104,22 @@ export const Click: Story = {
     await expect(args.onClick).toHaveBeenCalledOnce()
   },
 }
+
+// Phase 2 tier 2 (issue #93) regression guard: the base class list originally kept shadcn's old
+// `border-transparent` alongside daisyUI's `.btn` class, which won the same-specificity cascade
+// fight and silently made every variant's border invisible — including `outline`, whose entire
+// point is a visible border. Caught by a real computed-style check during this migration, not a
+// screenshot glance, so it gets one here too rather than trusting the fix by inspection alone.
+export const OutlineHasVisibleBorder: Story = {
+  args: {
+    variant: 'outline',
+    children: 'Ignore',
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const button = canvas.getByRole('button', { name: 'Ignore' })
+    const { borderWidth, borderColor } = getComputedStyle(button)
+    await expect(borderWidth).not.toBe('0px')
+    await expect(borderColor).not.toMatch(/rgba\(0, ?0, ?0, ?0\)/)
+  },
+}
