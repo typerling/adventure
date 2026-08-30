@@ -25,8 +25,8 @@ const MOBILE = { width: 390, height: 844 } // below Tailwind's `md` (768px)
 const DESKTOP = { width: 1280, height: 900 } // above it
 
 // hideToasts is shared via ./helpers now — see its doc comment there for why this is needed
-// (headless Chromium never fires Sonner's auto-dismiss timer) and for the mid-test variant a
-// test needing a toast visible first, then out of the way, uses instead.
+// (a lingering toast can intercept clicks) and for the mid-test variant a test needing a toast
+// visible first, then out of the way, uses instead.
 
 /** Play/Codex/Settings for the campaign currently open, as `[label, path]` pairs. */
 function campaignRoutes(campaignId: string): [string, string][] {

@@ -199,7 +199,7 @@ test.describe('Media Session integration (#39)', () => {
 
     await submitFreeTextTurn(page, 'look around', 'A dusty room, empty save for a locked chest.')
     await expect(page.getByText('Turn applied.')).toBeVisible()
-    await page.addStyleTag({ content: '[data-sonner-toaster] { display: none !important; }' })
+    await page.addStyleTag({ content: '[data-toast-viewport] { display: none !important; }' })
     await submitFreeTextTurn(page, 'open the chest', 'Inside: a folded letter, sealed with wax.')
 
     const playButtons = page.getByRole('button', { name: 'Play this turn aloud' })

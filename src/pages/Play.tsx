@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams, Link } from 'react-router'
-import { toast } from 'sonner'
+import { toast } from '@/components/ui/toast'
 import { ArrowUp, CircleAlert, Loader2, Mic, MicOff, Square, Volume2 } from 'lucide-react'
 import { useCampaign } from '@/hooks/useCampaign'
 import { usePlayHeaderStore } from '@/store/playHeaderStore'

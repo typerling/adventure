@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router'
-import { toast } from 'sonner'
+import { toast } from '@/components/ui/toast'
 import { useLibrary } from '@/store/libraryStore'
 import { DIFFICULTIES, type Difficulty } from '@/types/campaign'
 import { Button } from '@/components/ui/button'

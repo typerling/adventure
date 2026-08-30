@@ -444,7 +444,7 @@ test.describe("Kokoro voice picker", () => {
       "The first room is cold. The second room is silent. The third room is sealed shut.",
     );
     await expect(page.getByText("Turn applied.")).toBeVisible();
-    await page.addStyleTag({ content: "[data-sonner-toaster] { display: none !important; }" });
+    await page.addStyleTag({ content: "[data-toast-viewport] { display: none !important; }" });
     await submitFreeTextTurn(page, "move on", "A short hallway leads onward.");
     await expect(page.getByText("A short hallway leads onward.")).toBeVisible();
 

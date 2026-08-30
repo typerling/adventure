@@ -291,11 +291,21 @@
    comment for why — it keeps this app's existing `ring-1 ring-foreground/10` border treatment
    instead), so no override was needed there. `.progress` doesn't reference `--border` at all
    either. Next tier reusing `.select`/`.tabs`/`.modal`/etc: re-check the compiled CSS again rather
-   than trusting this comment's list as exhaustive going forward. */
+   than trusting this comment's list as exhaustive going forward.
+
+   Phase 2 tier 3 (issue #95) update: the hand-rolled toast replacing sonner uses daisyUI's
+   `.toast` (positioning container) + `.alert` (each individual toast). `.alert`'s compiled CSS
+   reads `--border` as a length (`border-width:var(--border)`), same failure mode as `.badge`/
+   `.btn`/`.input`/`.textarea` above, so it's added below. `.toast` itself never references
+   `--border` at all (it's pure positioning — `inset-inline`/`translate`/`flex-direction`/etc.),
+   so it needed no entry, same as `.card`/`.progress` before it. `collapsible`/`scroll-area`'s
+   replacements (a plain `<button>`/conditional render, a plain `overflow-y-auto` div) introduce
+   no new daisyUI classes at all, so neither needed checking against this collision. */
 .badge,
 .btn,
 .input,
-.textarea {
+.textarea,
+.alert {
   --border: 1px;
 }
 

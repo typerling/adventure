@@ -31,9 +31,9 @@ export const CollapsedByDefault: Story = {
     // Card/CardTitle render as plain styled <div>s (see card.tsx), not semantic headings — the
     // title is queried by text, not role, same as the app's own Playwright specs do for it.
     await expect(canvas.getByText('Local AI models', { exact: true })).toBeVisible()
-    // Radix's Collapsible.Content unmounts entirely once its close animation finishes (same
-    // "genuinely gone, not just hidden" behavior CLAUDE.md documents for DropdownMenu) — so the
-    // body text isn't just invisible, it isn't in the DOM at all.
+    // The body is a genuine conditional render, not just visually hidden (issue #95 dropped
+    // Radix's Collapsible entirely — see CollapsibleSettingsCard.tsx's own comment) — so the body
+    // text isn't just invisible, it isn't in the DOM at all.
     expect(canvas.queryByText('Download management UI goes here.')).not.toBeInTheDocument()
 
     const toggle = canvas.getByTestId('local-models-card-toggle')

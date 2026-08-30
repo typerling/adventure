@@ -62,10 +62,10 @@ one Sheets batch call plus one Drive file read — never an open-ended search.
 
 - **Vite + React + TypeScript** — client-only SPA, no backend to operate.
 - **Tailwind CSS + shadcn/ui** for styling/components (Dialog/Stepper for the setup wizard,
-  Tabs for the Codex, Card for entity entries, Command/Combobox where useful, Sonner for
-  toasts on validation errors). **Migrating to daisyUI** (issue #28) — shadcn/ui + Radix are
-  still what every real page renders today; see "UI stack migration" immediately below for
-  what Phase 1 actually shipped and the Phase 2 plan for finishing the swap.
+  Tabs for the Codex, Card for entity entries, Command/Combobox where useful, a hand-rolled
+  daisyUI-based toast — issue #95 — for toasts on validation errors). **Migrating to daisyUI**
+  (issue #28) — shadcn/ui + Radix are still what most real pages render today; see "UI stack
+  migration" immediately below for what's shipped so far and the plan for finishing the swap.
 - **Google Identity Services** for auth; **Drive API v3** (`drive.file`) for folder/file
   management; **Sheets API v4** (`spreadsheets`) for all tabular reads/writes; a narrow
   `userinfo.email` scope (issue #45) purely to power a `login_hint` mitigation for a known
@@ -216,17 +216,72 @@ visual diff):
      both base classes and letting `.btn`'s own CSS variables drive border-color/font-size per
      variant/size instead. A new Storybook story (`button.stories.tsx`'s `OutlineHasVisibleBorder`)
      regression-guards this specific failure mode going forward.
-3. **`collapsible`** — wraps Radix Collapsible: a single open/close boolean, no floating
-   positioning. daisyUI has no dedicated collapsible component, but native `<details>`/daisyUI's
-   `.collapse` gets most of the behavior (including `aria-expanded`-equivalent semantics) for free.
-4. **`scroll-area`** — wraps Radix ScrollArea purely for custom scrollbar chrome, no keyboard/focus
-   model of its own beyond native scrolling. daisyUI has no equivalent component; likely just
-   dropped in favor of native scroll + the existing `scrollbar-none` utility (`src/index.css`).
-5. **`sonner`** — not a Radix wrapper at all today (it wraps the independent `sonner` npm package).
-   Its Phase 2 question isn't "rebuild Radix behavior" but "keep the `sonner` library as-is
-   (simplest — nothing to migrate) vs. replace it with daisyUI's own `.toast`/`.alert` and hand-roll
-   stacking/auto-dismiss" — a product decision to make explicitly, independent of the Radix-specific
-   work around it, not a forced part of "the migration."
+3. **DONE (issue #95). `collapsible`** — dropped Radix's `Collapsible` primitive entirely rather
+   than reaching for native `<details>`/daisyUI's `.collapse`, the same call tier 2 made for
+   `Progress`: `CollapsibleSettingsCard` (the sole call site) already owned its `open` boolean and
+   hand-rolled its own visual trigger, and a repo-wide grep found no CSS anywhere keyed to Radix's
+   `data-state`/height-animation machinery for it, so there was nothing behavioral left to
+   preserve through a wrapper. Replaced with a plain `<button aria-expanded aria-controls>` and a
+   genuine conditional render (`{open && <CardContent id={...}>...}`) — content unmounts while
+   closed, matching both Radix's prior behavior and `CollapsibleSettingsCard.stories.tsx`'s
+   existing `not.toBeInTheDocument()` expectations. No daisyUI class introduced, so no `--border`
+   collision risk here.
+4. **DONE (issue #95). `scroll-area`** — dropped Radix's `ScrollArea` entirely for a plain
+   `overflow-y-auto` div (two nested divs, actually, mirroring Root/Viewport, so a `border`+
+   `rounded-lg` container still clips scrolled content to its corners the way the Radix version
+   did) — it was purely custom scrollbar chrome over native scrolling at every real call site
+   (Codex's 8 tab panels, Settings' 2 model-catalog lists), no keyboard/focus model beyond what
+   native scrolling already provides. Kept the native scrollbar visible everywhere (no
+   `scrollbar-none`) rather than the swipe-container treatment those call sites don't need: unlike
+   `TurnPager`'s snap-scroll pager or Codex's tab strip (which have their own visible navigation
+   affordances), none of these lists has any other cue that more content sits below the fold, so
+   hiding the browser's native scrollbar there would make content harder to discover, not
+   tidier — applied consistently, not decided per file. `data-slot="scroll-area-viewport"` was kept
+   on the actual scrolling element so `scroll-area.stories.tsx`'s existing
+   `OverflowsAndScrolls` interaction test kept working unmodified. The old `viewportRef` prop was
+   dropped — verified via repo-wide grep that no real call site ever passed it, only the primitive
+   itself defined it.
+5. **DONE (issue #95). `sonner`** — replaced with a hand-rolled toast on daisyUI's `.toast`
+   (positioning container) + `.alert` (per-toast styling), per the project owner's explicit
+   decision (this was never a Radix wrapper, so "migrate" wasn't a foregone conclusion — see the
+   entry this replaced, above). Public surface is deliberately narrow —
+   `toast.success(message)`/`toast.error(message)` only, matching every real call site (a
+   repo-wide grep found no dynamic variants, promise toasts, custom durations, or action buttons in
+   use) — a module-level subscriber store (`src/components/ui/toast.tsx`) holds the current toast
+   list, a plain unconditional `setTimeout` per toast drives auto-dismiss (`TOAST_DURATION_MS`,
+   4s), and `<Toaster/>` (mounted once at the app root, same as before) subscribes and renders.
+   Renamed sonner's `data-sonner-toaster`/`data-sonner-toast` to `data-toast-viewport`/`data-toast`
+   across every reference (`tests/helpers.ts`, `tests/voice-kokoro.spec.ts`,
+   `tests/voice-elevenlabs.spec.ts`, `tests/media-session.spec.ts`) — a deliberate rename since
+   this is no longer sonner, not a drift. `next-themes` (previously imported only to feed sonner's
+   own `theme` prop) is removed from `package.json`: this app's real dark/light state is the
+   `.dark`/`.light` class toggle, which `.alert-success`/`.alert-error` already track for free
+   through tier 1's dark-mode bridge (`src/index.css`) — verified against that bridge's existing
+   `--color-success`/`--color-error`/`*-content` aliases, no new bridging needed. `--border`
+   collision check: the installed daisyUI package's compiled `alert.css` reads `--border` as a
+   length (`border-width:var(--border)`), so `.alert` joined `.badge`/`.btn`/`.input`/`.textarea`
+   in `src/index.css`'s scoped override list; `toast.css` never references `--border`, so `.toast`
+   needed no entry.
+
+   **New problem shape this tier introduced that tiers 1–2 didn't have: hand-rolling
+   stacking/auto-dismiss state, not just markup/styling.** A stateless class-swap (tiers 1–2's
+   whole story) has no way to leak between renders; a small piece of *module-level* state, on the
+   other hand, outlives any one component instance — and that bit it every isolated-component test
+   this same PR added. `toast.stories.tsx` initially failed intermittently with "found multiple
+   elements with text: Turn applied." because `Toaster` reads its initial list straight from the
+   shared module-level array on mount (`useState<ToastItem[]>(toasts)`); a still-pending toast
+   (and its still-running dismiss timer) from a *previous* Storybook story leaked straight into the
+   next story's freshly-mounted `Toaster`, since nothing had ever cleared it. The real app never
+   hits this — there's exactly one `Toaster`, mounted once for the app's entire lifetime, so
+   nothing else is around to seed stale state from — but an isolated-component test harness that
+   mounts a fresh instance per story doesn't get that guarantee for free. Fixed with a
+   `resetToastStore()` (clears the array and cancels every pending `dismiss` timer) called once
+   whenever a `Toaster` mounts: a no-op in the real single-mount app, a clean slate for every
+   Storybook story. General lesson for anything **later** that reaches for module-level/singleton
+   state outside a component (as opposed to `useState`/context scoped to a mount): isolated
+   per-story component tests don't tear that down automatically just because the component
+   unmounted — clear it explicitly on (re)mount, or a previous test's leftovers can silently
+   corrupt the next one's assertions.
 6. **`tabs`** — wraps Radix Tabs: real roving-tabindex keyboard nav and `aria-selected`/
    `aria-controls` wiring to reproduce, but no floating/portal positioning. daisyUI's `.tab`/`.tabs`
    are visual-only, so `role="tablist"` semantics and arrow-key handling need to be added by hand.
