@@ -68,9 +68,22 @@ export interface CampaignFile {
  * feature. `summarizationCadence` is the one field that stayed here: unlike the others, it's a
  * narrative-pacing choice tied to how a *particular* story is being told (a fast, event-dense
  * campaign might reasonably want a different re-summarization rhythm than a slow, dialogue-heavy
- * one), not a device/provider preference — see #77's PR description for the full reasoning. */
+ * one), not a device/provider preference — see #77's PR description for the full reasoning.
+ *
+ * `playerVoiceId` (issue #98, epic #36) joins it for the same reason: the narrator's Kokoro voice
+ * lives in the device-wide `GlobalSettings.kokoroVoiceId` (#77), but the *player character* — a
+ * different name and personality per campaign — is exactly the kind of thing that's a property of
+ * the campaign, not the device, mirroring why `summarizationCadence` itself stayed here instead of
+ * moving to `GlobalSettings`. The alternative (a single device-wide player voice in
+ * `GlobalSettings`) would mean every campaign on a device sharing one player voice, or a re-pick
+ * every time the player switches campaigns — worse than the one extra optional field this adds to
+ * the smaller, Drive-synced type. Optional and undefined by default, same coercion pattern as every
+ * other optional field here — `loadSettings`'s `{ ...DEFAULT_SETTINGS, ...parsed }` merge defaults
+ * a pre-#98 settings.md missing this key entirely, no extra migration step needed (see
+ * tests/backward-compat-frontmatter.spec.ts's fixture proving it). */
 export interface CampaignSettings {
   summarizationCadence: number
+  playerVoiceId?: string
 }
 
 export const DEFAULT_SETTINGS: CampaignSettings = {

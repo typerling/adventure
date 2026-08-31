@@ -26,3 +26,38 @@ export const PRE_NPC_PROFILE_NPC_ROW = [
   'alive',
   3,
 ]
+
+/**
+ * Literal NPCs-tab shape exactly as it existed immediately before issue #98 added `voiceId`/
+ * `voiceSpeed`/`voiceLocked` — the full ten-column post-#30 shape (`id`/`name`/`description`/
+ * `relationship`/`status`/`lastSeenTurn`/`voice`/`secrets`/`notes`/`detailFile`), with nothing
+ * appended for voice casting yet. A campaign whose spreadsheet was created any time between #30 and
+ * #98 genuinely has NPC rows exactly this shape — see this fixture's use in
+ * `tests/backward-compat-row-shapes.spec.ts` for the assertion that today's `voiceId: ''`/
+ * `voiceSpeed: 0`/`voiceLocked: false` defaults apply, not `undefined` or a thrown error.
+ */
+export const PRE_VOICE_CASTING_NPCS_HEADER = [
+  'id',
+  'name',
+  'description',
+  'relationship',
+  'status',
+  'lastSeenTurn',
+  'voice',
+  'secrets',
+  'notes',
+  'detailFile',
+]
+
+export const PRE_VOICE_CASTING_NPC_ROW = [
+  'npc-002',
+  'Corin the Warden',
+  'A scarred sentinel who guards the chapel threshold.',
+  'wary',
+  'alive',
+  5,
+  'low and measured, every word deliberate',
+  'was once a member of the cult he now guards against',
+  '',
+  '',
+]

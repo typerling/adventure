@@ -53,6 +53,20 @@ export interface Npc {
   /** Points at world/npcs/<slug>.md for the append-only long-form history, once one exists.
    * Same optional-pointer pattern as LoreEntry.detailFile. */
   detailFile?: string
+  /** The machine-resolvable Kokoro voice id (e.g. "bm_george") this NPC has been cast with —
+   * issue #98, epic #36's voice-casting groundwork. Distinct from `voice` above (a human-readable
+   * spoken-style descriptor the AI has always written): this is what a future playback ticket
+   * (#66) will actually pass to Kokoro. Empty string means "not cast yet." Appended, not
+   * repurposing `voice` — see CLAUDE.md's schema-change rules on why that distinction matters. */
+  voiceId: string
+  /** This NPC's Kokoro `speed` multiplier (see kokoro-js's `generate(text, {voice, speed})`).
+   * 0 (the coerced default for a blank/legacy row) means "use Kokoro's own default (1)," mirroring
+   * how a blank `kokoroVoiceId` elsewhere in this app falls back to `DEFAULT_VOICE`. */
+  voiceSpeed: number
+  /** Set via the Codex override (#100) — when true, the AI must never recast this NPC's `voiceId`
+   * (see contract.ts/applyDelta.ts). Added here, ahead of that ticket, so this tab's schema
+   * changes once rather than twice. */
+  voiceLocked: boolean
 }
 
 /** Free-form key/value fact about one NPC (a clan allegiance, cybernetic augments, an alibi —

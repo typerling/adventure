@@ -16,6 +16,7 @@ import type {
 } from '@/types/sheets'
 import { DIFFICULTY_INSTRUCTIONS } from './difficultyInstructions'
 import { STATE_CONTRACT_INSTRUCTIONS } from './contract'
+import { renderKokoroVoiceCatalog } from '@/lib/voice/kokoroVoiceCatalog'
 
 export interface SheetSnapshot {
   Character: CharacterRow[]
@@ -69,6 +70,13 @@ function renderSnapshot(snapshot: SheetSnapshot): string {
       // rendered as the story, not the DM-facing input that produces it.
       if (n.secrets) lines.push(`  Secrets (do not reveal unless the story naturally does): ${n.secrets}`)
       if (n.voice) lines.push(`  Voice: ${n.voice}`)
+      // Machine-castable voice id/speed/lock (issue #98) — kept separate from the human-readable
+      // "Voice:" descriptor line above, which the AI has always written and #99 will enrich.
+      if (n.voiceId || n.voiceLocked) {
+        const speed = n.voiceSpeed ? ` @${n.voiceSpeed}x` : ''
+        const locked = n.voiceLocked ? ' [locked — do not recast]' : ''
+        lines.push(`  Cast voice: ${n.voiceId || '(unset)'}${speed}${locked}`)
+      }
       if (n.notes) lines.push(`  Notes: ${n.notes}`)
       const attrs = snapshot.NPCAttributes.filter((a) => a.npcId === n.id)
       if (attrs.length) lines.push(`  Attributes: ${attrs.map((a) => `${a.key}: ${a.value}`).join('; ')}`)
@@ -198,12 +206,58 @@ export interface BuildPromptInput {
    * unaffected; callers that want detail recall fetch it first (see useCampaign.ts's
    * buildPromptForAction). */
   npcDetails?: NpcDetailLookup
+  /** The narrator's cast Kokoro voice id — `GlobalSettings.kokoroVoiceId` (device-wide, #77).
+   * Undefined means not explicitly picked yet (Kokoro's own DEFAULT_VOICE would apply at
+   * playback time, but that's not the same as the AI having "cast" it). Issue #98. */
+  narratorVoiceId?: string
+  /** The player character's cast Kokoro voice id — `CampaignSettings.playerVoiceId` (per-campaign,
+   * see that field's own doc comment for why). Issue #98. */
+  playerVoiceId?: string
+}
+
+/** Renders the "Voice casting" prompt section (issue #98) — the available Kokoro catalog plus
+ * who's already cast, so the AI can pick a genuinely free/fitting voice and avoid duplicate
+ * casting within one scene rather than inventing an id blind. Kept as its own top-level section
+ * (rather than folded only into the per-NPC "Known NPCs" lines) since the narrator and player
+ * voices have nowhere else in the snapshot to live. */
+function renderVoiceCasting(
+  snapshot: SheetSnapshot,
+  narratorVoiceId: string | undefined,
+  playerVoiceId: string | undefined,
+): string {
+  const playerName = playerNameFromSnapshot(snapshot)
+  const castNpcs = snapshot.NPCs.filter((n) => n.voiceId || n.voiceLocked)
+  const lines: string[] = [
+    '## Voice casting (on-device Kokoro narration)',
+    'Voices you may cast from (id — name, gender, accent, quality/grade[, traits]):',
+    renderKokoroVoiceCatalog(),
+    '',
+    'Current casting (do not recast anyone already listed here unless the story explains it, and',
+    'never recast anyone marked locked):',
+    `- Narrator: ${narratorVoiceId || '(unset)'}`,
+    `- Player${playerName ? ` (${playerName})` : ''}: ${playerVoiceId || '(unset)'}`,
+  ]
+  for (const n of castNpcs) {
+    const locked = n.voiceLocked ? ' [locked]' : ''
+    lines.push(`- ${n.name}: ${n.voiceId || '(unset)'}${locked}`)
+  }
+  return lines.join('\n')
 }
 
 /** Builds the full, self-contained text block for one turn — what gets copied into
  * claude.ai/chatgpt.com in manual-bridge mode, or sent as-is to an API provider in Phase 3. */
 export function buildTurnPrompt(input: BuildPromptInput): string {
-  const { campaign, snapshot, rollingSummary, recentTurns, playerAction, turnNumber, npcDetails } = input
+  const {
+    campaign,
+    snapshot,
+    rollingSummary,
+    recentTurns,
+    playerAction,
+    turnNumber,
+    npcDetails,
+    narratorVoiceId,
+    playerVoiceId,
+  } = input
 
   return `You are the Dungeon Master and every NPC/creature in a solo, audiobook-style
 adventure. The rules are inspired by tabletop RPGs but are not strictly D&D — stay consistent
@@ -249,6 +303,8 @@ ${renderRecentTurns(recentTurns)}
 
 ## Current documented state (treat as ground truth — do not contradict it)
 ${renderSnapshot(snapshot)}${renderNpcDetails(npcDetails)}
+
+${renderVoiceCasting(snapshot, narratorVoiceId, playerVoiceId)}
 
 ## This turn
 Turn number: ${turnNumber}

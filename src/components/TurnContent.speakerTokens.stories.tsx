@@ -355,6 +355,9 @@ export const NamesFromSnapshotCombinesPlayerAndNpcs: Story = {
           voice: '',
           secrets: '',
           notes: '',
+          voiceId: '',
+          voiceSpeed: 0,
+          voiceLocked: false,
         },
       ],
     }

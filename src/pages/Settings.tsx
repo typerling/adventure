@@ -165,6 +165,12 @@ export function Settings() {
     getKokoroDevice(),
   );
   const [kokoroVoicePickerOpen, setKokoroVoicePickerOpen] = useState(false);
+  // Which field a currently-open (or about-to-open) Kokoro voice picker writes into — the same
+  // dialog/list is reused for both the narrator's voice (GlobalSettings.kokoroVoiceId, #77) and
+  // the player character's voice (CampaignSettings.playerVoiceId, issue #98) rather than
+  // duplicating the whole picker, since the only real difference is which form field a selection
+  // writes to.
+  const [kokoroVoiceTarget, setKokoroVoiceTarget] = useState<"narrator" | "player">("narrator");
   const [kokoroVoices, setKokoroVoices] = useState<KokoroVoice[]>([]);
   const [kokoroVoicesLoadState, setKokoroVoicesLoadState] = useState<
     "idle" | "loading" | "error" | "loaded"
@@ -323,7 +329,8 @@ export function Settings() {
     setKokoroPreviewingVoiceId(null);
   }
 
-  async function openKokoroVoicePicker() {
+  async function openKokoroVoicePicker(target: "narrator" | "player" = "narrator") {
+    setKokoroVoiceTarget(target);
     setKokoroVoicePickerOpen(true);
     // Same dedup reasoning as openVoicePicker: skip a redundant fetch (here, a redundant model
     // load) for a list already loaded or in flight.
@@ -411,7 +418,13 @@ export function Settings() {
   }
 
   function selectKokoroVoice(voice: KokoroVoice) {
-    setGlobalForm({ ...globalForm, kokoroVoiceId: voice.id });
+    if (kokoroVoiceTarget === "player") {
+      if (campaignSettings) {
+        setCampaignSettings({ ...campaignSettings, playerVoiceId: voice.id });
+      }
+    } else {
+      setGlobalForm({ ...globalForm, kokoroVoiceId: voice.id });
+    }
     stopKokoroPreview();
     setKokoroVoicePickerOpen(false);
   }
@@ -605,6 +618,49 @@ export function Settings() {
                   }
                 />
               </div>
+
+              {globalForm.ttsProvider === "huggingface-local" && (
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="playerVoiceId">
+                    Player character's Kokoro voice (optional)
+                  </Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="playerVoiceId"
+                      value={campaignSettings.playerVoiceId ?? ""}
+                      onChange={(e) =>
+                        setCampaignSettings({
+                          ...campaignSettings,
+                          playerVoiceId: e.target.value.trim() || undefined,
+                        })
+                      }
+                      placeholder="Not cast — the AI will pick one once your character speaks"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => void openKokoroVoicePicker("player")}
+                    >
+                      Browse voices
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {kokoroVoicesLoadState === "loaded" &&
+                      campaignSettings.playerVoiceId &&
+                      (() => {
+                        const name = kokoroVoices.find(
+                          (v) => v.id === campaignSettings.playerVoiceId,
+                        )?.name;
+                        return name ? `Currently: ${name}. ` : "";
+                      })()}
+                    Distinct from the narrator's voice above — this is only
+                    for your own character's spoken lines, once a future
+                    update makes narration actually switch voices per
+                    speaker (issue #66). Stored in this campaign's
+                    settings.md, unlike the narrator's voice.
+                  </p>
+                </div>
+              )}
 
               <Button onClick={() => void saveCadence()} disabled={savingCadence}>
                 {savingCadence ? "Saving…" : "Save"}
@@ -833,7 +889,12 @@ export function Settings() {
             >
               <DialogContent className="sm:max-w-md">
                 <DialogHeader>
-                  <DialogTitle>Choose a Kokoro voice</DialogTitle>
+                  <DialogTitle>
+                    Choose a Kokoro voice
+                    {kokoroVoiceTarget === "player"
+                      ? " for your character"
+                      : " for the narrator"}
+                  </DialogTitle>
                   <DialogDescription>
                     Preview generates a short clip on this device — the voice
                     model downloads the first time, then previews and
@@ -903,15 +964,27 @@ export function Settings() {
                                 {voice.traits ? ` ${voice.traits}` : ""}
                               </span>
                             </button>
-                            {(globalForm.kokoroVoiceId === voice.id ||
-                              (!globalForm.kokoroVoiceId &&
-                                voice.id === KOKORO_DEFAULT_VOICE)) && (
-                              <span className="shrink-0 text-xs text-muted-foreground">
-                                {globalForm.kokoroVoiceId === voice.id
-                                  ? "Selected"
-                                  : "Default"}
-                              </span>
-                            )}
+                            {(() => {
+                              const currentId =
+                                kokoroVoiceTarget === "player"
+                                  ? campaignSettings?.playerVoiceId
+                                  : globalForm.kokoroVoiceId;
+                              if (currentId === voice.id) {
+                                return (
+                                  <span className="shrink-0 text-xs text-muted-foreground">
+                                    Selected
+                                  </span>
+                                );
+                              }
+                              if (!currentId && voice.id === KOKORO_DEFAULT_VOICE) {
+                                return (
+                                  <span className="shrink-0 text-xs text-muted-foreground">
+                                    Default
+                                  </span>
+                                );
+                              }
+                              return null;
+                            })()}
                           </div>
                         ))}
                       </div>

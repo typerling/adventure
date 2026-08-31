@@ -21,6 +21,13 @@ export interface StateDelta {
     /** New notable detail worth recording permanently. Doubles as this NPC's fresh condensed
      * `notes` value and as the entry appended to its world/npcs/<slug>.md history. */
     notes_add?: string
+    /** A Kokoro voice id from the catalog rendered in the prompt (e.g. "bm_george") — issue #98,
+     * epic #36. Same "real interaction" gate as `voice`/`secrets`/`attributes`. An unrecognized id
+     * is a coercing warning, never a blocking error — see validate.ts/applyDelta.ts. */
+    voiceId?: string
+    /** This character's Kokoro delivery speed multiplier — see contract.ts's instructions for the
+     * valid range. Out-of-range values coerce rather than block, same as `voiceId`. */
+    voiceSpeed?: number
   }[]
   npc_updates?: {
     name: string
@@ -30,6 +37,10 @@ export interface StateDelta {
     secrets?: string
     attributes?: Record<string, string>
     notes_add?: string
+    /** See `new_npcs[].voiceId` above — additionally, applyDelta.ts must never let this overwrite
+     * a `voiceLocked` NPC's cast voice, regardless of what's sent here. */
+    voiceId?: string
+    voiceSpeed?: number
   }[]
   new_monsters?: { name: string; description: string; threatNotes?: string }[]
   new_locations?: { name: string; connects_to?: string; description?: string; state?: MapNodeState }[]

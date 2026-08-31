@@ -25,6 +25,9 @@ export const TAB_HEADERS: Record<(typeof SHEET_TABS)[number], string[]> = {
   NPCs: [
     'id', 'name', 'description', 'relationship', 'status', 'lastSeenTurn',
     'voice', 'secrets', 'notes', 'detailFile',
+    // Appended for issue #98 (voice casting) — never insert/reorder above this line, see
+    // CLAUDE.md's schema-change rules.
+    'voiceId', 'voiceSpeed', 'voiceLocked',
   ],
   NPCAttributes: ['npcId', 'key', 'value'],
   Monsters: ['id', 'name', 'description', 'threatNotes', 'status', 'lastEncounteredTurn'],
@@ -72,6 +75,7 @@ export const rowCodecs = {
     toRow: (r: Npc): Row => [
       r.id, r.name, r.description, r.relationship, r.status, r.lastSeenTurn,
       r.voice, r.secrets, r.notes, r.detailFile ?? '',
+      r.voiceId, r.voiceSpeed, r.voiceLocked,
     ],
     fromRow: (c: Row): Npc => ({
       id: str(c[0]) || newId(),
@@ -84,6 +88,12 @@ export const rowCodecs = {
       secrets: str(c[7]),
       notes: str(c[8]),
       detailFile: str(c[9]) || undefined,
+      // Genuinely new columns appended for issue #98 — a legacy row shorter than today's header
+      // degrades safely here via the same str/num/bool coercion every other field already uses
+      // (see tests/backward-compat-row-shapes.spec.ts's new fixture proving it).
+      voiceId: str(c[10]),
+      voiceSpeed: num(c[11]),
+      voiceLocked: bool(c[12]),
     }),
   },
   NPCAttributes: {

@@ -2,7 +2,11 @@ import { test, expect } from '@playwright/test'
 import { installGoogleApiMock } from './mocks/googleApi'
 import { installFakeWebSpeechApi } from './mocks/webSpeech'
 import { seedLegacyCampaign } from './fixtures/backward-compat/seedLegacyCampaign'
-import { PHASE1_SETTINGS_MD, PRE_GLOBAL_SETTINGS_SETTINGS_MD } from './fixtures/backward-compat/legacySettingsMd'
+import {
+  PHASE1_SETTINGS_MD,
+  PRE_GLOBAL_SETTINGS_SETTINGS_MD,
+  PRE_PLAYER_VOICE_SETTINGS_MD,
+} from './fixtures/backward-compat/legacySettingsMd'
 import {
   CAMPAIGN_MD_MISSING_CURRENT_LOCATION,
 } from './fixtures/backward-compat/legacyCampaignMd'
@@ -56,6 +60,33 @@ test('a real Phase-1 settings.md (missing claudeModel/localModelId/kokoroVoiceId
   await triggers.first().click()
   await page.getByRole('option', { name: 'Local model (runs on this device)' }).click()
   await expect(triggers.nth(1)).toContainText('Gemma 3 1B')
+})
+
+test('a pre-#98 settings.md (missing playerVoiceId entirely) loads with a sane default', async ({ page }) => {
+  const store = await installGoogleApiMock(page)
+  const { folderId } = seedLegacyCampaign(store, {
+    slug: 'pre-player-voice',
+    campaignMd: CAMPAIGN_MD_MISSING_CURRENT_LOCATION,
+    settingsMd: PRE_PLAYER_VOICE_SETTINGS_MD,
+  })
+
+  await page.goto(`/play/${folderId}`)
+  await expect(page.getByText("Couldn't load this campaign", { exact: false })).toHaveCount(0)
+  await expect(page.getByPlaceholder('Say or do anything…')).toBeVisible()
+
+  // The rest of the fixture's shape (summarizationCadence: 25, non-default) came through fine —
+  // proves the missing playerVoiceId key degraded in isolation, not that the whole parse fell
+  // back to every field's default.
+  await page.goto(`/settings/${folderId}`)
+  await expect(page.locator('#cadence')).toHaveValue('25')
+
+  // playerVoiceId itself: undefined, not a thrown error or some stray coerced value. Its field is
+  // only mounted once TTS is switched to Kokoro (same gating the narrator's own kokoroVoiceId
+  // field already uses).
+  const triggers = page.locator('[data-testid="global-settings"] [data-slot="select-trigger"]')
+  await triggers.nth(2).click()
+  await page.getByRole('option', { name: 'Kokoro (on-device, runs locally)' }).click()
+  await expect(page.locator('#playerVoiceId')).toHaveValue('')
 })
 
 test('a campaign.md missing a CampaignMeta field entirely still loads (synthetic — see legacyCampaignMd.ts)', async ({
