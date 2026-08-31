@@ -5,7 +5,7 @@
  * to unit-test directly (see `tests/voice-casting.spec.ts`).
  */
 
-import { KOKORO_VOICE_CATALOG, KOKORO_VOICE_IDS, type KokoroVoiceGender } from './kokoroVoiceCatalog'
+import { CASTABLE_KOKORO_VOICE_IDS, KOKORO_VOICE_CATALOG, KOKORO_VOICE_IDS, type KokoroVoiceGender } from './kokoroVoiceCatalog'
 
 /**
  * Soft cap on distinct fallback-assigned voices per campaign. Each voice is a separate ~510KB
@@ -56,16 +56,20 @@ export interface VoiceCastContext {
  * never drifts between turns/page loads just because the AI didn't cast one every time.
  *
  * Two pools, in priority order:
- * 1. Below the soft cap: an unreserved, gender-matching (if `gender` is known) catalog voice,
- *    chosen by `stableHash(name) % pool.length`.
+ * 1. Below the soft cap: an unreserved, gender-matching (if `gender` is known) *castable* voice
+ *    (see `CASTABLE_KOKORO_VOICE_IDS` — excludes the D+-or-worse-graded voices a project-owner
+ *    listen test flagged as flat/unconvincing), chosen by `stableHash(name) % pool.length`.
  * 2. At/above the soft cap: reuse one of the voices already in play (`inUseVoiceIds`, minus
  *    reserved ones) instead of growing the cast further — preferring a gender match among those if
  *    one exists, otherwise any of them. This means two different characters CAN end up sharing a
  *    voice once the cap is hit; that's the accepted cost of bounding downloads (see
- *    VOICE_CAST_SOFT_CAP's doc comment), not a bug.
- * Falls back to the full, unfiltered catalog only in the degenerate case where literally every
- * voice is reserved (impossible today — reservedVoiceIds has at most 2 entries against a 28-voice
- * catalog — kept only so this can never throw or return undefined).
+ *    VOICE_CAST_SOFT_CAP's doc comment), not a bug. Deliberately NOT quality-filtered: a voice
+ *    already in play (AI-cast, or fallback-cast before the quality list existed) stays reusable
+ *    regardless of grade, so the cap's download-bounding purpose isn't undermined by this filter.
+ * Falls back to the full, unfiltered catalog (including low-quality voices) only in the fully
+ * degenerate case where every *castable* voice is reserved (impossible today — reservedVoiceIds
+ * has at most 2 entries against a 16-voice castable pool — kept only so this can never throw or
+ * return undefined).
  */
 export function deterministicFallbackVoiceId(name: string, ctx: VoiceCastContext): string {
   const reserved = new Set(ctx.reservedVoiceIds.filter((id): id is string => !!id))
@@ -78,13 +82,17 @@ export function deterministicFallbackVoiceId(name: string, ctx: VoiceCastContext
     return reusePool[stableHash(name) % reusePool.length]
   }
 
-  const freshPool = KOKORO_VOICE_IDS.filter((id) => !reserved.has(id) && matchesGender(id))
+  const freshPool = CASTABLE_KOKORO_VOICE_IDS.filter((id) => !reserved.has(id) && matchesGender(id))
+  const castableUnreserved = CASTABLE_KOKORO_VOICE_IDS.filter((id) => !reserved.has(id))
+  const unreserved = KOKORO_VOICE_IDS.filter((id) => !reserved.has(id))
   const pool =
     freshPool.length > 0
       ? freshPool
-      : KOKORO_VOICE_IDS.filter((id) => !reserved.has(id)).length > 0
-        ? KOKORO_VOICE_IDS.filter((id) => !reserved.has(id))
-        : KOKORO_VOICE_IDS
+      : castableUnreserved.length > 0
+        ? castableUnreserved
+        : unreserved.length > 0
+          ? unreserved
+          : KOKORO_VOICE_IDS
   return pool[stableHash(name) % pool.length]
 }
 
