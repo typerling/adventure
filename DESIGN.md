@@ -56,6 +56,16 @@ The tradeoff of having no server-side database: no complex cross-file queries, a
 enforces some latency per API call. The data model is designed so a given screen needs at most
 one Sheets batch call plus one Drive file read — never an open-ended search.
 
+**Possible future direction: a hosted backend for multiplayer.** The project owner is considering
+adding multiplayer support down the line, which the current Drive-only, single-owner-per-campaign
+model doesn't fit — there's no shared, authoritative state multiple players' clients could read/
+write concurrently, and each player would need their own Drive access to the same campaign folder.
+If that happens, it would likely mean migrating to a proper hosted database (replacing Sheets/Drive
+as the source of truth) and a hosted Kokoro instance (replacing the in-browser `kokoro-js`/WASM
+setup, so voice generation isn't duplicated per client and isn't gated on each player's own
+device/GPU). This is **not decided or scoped** — noted here only so it's on record before any
+Drive/Sheets-shaped architecture decisions are made that would make that migration harder later.
+
 ---
 
 ## 3. Tech stack
