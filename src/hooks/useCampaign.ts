@@ -5,6 +5,7 @@ import {
   loadSheetSnapshot,
   readRollingSummary,
   saveCampaignFile,
+  setNpcVoiceOverride,
   stripRollingSummaryPlaceholder,
   writeRollingSummary,
 } from '@/lib/google/campaignRepo'
@@ -267,5 +268,39 @@ export function useCampaign(folderId: string | undefined) {
     [folderId, data, refresh],
   )
 
-  return { ...data, refresh, buildPromptForAction, submitReply }
+  // The Codex's player-facing NPC voice override (issue #100) — see setNpcVoiceOverride's own
+  // doc comment for why this is a small dedicated write rather than a submitReply-shaped flow.
+  // Reconciles the in-memory snapshot (and campaignCache) with the *actual* written row only
+  // after the write confirms, per CLAUDE.md's "cache with optimistic writes reconciled against
+  // API responses" pattern — nothing here renders a change ahead of the write landing, so a
+  // failed write simply leaves the snapshot (and therefore whatever UI reads it) exactly as it
+  // was; there's no separate "revert" step because nothing was changed ahead of confirmation.
+  const setNpcVoice = useCallback(
+    async (npcId: string, voiceId: string | null) => {
+      if (!folderId || !data.snapshot) throw new Error('Campaign not loaded yet.')
+      const merged = await setNpcVoiceOverride(data.spreadsheetId, data.snapshot.NPCs, npcId, voiceId)
+      setData((d) => {
+        if (!d.snapshot) return d
+        const nextSnapshot = {
+          ...d.snapshot,
+          NPCs: d.snapshot.NPCs.map((n) => (n.id === npcId ? merged : n)),
+        }
+        if (d.settings && d.campaign) {
+          setCachedCampaign(folderId, {
+            campaign: d.campaign,
+            spreadsheetId: d.spreadsheetId,
+            settings: d.settings,
+            snapshot: nextSnapshot,
+            rollingSummary: d.rollingSummary,
+            recentTurns: d.recentTurns,
+          })
+        }
+        return { ...d, snapshot: nextSnapshot }
+      })
+      return merged
+    },
+    [folderId, data],
+  )
+
+  return { ...data, refresh, buildPromptForAction, submitReply, setNpcVoice }
 }

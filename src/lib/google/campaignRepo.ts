@@ -1,5 +1,5 @@
 import { ensureFolder, ensureTextFile, getTextFile, listChildren, updateTextFile } from './driveApi'
-import { createSpreadsheet, batchGetTabs, addMissingTabs, appendRows } from './sheetsApi'
+import { createSpreadsheet, batchGetTabs, addMissingTabs, appendRows, updateRow } from './sheetsApi'
 import { GoogleApiError } from './http'
 import { TAB_HEADERS, rowCodecs, decodeTab } from './sheetSchema'
 import { parseFrontmatter, stringifyFrontmatter } from '@/lib/markdown/frontmatter'
@@ -274,6 +274,54 @@ function isMissingTabError(err: unknown): boolean {
       ? (body.error as { message?: unknown }).message
       : undefined
   return typeof message === 'string' && message.includes('Unable to parse range')
+}
+
+/**
+ * Player-initiated NPC voice override from the Codex (issue #100, closing out epic #36's multi-
+ * voice-narration initiative). This is the app's first player-initiated Sheets write outside the
+ * turn pipeline — deliberately NOT routed through `applyDelta.ts`'s `applyStateDelta`, which is
+ * shaped around parsing/validating/merging a whole AI-generated `state_delta`, not a single
+ * field change a player makes directly. Instead this is a small, dedicated function using
+ * `sheetsApi.ts`'s `updateRow` directly — the same primitive `applyStateDelta`'s own NPC-update
+ * code already wraps (compute the row number, build a merged row object, call `updateRow`).
+ *
+ * `voiceId: string` sets that voice and locks it (`voiceLocked: true`) so `applyDelta.ts`'s
+ * AI-casting logic (issue #98) never recasts this NPC again. `voiceId: null` clears the lock
+ * (`voiceLocked: false`) and hands the character back to the AI — it deliberately leaves whatever
+ * `voiceId` is already on the row untouched rather than blanking it, so the character keeps
+ * sounding the same until the AI actually casts someone new for them, rather than silently
+ * reverting to Kokoro's own default voice the instant the lock is lifted.
+ *
+ * Takes the caller's current NPC rows (`useCampaign.ts`'s in-memory snapshot) to compute the row
+ * number itself rather than requiring the caller to — mirrors `applyDelta.ts`'s own
+ * `rowNumberOf` helper, not exported from there since that module is scoped to the turn pipeline.
+ * Returns the merged row so the caller can reconcile its own cached snapshot without a refetch,
+ * per CLAUDE.md's "local state is a cache with optimistic writes reconciled against API
+ * responses" pattern — this function itself makes no optimistic assumption: it returns only after
+ * the write actually lands, so a caller that waits for this promise before updating its own state
+ * never shows a change that didn't persist.
+ *
+ * A known, accepted gap (not fixed here): this reads/writes off whatever snapshot the caller
+ * passes, with no server-side conflict check. If a turn's `state_delta` (`applyStateDelta`) writes
+ * to the very same NPC row concurrently with this call, whichever write lands last on Sheets wins
+ * — there's no transaction spanning both. In practice a single player can't submit a turn and open
+ * this picker at the same instant (they're different pages/interactions), so this is a narrow,
+ * theoretical race rather than a real one; a future ticket could add optimistic-concurrency
+ * (e.g. re-reading the row before writing) if it ever proves to matter.
+ */
+export async function setNpcVoiceOverride(
+  spreadsheetId: string,
+  npcs: Npc[],
+  npcId: string,
+  voiceId: string | null,
+): Promise<Npc> {
+  const rowIndex = npcs.findIndex((n) => n.id === npcId)
+  if (rowIndex === -1) throw new Error(`setNpcVoiceOverride: unknown NPC id "${npcId}"`)
+  const existing = npcs[rowIndex]
+  const merged: Npc =
+    voiceId === null ? { ...existing, voiceLocked: false } : { ...existing, voiceId, voiceLocked: true }
+  await updateRow(spreadsheetId, 'NPCs', rowIndex + 2, rowCodecs.NPCs.toRow(merged)) // +1 0-index, +1 header row
+  return merged
 }
 
 /** Full read of every sheet tab in one batch call, decoded into typed rows. */
