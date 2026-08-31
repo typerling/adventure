@@ -23,6 +23,22 @@ export interface KokoroWorkerVoice {
   traits?: string
 }
 
+/**
+ * One chunk of text to speak, with its own resolved voice/speed (issue #66) — replacing the old
+ * shared `chunks: string[]` + one job-wide `voice`. Built on the main thread by kokoroTts.ts's
+ * `buildVoicedChunks` from the caller's per-segment voice resolution (narrator/player/NPC —
+ * see resolveSegmentVoices.ts), respecting `MAX_CHUNK_CHARS` the same way the old flat chunker did,
+ * just per-segment now instead of over one whole flattened string. `voice` may be empty/unrecognized
+ * — the worker falls back to DEFAULT_VOICE, same as before. `speed` undefined means Kokoro's own
+ * default (1); kokoroTts.ts always supplies one for a real turn (KOKORO_NARRATION_SPEED/
+ * KOKORO_DIALOGUE_SPEED in kokoroConstants.ts) but leaves it unset for the flat-string
+ * backward-compatible path (a caller that never opted into segments at all). */
+export interface KokoroWorkerChunk {
+  text: string
+  voice: string
+  speed?: number
+}
+
 export type KokoroWorkerRequest =
   /** `device` is the caller's *preferred* backend, not a guarantee — see kokoroTts.worker.ts's
    * loadWithFallback: 'webgpu' silently falls back to 'wasm' (reported via a 'backend' response)
@@ -32,17 +48,19 @@ export type KokoroWorkerRequest =
   /** Generates every chunk and stitches them into one continuous clip, replying with a single
    * final 'audio' — see kokoroTts.worker.ts's `speak()`. Used only by generateKokoroPreview() for
    * its short, fixed-text (almost always one-chunk) clip, where there's nothing to gain from
-   * streaming. `chunks` are pre-split by splitIntoSpeakableChunks on the main thread (pure string
-   * processing, no model needed — that function is unaffected by the worker split). `voice` may be
-   * empty/unrecognized; the worker falls back to DEFAULT_VOICE. */
-  | { kind: 'speak'; requestId: number; chunks: string[]; voice: string; device: KokoroDevice }
+   * streaming. Each chunk carries its own voice/speed (issue #66) — a preview always sends exactly
+   * one chunk with one voice, but the shape is unified with 'speakStream' rather than kept as a
+   * separate single-voice variant. */
+  | { kind: 'speak'; requestId: number; chunks: KokoroWorkerChunk[]; device: KokoroDevice }
   /** Like 'speak', but replies with one 'chunkAudio' per chunk *as soon as that chunk finishes
    * generating* instead of waiting for the whole job and stitching a final blob — see
    * kokoroTts.worker.ts's `speakStream()`/`doSpeakStream()` (issue #62). Used by
    * createKokoroTtsProvider's real turn-narration speak(), which schedules each chunk's raw audio
-   * for playback the moment it arrives rather than waiting on every chunk. Same `chunks`/`voice`/
-   * `device` shape as 'speak' — only the response shape differs. */
-  | { kind: 'speakStream'; requestId: number; chunks: string[]; voice: string; device: KokoroDevice }
+   * for playback the moment it arrives rather than waiting on every chunk. Same `chunks`/`device`
+   * shape as 'speak' — only the response shape differs. Also triggers a best-effort voice prefetch
+   * (issue #66's `prefetchVoices`) for every distinct voice `chunks` names, run in parallel with the
+   * model load rather than adding its own latency — see kokoroTts.worker.ts's doc comment. */
+  | { kind: 'speakStream'; requestId: number; chunks: KokoroWorkerChunk[]; device: KokoroDevice }
   /** Drops every loaded backend's reference (both wasm and webgpu, if either is resident) — see
    * kokoroTts.worker.ts's 'evict' handler for why a single global evict is enough for a
    * single-model app, unlike localModelWorkerProtocol.ts's per-modelId evict. */
@@ -81,6 +99,15 @@ export type KokoroWorkerResponse =
    * `audio`'s underlying buffer is transferred, not cloned (see kokoroTts.worker.ts's postChunk) —
    * nothing on the worker side reads it again after posting. */
   | { kind: 'chunkAudio'; requestId: number; index: number; total: number; audio: Float32Array; samplingRate: number }
+  /** Best-effort progress for the voice-file prefetch (issue #66) a 'speakStream' job kicks off
+   * before/alongside its model load — see kokoroTts.worker.ts's `prefetchVoices`. `completed`/
+   * `total` count distinct voices, not bytes (each is a fixed ~510KB style file, so a file count is
+   * as informative as a byte count here and cheaper to track). Posted only when there's at least one
+   * voice to prefetch; kokoroTts.ts formats it through the same progress-label convention as
+   * `describeKokoroGenerateProgress` (see `describeKokoroVoicePrefetchProgress`). A failed prefetch
+   * for one voice doesn't block the others or the turn — see prefetchVoices' doc comment — so this
+   * never carries an error, only completion counts. */
+  | { kind: 'voicePrefetch'; requestId: number; completed: number; total: number }
   | { kind: 'voices'; requestId: number; voices: KokoroWorkerVoice[] }
   /** The stitched (or, for a single-chunk preview, lone) clip — one continuous audio/wav Blob.
    * Blobs are structured-clonable across a worker boundary with no manual transfer needed. Only

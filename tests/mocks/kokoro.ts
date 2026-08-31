@@ -34,10 +34,12 @@ export async function getKokoroWorker(page: Page): Promise<Worker> {
  * TextSplitterStream) or kokoroTts.worker.ts (KokoroTTS, since #44 moved model loading/generation
  * there) — this one `page.route` covers both.
  *
- * The fake's `generate()` records every (text, voice) call it received onto
- * `self.__kokoroGenerateCalls`, so a test can assert exactly which voice a given preview or
- * speak() call actually used — the one thing that can't be observed just by watching network
- * traffic, since voice selection only affects an in-memory call argument here, not a request.
+ * The fake's `generate()` records every (text, voice, speed) call it received onto
+ * `self.__kokoroGenerateCalls`, so a test can assert exactly which voice/speed a given preview or
+ * speak() call actually used (issue #66 widened this to per-chunk voice/speed — see
+ * kokoroWorkerProtocol.ts's KokoroWorkerChunk) — the one thing that can't be observed just by
+ * watching network traffic, since voice/speed selection only affects an in-memory call argument
+ * here, not a request.
  * Deliberately `self`, not `window`: since #44, `KokoroTTS` only ever runs inside
  * kokoroTts.worker.ts, which has no `window` — a dedicated Worker's global scope is a *separate*
  * realm from the page's, so state set there isn't reachable via `page.evaluate()` at all. Tests
@@ -137,9 +139,10 @@ export async function installFakeKokoroModule(
         }
         if (this.device === 'webgpu') webgpuSuccessCount++
         const voice = (options && options.voice) || 'af_heart'
+        const speed = options && typeof options.speed === 'number' ? options.speed : 1
         self.__kokoroGenerateCalls = self.__kokoroGenerateCalls || []
         const callIndex = self.__kokoroGenerateCalls.length
-        self.__kokoroGenerateCalls.push({ text, voice, device: this.device })
+        self.__kokoroGenerateCalls.push({ text, voice, speed, device: this.device })
         // Recorded before either gate below, so a test can observe the call happened while still
         // controlling exactly when it resolves — lets a test simulate acting (selecting a voice,
         // closing the dialog) while a preview is still in flight, or asserting mid-turn streaming

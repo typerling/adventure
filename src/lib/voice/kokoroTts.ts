@@ -1,4 +1,4 @@
-import type { TtsProvider } from './types'
+import type { TtsProvider, TtsSpeakSegment } from './types'
 import {
   describeModelDownloadProgress,
   requestPersistentStorage,
@@ -8,12 +8,15 @@ import {
   CACHE_NAMES,
   DEFAULT_VOICE,
   KOKORO_DTYPE_SUFFIX,
+  KOKORO_ENTER_DIALOGUE_PAUSE_SEC,
+  KOKORO_EXIT_DIALOGUE_PAUSE_SEC,
   MAX_CHUNK_CHARS,
   PREVIEW_TEXT,
   PROGRESS_LABEL,
   type KokoroDevice,
 } from './kokoroConstants'
 import type {
+  KokoroWorkerChunk,
   KokoroWorkerRequest,
   KokoroWorkerRequestInit,
   KokoroWorkerResponse,
@@ -117,6 +120,46 @@ import type {
  * chunks actually scheduled for playback equals the turn's real chunk count, not that count plus
  * however many were redundantly regenerated on the fallback backend.
  *
+ * **Multi-voice playback (issue #66).** `speak()` now accepts an optional `segments` array
+ * (`TtsSpeakSegment[]`, types.ts) alongside the existing flat `text`/`voice` — the per-speaker
+ * counterpart to #96's `SpokenSegment[]`, already resolved to a concrete Kokoro voice/speed per
+ * segment by the caller (`resolveSegmentVoices.ts` — this module stays free of any Sheets/campaign
+ * type dependency, same as before, so voice *resolution* — narrator/player/NPC lookup — is the
+ * caller's job, not this file's). `buildVoicedChunks` below re-splits each segment's own text
+ * through the same `splitIntoSpeakableChunks` every flat call already used, stamping every
+ * resulting chunk with that segment's voice/speed — so `MAX_CHUNK_CHARS` is still respected exactly
+ * as before, just per-segment instead of over one flattened string. A caller that never passes
+ * `segments` (every call site that predates this ticket, and this file's own
+ * `generateKokoroPreview`) is unaffected: it falls back to the original one-voice, one-segment
+ * shape. Because the whole `chunks` array (voice/speed included) is built once, up front, and then
+ * simply resent unchanged by kokoroTts.worker.ts's WebGPU-fallback restart (see that file's doc
+ * comment), a chunk always regenerates with the exact voice/speed it had the first time — the
+ * restart-reproducibility requirement this ticket's issue called out explicitly. The existing
+ * `nextExpectedChunkIndex` de-duplication above is untouched by any of this: it still only ever
+ * looks at chunk *index*, never at voice.
+ *
+ * **Pauses at voice changes.** `speak()`'s `onChunkAudio` callback tracks the previously-scheduled
+ * chunk's voice (not "speaker" — kokoroTts.ts has no notion of that concept, only of the voice id a
+ * chunk was built with) alongside `nextStartTime`; when a chunk's voice differs from the previous
+ * one, `nextStartTime` is advanced by a fixed pause (`KOKORO_ENTER_DIALOGUE_PAUSE_SEC`/
+ * `KOKORO_EXIT_DIALOGUE_PAUSE_SEC` in kokoroConstants.ts) before that chunk is scheduled — pure
+ * arithmetic on the same cursor "Playback engine" above already uses, no extra model call. A turn
+ * with no voice changes at all (every existing test, and every turn with no `{{v:Name}}` tokens)
+ * computes a zero-length pause at every boundary, i.e. behaves exactly as before.
+ *
+ * **Voice-file prefetch and "falling behind."** Kokoro fetches a voice's ~510KB style file lazily,
+ * the first time `generate()` actually uses it — for a turn casting a character for the first time,
+ * that download would otherwise land as a mid-turn stall with no progress shown (a new, larger
+ * version of the exact risk issue #62 already documents below). kokoroTts.worker.ts's
+ * `doSpeakStream` now kicks off a best-effort prefetch of every distinct voice a turn's `chunks`
+ * will need, in parallel with the model load itself, and reports it back via a `'voicePrefetch'`
+ * response — `speak()` forwards that to `opts.onVoicePrefetchProgress`, formatted through
+ * `describeKokoroVoicePrefetchProgress` below, the same convention `describeKokoroGenerateProgress`
+ * already establishes for per-chunk generation progress. This narrows the stall risk; it doesn't
+ * eliminate it outright (a slow/offline prefetch still just means kokoro-js's own lazy fetch inside
+ * `generate_from_ids` blocks that chunk's generation the old way, exactly as if the prefetch didn't
+ * exist).
+ *
  * **Backgrounding, revisited (originally flagged in #39/PR #43, revisited again by #44 above).**
  * The risk #39 described — a currently-*playing* clip surviving Chrome's background-tab throttling
  * while the *next* chunk's `tts.generate()` call, running on the main thread at the time, might
@@ -212,6 +255,10 @@ interface PendingRequest {
    * since every progress tick now also carries that chunk's audio. Unused by a plain 'speak'
    * request (generateKokoroPreview), which has nothing to stream. */
   onChunkAudio?: (index: number, total: number, audio: Float32Array, samplingRate: number) => void
+  /** Fires once per 'voicePrefetch' response for this request (issue #66) — see this module's doc
+   * comment ("Voice-file prefetch and 'falling behind'"). Unused by a plain 'speak' request
+   * (generateKokoroPreview), which doesn't prefetch. */
+  onVoicePrefetch?: (completed: number, total: number) => void
 }
 const pending = new Map<number, PendingRequest>()
 
@@ -246,6 +293,9 @@ function getWorker(): Worker {
         pending
           .get(message.requestId)
           ?.onChunkAudio?.(message.index, message.total, message.audio, message.samplingRate)
+        break
+      case 'voicePrefetch':
+        pending.get(message.requestId)?.onVoicePrefetch?.(message.completed, message.total)
         break
       case 'voices':
       case 'audio':
@@ -294,11 +344,14 @@ function send(request: KokoroWorkerRequestInit) {
  * is a separate, later event this function knows nothing about. */
 function sendStream(
   request: Extract<KokoroWorkerRequestInit, { kind: 'speakStream' }>,
-  onChunkAudio: (index: number, total: number, audio: Float32Array, samplingRate: number) => void,
+  callbacks: {
+    onChunkAudio: (index: number, total: number, audio: Float32Array, samplingRate: number) => void
+    onVoicePrefetch?: (completed: number, total: number) => void
+  },
 ): Promise<void> {
   const requestId = nextRequestId++
   return new Promise<void>((resolve, reject) => {
-    pending.set(requestId, { resolve: () => resolve(), reject, onChunkAudio })
+    pending.set(requestId, { resolve: () => resolve(), reject, ...callbacks })
     getWorker().postMessage({ ...request, requestId } as KokoroWorkerRequest)
   })
 }
@@ -416,6 +469,13 @@ export function describeKokoroGenerateProgress(completed: number, total: number)
   return total <= 1 ? 'Generating narration…' : `Generating narration — part ${completed} of ${total}…`
 }
 
+/** Shared with Play.tsx the same way describeKokoroGenerateProgress is — formats the best-effort
+ * voice-file prefetch (issue #66) a multi-voice turn kicks off before/alongside generation. `total`
+ * counts distinct voices being prefetched, not bytes (see kokoroTts.worker.ts's `prefetchVoices`). */
+export function describeKokoroVoicePrefetchProgress(completed: number, total: number): string {
+  return total <= 1 ? 'Downloading a character voice…' : `Downloading character voices — ${completed} of ${total}…`
+}
+
 /** One entry from the loaded model's own voice catalog (`tts.voices`) — kokoro-js's per-voice
  * metadata varies by voice (e.g. `traits` is only present on some), so everything but the id/name/
  * language/gender is optional here rather than assumed. */
@@ -459,7 +519,11 @@ export async function generateKokoroPreview(
   onProgress?: (p: KokoroLoadProgress) => void,
 ): Promise<Blob> {
   await loadKokoro(onProgress)
-  const res = await send({ kind: 'speak', chunks: [PREVIEW_TEXT], voice: voiceId, device: readDevice() })
+  const res = await send({
+    kind: 'speak',
+    chunks: [{ text: PREVIEW_TEXT, voice: voiceId }],
+    device: readDevice(),
+  })
   if (res.kind === 'done') throw new Error('Superseded by a newer request before this preview finished generating.')
   if (res.kind !== 'audio') throw new Error('Unexpected response generating a Kokoro voice preview.')
   return res.blob
@@ -524,6 +588,60 @@ export interface KokoroTtsOptions {
    * way). Pass completed/total to describeKokoroGenerateProgress for a ready-made label, the same
    * convention describeKokoroProgress already establishes for download progress. */
   onGenerateProgress?: (completed: number, total: number) => void
+  /** Called while a turn's distinct new voices are being prefetched (issue #66) — see this
+   * module's doc comment ("Voice-file prefetch and 'falling behind'"). Fires at most once per
+   * speak() call whose segments name at least one voice; never fires at all for a flat-text call
+   * with no `segments` (nothing to prefetch beyond the single voice generation itself downloads
+   * lazily, same as before this ticket). */
+  onVoicePrefetchProgress?: (completed: number, total: number) => void
+}
+
+/** Splits every voiced segment's text through splitIntoSpeakableChunks (same MAX_CHUNK_CHARS
+ * budget as the original flat-string path), stamping each resulting chunk with that segment's own
+ * voice/speed — see this module's doc comment ("Multi-voice playback"). Segments with no spoken
+ * text (blank/whitespace-only) contribute no chunks at all, same as the flat path already dropped
+ * an empty turn's narration. */
+async function buildVoicedChunks(segments: { text: string; voice: string; speed?: number }[]): Promise<KokoroWorkerChunk[]> {
+  const chunks: KokoroWorkerChunk[] = []
+  for (const segment of segments) {
+    if (!segment.text.trim()) continue
+    const pieces = await splitIntoSpeakableChunks(segment.text)
+    for (const piece of pieces) chunks.push({ text: piece, voice: segment.voice, speed: segment.speed })
+  }
+  return chunks
+}
+
+/** Normalizes speak()'s two input shapes — a flat `text` (every call site that predates issue #66,
+ * plus this file's own generateKokoroPreview) or an explicit `segments` array — into one common
+ * per-segment voice/speed list buildVoicedChunks can chunk. A segment with no `voice` of its own
+ * falls back to `opts.voice` (or '', which the worker resolves to DEFAULT_VOICE) — lets a caller
+ * pass `segments` where only *some* entries needed a distinct voice, without repeating the fallback
+ * on every one. */
+function normalizeSpeakSegments(
+  text: string,
+  speakOpts?: { voice?: string; segments?: TtsSpeakSegment[] },
+): { text: string; voice: string; speed?: number }[] {
+  if (speakOpts?.segments && speakOpts.segments.length > 0) {
+    return speakOpts.segments.map((s) => ({ text: s.text, voice: s.voice ?? speakOpts.voice ?? '', speed: s.speed }))
+  }
+  return [{ text, voice: speakOpts?.voice ?? '', speed: undefined }]
+}
+
+/** How long a pause to insert (in seconds, on the AudioContext clock) between two consecutive
+ * chunks whose resolved voice differs — see this module's doc comment ("Pauses at voice changes").
+ * `previousVoice: null` means "no chunk has played yet this call" (the very first chunk never gets
+ * a pause before it, since nextStartTime already starts at ctx.currentTime). `narratorVoice`, if
+ * known, makes the pause asymmetric per the issue's own suggestion ("a slightly longer beat
+ * entering dialogue than leaving it"); if the caller never told us which voice is the narrator's
+ * (the flat-text/back-compat path, which has no concept of "narrator" at all), every voice change
+ * gets the longer "entering dialogue" pause — a reasonable single default when there's no narrator
+ * voice to compare against. Exported (only) so tests/kokoro-pause-timing.spec.ts can unit-test the
+ * arithmetic directly, without needing a real/faked AudioContext or worker round trip to prove it —
+ * kokoro-streaming-playback.spec.ts separately proves it's actually wired into real scheduling. */
+export function pauseForVoiceChange(newVoice: string, previousVoice: string | null, narratorVoice: string | null): number {
+  if (previousVoice === null || newVoice === previousVoice) return 0
+  if (narratorVoice && newVoice === narratorVoice) return KOKORO_EXIT_DIALOGUE_PAUSE_SEC
+  return KOKORO_ENTER_DIALOGUE_PAUSE_SEC
 }
 
 export function createKokoroTtsProvider(opts: KokoroTtsOptions = {}): TtsProvider {
@@ -593,9 +711,11 @@ export function createKokoroTtsProvider(opts: KokoroTtsOptions = {}): TtsProvide
       await loadKokoro(opts.onLoadProgress)
       if (isStale()) return
 
-      // See splitIntoSpeakableChunks — generating the whole narrative in one call would silently
-      // truncate it at the model's 512-token context.
-      const chunks = await splitIntoSpeakableChunks(text)
+      // See buildVoicedChunks/normalizeSpeakSegments — issue #66's per-segment voice resolution,
+      // still respecting the same MAX_CHUNK_CHARS budget splitIntoSpeakableChunks always enforced
+      // (generating a whole narrative/segment in one call would silently truncate it at the
+      // model's 512-token context).
+      const chunks = await buildVoicedChunks(normalizeSpeakSegments(text, speakOpts))
       if (isStale() || chunks.length === 0) return
 
       const ctx = getAudioContext()
@@ -613,44 +733,63 @@ export function createKokoroTtsProvider(opts: KokoroTtsOptions = {}): TtsProvide
       // engine" above. Clamped against ctx.currentTime on every chunk (not just initialized once),
       // so a chunk that arrives late doesn't try to schedule in the past (see "Falling behind").
       let nextStartTime = ctx.currentTime
+      // The previously-*scheduled* chunk's resolved voice — see "Pauses at voice changes" above.
+      // null means no chunk has been scheduled yet this call, which pauseForVoiceChange treats as
+      // "no pause" (the very first chunk starts at ctx.currentTime, not after an artificial gap).
+      let previousVoice: string | null = null
+      const narratorVoice = speakOpts?.narratorVoice ?? null
 
       await new Promise<void>((resolve, reject) => {
         settleCurrent = resolve
         sendStream(
-          { kind: 'speakStream', chunks, voice: speakOpts?.voice ?? '', device: readDevice() },
-          (index, total, audio, samplingRate) => {
-            if (isStale()) return
-            // Reported even for a chunk about to be dropped as a duplicate below — a long
-            // WebGPU-fallback restart (kokoroTts.worker.ts's doSpeakStream) re-generates chunks
-            // 0..N-1 for real before reaching the genuinely new chunk N, and the player should see
-            // that work reflected as progress, not a status line stuck on the pre-restart count.
-            opts.onGenerateProgress?.(index + 1, total)
-            if (index !== nextExpectedChunkIndex) return // duplicate resend — see doc comment above
-            nextExpectedChunkIndex++
+          { kind: 'speakStream', chunks, device: readDevice() },
+          {
+            onChunkAudio: (index, total, audio, samplingRate) => {
+              if (isStale()) return
+              // Reported even for a chunk about to be dropped as a duplicate below — a long
+              // WebGPU-fallback restart (kokoroTts.worker.ts's doSpeakStream) re-generates chunks
+              // 0..N-1 for real before reaching the genuinely new chunk N, and the player should see
+              // that work reflected as progress, not a status line stuck on the pre-restart count.
+              opts.onGenerateProgress?.(index + 1, total)
+              if (index !== nextExpectedChunkIndex) return // duplicate resend — see doc comment above
+              nextExpectedChunkIndex++
 
-            // createBuffer's sampleRate need not match ctx's own hardware rate — the Web Audio API
-            // resamples during playback automatically (verified against the spec: AudioBuffer's
-            // sampleRate is independent of its BaseAudioContext's), so no manual resampling here.
-            const buffer = ctx.createBuffer(1, audio.length, samplingRate)
-            // getChannelData(0).set(...) rather than copyToChannel(audio, 0) — equivalent for a
-            // single-channel buffer, but avoids a strict-typed-array generic mismatch
-            // (Float32Array<ArrayBufferLike> vs. the DOM lib's Float32Array<ArrayBuffer>) that
-            // copyToChannel's stricter parameter type doesn't accept without an unsafe cast.
-            buffer.getChannelData(0).set(audio)
-            const source = ctx.createBufferSource()
-            source.buffer = buffer
-            source.connect(ctx.destination)
-            const startTime = Math.max(ctx.currentTime, nextStartTime)
-            nextStartTime = startTime + buffer.duration
-            scheduledSources.push(source)
-            if (index === total - 1) {
-              // The last chunk's natural end is this speak() call's natural end too. A concurrent
-              // stop() also resolves this same promise (via settleCurrent) — whichever fires
-              // first wins; resolving an already-settled promise a second time is a no-op, so
-              // there's no race to guard against here.
-              source.onended = () => resolve()
-            }
-            source.start(startTime)
+              // The chunk's own resolved voice, matching kokoroTts.worker.ts's resolveVoice
+              // fallback (an empty/unrecognized voice becomes DEFAULT_VOICE) — used only to decide
+              // whether a pause belongs before this chunk, never sent anywhere itself (the worker
+              // already resolved and used its own copy to actually generate the audio).
+              const chunkVoice = chunks[index].voice || DEFAULT_VOICE
+              nextStartTime =
+                Math.max(ctx.currentTime, nextStartTime) + pauseForVoiceChange(chunkVoice, previousVoice, narratorVoice)
+              previousVoice = chunkVoice
+
+              // createBuffer's sampleRate need not match ctx's own hardware rate — the Web Audio API
+              // resamples during playback automatically (verified against the spec: AudioBuffer's
+              // sampleRate is independent of its BaseAudioContext's), so no manual resampling here.
+              const buffer = ctx.createBuffer(1, audio.length, samplingRate)
+              // getChannelData(0).set(...) rather than copyToChannel(audio, 0) — equivalent for a
+              // single-channel buffer, but avoids a strict-typed-array generic mismatch
+              // (Float32Array<ArrayBufferLike> vs. the DOM lib's Float32Array<ArrayBuffer>) that
+              // copyToChannel's stricter parameter type doesn't accept without an unsafe cast.
+              buffer.getChannelData(0).set(audio)
+              const source = ctx.createBufferSource()
+              source.buffer = buffer
+              source.connect(ctx.destination)
+              const startTime = Math.max(ctx.currentTime, nextStartTime)
+              nextStartTime = startTime + buffer.duration
+              scheduledSources.push(source)
+              if (index === total - 1) {
+                // The last chunk's natural end is this speak() call's natural end too. A concurrent
+                // stop() also resolves this same promise (via settleCurrent) — whichever fires
+                // first wins; resolving an already-settled promise a second time is a no-op, so
+                // there's no race to guard against here.
+                source.onended = () => resolve()
+              }
+              source.start(startTime)
+            },
+            onVoicePrefetch: (completed, total) => {
+              if (!isStale()) opts.onVoicePrefetchProgress?.(completed, total)
+            },
           },
         ).catch((err: unknown) => {
           // A genuine generation failure (not a supersession) after some chunks already played:

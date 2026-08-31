@@ -157,8 +157,9 @@ segments at these tokens (tolerant of unclosed/stray/nested malformed tags — s
 comment), collapsing to exactly one `speaker: null` segment whenever a turn has none (every turn
 logged before this shipped); `attributeSpeakersHeuristically` is a separate, opt-in fallback that
 guesses a speaker for quoted dialogue by nearest preceding known name when no real tokens are
-present. Nothing consumes the per-speaker split yet — `buildSpokenScript` still hands every TTS
-provider one flattened string, unchanged until a future ticket wires actual voice-switching.
+present. `buildSpokenScript` still hands a provider with no multi-voice capability (`browser`) one
+flattened string; Kokoro is now the one provider that actually consumes the per-segment split — see
+"Multi-voice playback" under the Voice section below (issue #66).
 
 **Voice casting (issue #98, epic #36 continued).** `new_npcs`/`npc_updates` also carry optional
 `voiceId`/`voiceSpeed` — a Kokoro voice id (e.g. `bm_george`) and delivery-speed multiplier, cast
@@ -183,8 +184,8 @@ heuristic fallback) but still has no `voiceId` gets one via a stable hash of the
 gender when known (a free-form NPCAttributes "Gender" fact — no hard-coded field, per "Genre-
 agnostic by design" below) and excluding the narrator's/player's voices, with a soft cap
 (`VOICE_CAST_SOFT_CAP = 8`) reusing an already-cast voice once reached rather than growing the
-download list unboundedly (~510KB per voice). This ticket ships no playback change at all — nothing
-consumes a cast `voiceId` yet, that's #66.
+download list unboundedly (~510KB per voice). This ticket shipped no playback change itself —
+consuming a cast `voiceId` at playback time is issue #66, see "Multi-voice playback" below.
 
 ### Direct AI mode (Phase 3: Claude API + local on-device models)
 
@@ -476,6 +477,41 @@ took:
   comments for the full design, including what's verified in this sandbox (real Web Audio API
   playback, confirmed to work headlessly here despite no real audio hardware) versus what isn't
   (real-device audio-hardware gaplessness, and background-tab-freeze behavior).
+
+  **Multi-voice playback (issue #66).** A turn genuinely switches Kokoro voices at dialogue
+  boundaries now — narrator, player character, and each speaking NPC — closing out epic #36's
+  multi-voice-narration initiative that #96 (speaker-attributed `{{v:Name}}` segments) and #98
+  (a cast `voiceId` per character) laid the groundwork for. `kokoroWorkerProtocol.ts`'s
+  `speak`/`speakStream` requests carry `chunks: KokoroWorkerChunk[]` — each with its own resolved
+  `voice`/`speed` — instead of one job-wide voice; `kokoroTts.worker.ts`'s `generateChunks` resolves
+  each chunk's own voice independently, so the WebGPU-fallback restart above (which resends the same
+  `chunks` array unchanged) always regenerates a chunk with the exact voice/speed it had the first
+  time — no extra bookkeeping needed, since the restart-reproducibility requirement falls out of
+  chunk *identity* rather than anything voice-specific. `TtsProvider.speak` (`src/lib/voice/types.ts`)
+  gained an additive `segments`/`narratorVoice` option (`TtsSpeakSegment[]`) alongside its original
+  flat `text`/`voice` — the `browser` provider ignores both and keeps reading one flat string in one
+  voice, exactly as before. `src/lib/voice/resolveSegmentVoices.ts` (pure, unit-tested directly) is
+  where a `SpokenSegment[]` actually becomes concrete voices: `speaker: null` → the narrator's
+  `GlobalSettings.kokoroVoiceId`; the player's own name → `CampaignSettings.playerVoiceId`; a known
+  NPC's name → that NPC's `voiceId`; anything else (issue #105's caveat — an AI name paraphrase can
+  leave a `{{v:Name}}` token with no matching NPC row) degrades to the narrator's voice rather than
+  throwing or dropping that segment's audio. `Play.tsx` calls this from `speakText`, which now
+  threads a turn's `SpokenSegment[]` (`turnBlocks.ts`'s `buildSpokenSegments`) through alongside the
+  flat script every call site already built. Narration speaks at `KOKORO_NARRATION_SPEED` and
+  dialogue at `KOKORO_DIALOGUE_SPEED` (`kokoroConstants.ts`, both close to Kokoro's own default of
+  1 — deliberately a narrow band, unverified by ear in this sandbox, pending the project owner's real
+  listen test); `kokoroTts.ts`'s `speak()` also inserts a pause (`KOKORO_ENTER_DIALOGUE_PAUSE_SEC`/
+  `KOKORO_EXIT_DIALOGUE_PAUSE_SEC`, asymmetric per finding 8's "longer beat entering dialogue"
+  suggestion) whenever a scheduled chunk's voice differs from the previous one — pure arithmetic on
+  the existing `nextStartTime` playback cursor, no extra model call. `contract.ts` also gained a
+  short punctuation-pacing note (em dashes/ellipses genuinely change Kokoro's delivery, verified
+  against the installed package's phonemizer — a free lever needing no code). A first-use voice is a
+  separate ~510KB download kokoro-js fetches lazily inside `generate_from_ids` — `doSpeakStream`
+  now kicks off a best-effort `prefetchVoices` (warming the same `kokoro-voices` Cache Storage
+  bucket kokoro-js's own fetch reads from) for every distinct voice a turn's `chunks` need, in
+  parallel with the model load, reported through `describeKokoroVoicePrefetchProgress` via the same
+  `voiceLoadMessage` status line the model-download/generation progress already use — narrowing,
+  not eliminating, the "falling behind" stall risk a new character's first line introduces.
 
   **Cross-origin isolation for multi-threaded WASM.** ONNX Runtime Web's WASM backend (what
   `kokoroTts.worker.ts` runs on) can use `SharedArrayBuffer` to run multi-threaded, which speeds up
