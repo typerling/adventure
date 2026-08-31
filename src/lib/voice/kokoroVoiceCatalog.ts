@@ -80,11 +80,55 @@ export function isKnownKokoroVoiceId(id: string | undefined | null): id is strin
   return typeof id === 'string' && Object.hasOwn(KOKORO_VOICE_CATALOG, id)
 }
 
-/** Compact, prompt-friendly rendering of the whole catalog — one line per voice, id first so the
- * AI can copy it verbatim into `voiceId`. 28 voices is real token cost, so this is deliberately as
- * terse as still-readable allows (no field labels beyond the header line). */
+/**
+ * Voices graded D+ or worse by kokoro-js's own `overallGrade` metadata — excluded from *new*
+ * casting (the AI's prompt-facing catalog, and the deterministic fallback's selection pool) as of
+ * a project-owner listen test that specifically called out `am_adam` (graded F+, the single worst
+ * voice in the catalog) sounding flat/unconvincing next to the higher-graded voices the AI had
+ * cast alongside it. Listed explicitly rather than derived by parsing the grade string at runtime
+ * — letter grades don't sort correctly as plain strings (e.g. `"F+" < "D-"` alphabetically, the
+ * opposite of their real quality order), so an explicit, human-reviewed list is both simpler and
+ * safer than grade-comparison logic. Recomputing this list is exactly the kind of judgment call
+ * issue #99 (richer voice metadata from a real listening pass) will revisit wholesale — this is a
+ * narrower, faster interim cut based only on the grade already in the catalog, not new listening.
+ *
+ * Deliberately does NOT affect: `resolveSegmentVoices.ts`/`kokoroTts.worker.ts`'s `resolveVoice()`
+ * (an NPC or setting already cast to one of these voices — from before this list existed, or a
+ * player's own deliberate choice via the Settings picker below, which still shows the full catalog
+ * with grades visible so an informed human can pick one on purpose — keeps working, unchanged) and
+ * `voiceCasting.ts`'s soft-cap *reuse* pool (an already-in-play voice stays reusable regardless of
+ * grade, so the cap's download-bounding purpose isn't undermined by this list). It only narrows
+ * the pool a *new*, automatic (AI or fallback) casting decision draws from.
+ */
+const LOW_QUALITY_VOICE_IDS: ReadonlySet<string> = new Set([
+  'af_jessica', // D
+  'af_river', // D
+  'am_adam', // F+ — the voice that prompted this list
+  'am_echo', // D
+  'am_eric', // D
+  'am_liam', // D
+  'am_onyx', // D
+  'am_santa', // D-
+  'bm_lewis', // D+
+  'bf_alice', // D
+  'bf_lily', // D
+  'bm_daniel', // D
+])
+
+/** Every catalog voice NOT in `LOW_QUALITY_VOICE_IDS` — the pool new (AI or fallback) casting
+ * should draw from. Computed once at module load, not per call. */
+export const CASTABLE_KOKORO_VOICE_IDS: readonly string[] = Object.freeze(
+  KOKORO_VOICE_IDS.filter((id) => !LOW_QUALITY_VOICE_IDS.has(id)),
+)
+
+/** Compact, prompt-friendly rendering of the *castable* catalog (see `CASTABLE_KOKORO_VOICE_IDS`)
+ * — one line per voice, id first so the AI can copy it verbatim into `voiceId`. 28 voices is real
+ * token cost even before this filter, so this is deliberately as terse as still-readable allows
+ * (no field labels beyond the header line); excluding the low-graded voices here also means the AI
+ * never spends a token even considering a voice it shouldn't cast. */
 export function renderKokoroVoiceCatalog(): string {
-  const lines = Object.entries(KOKORO_VOICE_CATALOG).map(([id, v]) => {
+  const lines = CASTABLE_KOKORO_VOICE_IDS.map((id) => {
+    const v = KOKORO_VOICE_CATALOG[id]
     const traits = v.traits ? ` ${v.traits}` : ''
     return `- ${id} — ${v.name}, ${v.gender}, ${v.language}, quality ${v.targetQuality}/grade ${v.overallGrade}${traits}`
   })

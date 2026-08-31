@@ -1,6 +1,16 @@
 import { test, expect } from '@playwright/test'
 import { deterministicFallbackVoiceId, isValidVoiceSpeed, VOICE_CAST_SOFT_CAP } from '../src/lib/voice/voiceCasting'
-import { KOKORO_VOICE_CATALOG, KOKORO_VOICE_IDS } from '../src/lib/voice/kokoroVoiceCatalog'
+import {
+  CASTABLE_KOKORO_VOICE_IDS,
+  KOKORO_VOICE_CATALOG,
+  KOKORO_VOICE_IDS,
+  renderKokoroVoiceCatalog,
+} from '../src/lib/voice/kokoroVoiceCatalog'
+
+/** Every voice id in the full catalog but not in the castable one — i.e. the low-quality
+ * exclusion list, derived rather than duplicated so these tests can't silently drift from the
+ * real list in kokoroVoiceCatalog.ts. */
+const LOW_QUALITY_IDS = KOKORO_VOICE_IDS.filter((id) => !CASTABLE_KOKORO_VOICE_IDS.includes(id))
 
 /**
  * Pure-function coverage for issue #98's deterministic voice-casting fallback — no `page`, no
@@ -74,6 +84,55 @@ test.describe('deterministicFallbackVoiceId', () => {
     // At least one pick should fall outside the tiny in-use set — proving the fallback isn't
     // *always* reusing, only once the cap is actually hit.
     expect([...distinctPicks].some((id) => !inUseVoiceIds.includes(id))).toBe(true)
+  })
+
+  test('never picks a D+-or-worse-graded voice for a fresh (below-cap) assignment', () => {
+    expect(LOW_QUALITY_IDS.length).toBeGreaterThan(0) // sanity: the exclusion list isn't empty
+    // A wide spread of names, both genders, well under the soft cap — if the quality filter were
+    // missing or broken, at least one of these would land on a low-quality id (12 excluded out of
+    // 28 is too large a fraction to dodge by chance across this many names/genders).
+    const names = [
+      'Old Maren',
+      'Corin the Warden',
+      'Bram',
+      'Sailor Jess',
+      'Watchman Cole',
+      'Reyes',
+      'The Harbormaster',
+      'A very long character name indeed',
+      'Zzz',
+    ]
+    for (const name of names) {
+      for (const gender of [undefined, 'Male', 'Female'] as const) {
+        const picked = deterministicFallbackVoiceId(name, { reservedVoiceIds: [], inUseVoiceIds: [], gender })
+        expect(LOW_QUALITY_IDS).not.toContain(picked)
+      }
+    }
+  })
+
+  test('a low-quality voice already in play stays reusable once the soft cap is hit (not over-filtered)', () => {
+    // Deliberately seed the in-use set with only low-quality ids — the quality filter must not
+    // reach into the soft-cap reuse path, or this campaign's already-cast NPCs would become
+    // unreusable and the cap's download-bounding purpose would break.
+    const inUseVoiceIds = LOW_QUALITY_IDS.slice(0, VOICE_CAST_SOFT_CAP)
+    expect(inUseVoiceIds.length).toBe(VOICE_CAST_SOFT_CAP) // sanity: enough low-quality ids exist to fill the cap
+    const picked = deterministicFallbackVoiceId('A brand new character', { reservedVoiceIds: [], inUseVoiceIds })
+    expect(inUseVoiceIds).toContain(picked)
+  })
+})
+
+test.describe('renderKokoroVoiceCatalog', () => {
+  test('never lists a D+-or-worse-graded voice for the AI to cast', () => {
+    const rendered = renderKokoroVoiceCatalog()
+    for (const id of LOW_QUALITY_IDS) {
+      expect(rendered).not.toContain(id)
+    }
+    // Sanity: still lists plenty of real, castable voices — this isn't accidentally rendering
+    // nothing.
+    expect(CASTABLE_KOKORO_VOICE_IDS.length).toBeGreaterThan(10)
+    for (const id of CASTABLE_KOKORO_VOICE_IDS.slice(0, 3)) {
+      expect(rendered).toContain(id)
+    }
   })
 })
 
