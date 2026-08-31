@@ -173,7 +173,7 @@ The same prompt section lists current casting — the narrator's (`GlobalSetting
 the player's (`CampaignSettings.playerVoiceId`, new this ticket — per-campaign since a player
 character is a property of the campaign, not the device, mirroring why `summarizationCadence`
 stayed there post-#77), and every already-cast NPC — so the AI avoids duplicate casting within a
-scene and never recasts an NPC whose `voiceLocked` is true (set via a future Codex override, #100).
+scene and never recasts an NPC whose `voiceLocked` is true (set via the Codex override, #100 below).
 An unrecognized `voiceId`/out-of-range `voiceSpeed` is a coercing warning in `validate.ts`, never a
 blocking error — a miscast voice must never cost the player their turn — and `applyDelta.ts`
 discards it outright as defense-in-depth, the same "warn here, actually enforce in applyDelta"
@@ -186,6 +186,39 @@ agnostic by design" below) and excluding the narrator's/player's voices, with a 
 (`VOICE_CAST_SOFT_CAP = 8`) reusing an already-cast voice once reached rather than growing the
 download list unboundedly (~510KB per voice). This ticket shipped no playback change itself —
 consuming a cast `voiceId` at playback time is issue #66, see "Multi-voice playback" below.
+
+**Player voice override from the Codex (issue #100, epic #36's final piece).** The Codex
+(`src/pages/Codex.tsx`) was read-only until this ticket — every other Sheets write in this app
+flows through `applyDelta.ts`'s `applyStateDelta`, shaped around parsing/validating/merging a
+whole AI-generated `state_delta`, not a single player-initiated field change made outside a turn.
+Rather than shoehorning this into that pipeline, it's a small, dedicated write:
+`campaignRepo.ts`'s `setNpcVoiceOverride(spreadsheetId, npcs, npcId, voiceId)` calls
+`sheetsApi.ts`'s `updateRow` directly — the same primitive `applyStateDelta`'s own NPC-update code
+already wraps (compute the row number, build a merged row object, call `updateRow`). Passing
+`voiceId` a real catalog id sets it and locks it (`voiceLocked: true`); passing `null` clears the
+lock (`voiceLocked: false`) and hands the character back to AI casting, deliberately leaving
+whatever `voiceId` is already on the row untouched rather than blanking it, so the character keeps
+sounding the same until the AI actually casts someone new. `useCampaign.ts`'s `setNpcVoice` wraps
+this and reconciles the in-memory snapshot (and `campaignCache`) only *after* the write confirms —
+per this file's "cache with optimistic writes reconciled against API responses" rule, nothing
+renders a changed voice ahead of the write landing, so a failed write (surfaced as
+`toast.error`, `src/components/ui/toast.tsx` — not Sonner, removed in issue #95) simply leaves the
+snapshot untouched rather than needing a separate revert step. `src/components/NpcVoicePicker.tsx`
+is the picker UI itself (its own Storybook stories cover both viewports and the failure path),
+mounted once per NPC row in the Codex's NPCs tab; it lists `CASTABLE_KOKORO_VOICE_IDS` (issue
+#107's quality-filtered pool — the same reasoning Settings' own narrator/player picker follows for
+*not* applying that filter: this is casting-adjacent, being cast for an NPC the AI would otherwise
+cast, not a human making an informed choice for their own narrator/player voice) built straight
+from the static `KOKORO_VOICE_CATALOG` mirror rather than `listKokoroVoices()`, so opening the
+dialog never forces a Kokoro model download — only clicking an individual voice's preview
+(`generateKokoroPreview`, injectable on the component for tests/stories) does. A known, accepted
+gap: no optimistic-concurrency check against a turn's `state_delta` writing the same NPC row at
+the same instant — narrow enough in practice (different pages/interactions) that it's undocumented
+risk, not a fixed one; see `setNpcVoiceOverride`'s own doc comment. Also known and NOT this
+ticket's bug to fix (issue #105): `npc_updates` matches NPCs by exact name only, so an AI
+paraphrase of a locked NPC's name can create a duplicate, unlocked row the override never touches
+— locking protects the specific row a player locked, not every future row that might represent the
+same character.
 
 ### Direct AI mode (Phase 3: Claude API + local on-device models)
 
@@ -417,8 +450,9 @@ and Sheets are the actual source of truth, not the in-memory store.
 
 `src/App.tsx` wires `react-router` routes, each backed by one page in `src/pages/`:
 `/` → Dashboard (campaign list), `/new` → NewCampaign (setup wizard), `/play/:campaignId` → Play
-(the turn loop UI), `/codex/:campaignId` → Codex (read-only tabs over sheet data — Inventory,
-Stats/Skills, NPCs, Monsters, Lore, Timeline/Quests), `/settings` and `/settings/:campaignId` →
+(the turn loop UI), `/codex/:campaignId` → Codex (mostly read-only tabs over sheet data —
+Inventory, Stats/Skills, NPCs, Monsters, Lore, Timeline/Quests; the NPCs tab's voice override,
+issue #100 below, is the one write path), `/settings` and `/settings/:campaignId` →
 Settings (AI mode/model/provider/voice settings are global — issue #77; `/settings/:campaignId`
 only adds a small per-campaign summarization-cadence card on top). `AuthGate`
 (`src/components/AuthGate.tsx`) wraps the whole app shell and gates everything on Google sign-in

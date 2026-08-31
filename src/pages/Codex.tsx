@@ -7,10 +7,11 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ScrollArea } from '@/components/ui/scroll-area'
+import { NpcVoicePicker } from '@/components/NpcVoicePicker'
 
 export function Codex() {
   const { campaignId } = useParams<{ campaignId: string }>()
-  const { status, errorMessage, campaign, snapshot } = useCampaign(campaignId)
+  const { status, errorMessage, campaign, snapshot, setNpcVoice } = useCampaign(campaignId)
   const setHeaderContext = usePlayHeaderStore((s) => s.setContext)
   const campaignName = campaign?.meta.name
 
@@ -125,6 +126,15 @@ export function Codex() {
                   </div>
                   {n.relationship && <p className="text-xs text-muted-foreground">{n.relationship}</p>}
                   {n.description && <p className="mt-1 text-muted-foreground">{n.description}</p>}
+                  <NpcVoicePicker
+                    npc={n}
+                    onSelect={async (voiceId) => {
+                      await setNpcVoice(n.id, voiceId)
+                    }}
+                    onClear={async () => {
+                      await setNpcVoice(n.id, null)
+                    }}
+                  />
                 </div>
               ))}
               {snapshot.NPCs.length === 0 && <Empty label="No NPCs met yet." />}
