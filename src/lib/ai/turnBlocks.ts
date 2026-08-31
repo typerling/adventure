@@ -351,6 +351,25 @@ export function attributeSpeakersHeuristically(segments: SpokenSegment[], knownN
   return mergeAdjacentSpans(result)
 }
 
+/** Every distinct non-null speaker named across a turn's narrative (issue #98, epic #36's voice-
+ * casting groundwork) — real `{{v:Name}}` tokens if present, else the same heuristic fallback
+ * `attributeSpeakersHeuristically` uses for a weaker backend's untagged dialogue. This is what
+ * `applyDelta.ts` uses to decide which known NPCs need a deterministic fallback `voiceId` this
+ * turn: a character who never speaks doesn't need a voice cast for them yet, no matter how much
+ * profile detail the AI wrote for them. Built from the whole raw narrative directly (not through
+ * `splitNarrativeIntoBlocks`) since speaker attribution has nothing to do with where the
+ * `{{options}}` token falls — a plain single prose block is exactly what `buildSpokenSegments`
+ * needs. */
+export function extractSpeakingNames(narrative: string, knownNames: string[]): Set<string> {
+  const segments = buildSpokenSegments([{ type: 'prose', markdown: narrative }])
+  const attributed = attributeSpeakersHeuristically(segments, knownNames)
+  const names = new Set<string>()
+  for (const segment of attributed) {
+    if (segment.speaker) names.add(segment.speaker)
+  }
+  return names
+}
+
 const QUOTE_RE = /"([^"]*)"/g
 
 function escapeRegExp(value: string): string {

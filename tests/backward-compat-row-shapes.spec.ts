@@ -4,6 +4,8 @@ import { seedLegacyCampaign } from './fixtures/backward-compat/seedLegacyCampaig
 import {
   PRE_NPC_PROFILE_NPCS_HEADER,
   PRE_NPC_PROFILE_NPC_ROW,
+  PRE_VOICE_CASTING_NPCS_HEADER,
+  PRE_VOICE_CASTING_NPC_ROW,
 } from './fixtures/backward-compat/legacyNpcRows'
 import { PHASE1_SETTINGS_MD } from './fixtures/backward-compat/legacySettingsMd'
 import { CAMPAIGN_MD_MISSING_CURRENT_LOCATION } from './fixtures/backward-compat/legacyCampaignMd'
@@ -50,6 +52,41 @@ test('a real pre-NPC-profile NPCs tab (6 columns, missing voice/secrets/notes/de
   await expect(page.getByPlaceholder('Say or do anything…')).toBeVisible()
 })
 
+test('a real pre-voice-casting NPCs tab (10 columns, missing voiceId/voiceSpeed/voiceLocked) loads with sane defaults', async ({
+  page,
+}) => {
+  const store = await installGoogleApiMock(page)
+  const { folderId } = seedLegacyCampaign(store, {
+    slug: 'sunken-chapel-voice-casting',
+    campaignMd: CAMPAIGN_MD_MISSING_CURRENT_LOCATION,
+    settingsMd: PHASE1_SETTINGS_MD,
+    sheetTabs: {
+      NPCs: [PRE_VOICE_CASTING_NPCS_HEADER, PRE_VOICE_CASTING_NPC_ROW],
+    },
+  })
+
+  await page.goto(`/codex/${folderId}`)
+  await expect(page.getByText("Couldn't load this campaign", { exact: false })).toHaveCount(0)
+  await page.getByRole('tab', { name: 'NPCs' }).click()
+  // Pre-existing fields (present in the legacy row) still render as normal.
+  await expect(page.getByText('Corin the Warden')).toBeVisible()
+
+  // The turn loop still works against this campaign — a garbage-free, decode-without-throwing
+  // proof, same reasoning as the pre-NPC-profile test above.
+  await page.goto(`/play/${folderId}`)
+  await expect(page.getByPlaceholder('Say or do anything…')).toBeVisible()
+
+  // Direct decode assertion: voiceId/voiceSpeed/voiceLocked default to '' / 0 / false for a row
+  // that never had those columns at all, not undefined or a thrown error.
+  const [decoded] = decodeTab<{ voiceId: string; voiceSpeed: number; voiceLocked: boolean }>('NPCs', [
+    PRE_VOICE_CASTING_NPCS_HEADER,
+    PRE_VOICE_CASTING_NPC_ROW,
+  ])
+  expect(decoded.voiceId).toBe('')
+  expect(decoded.voiceSpeed).toBe(0)
+  expect(decoded.voiceLocked).toBe(false)
+})
+
 /**
  * Systemic contract test, not tied to any one tab or historical shape: every tab's `fromRow`
  * codec must tolerate a row shorter than its current header without throwing, degrading missing
@@ -93,7 +130,7 @@ for (const tab of SHEET_TABS) {
  */
 test('a reordered column is silently misread, not caught — no automatic protection exists', () => {
   const header = TAB_HEADERS.NPCs
-  const correct = ['npc-002', 'Bram', 'The harbor watch captain.', 'friendly', 'alive', 5, '', '', '', '']
+  const correct = ['npc-002', 'Bram', 'The harbor watch captain.', 'friendly', 'alive', 5, '', '', '', '', '', 0, false]
   // Swap `relationship` and `status` — an existing-column reorder, not an append.
   const relationshipIdx = header.indexOf('relationship')
   const statusIdx = header.indexOf('status')

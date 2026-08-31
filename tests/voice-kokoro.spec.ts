@@ -154,8 +154,11 @@ test.describe("Kokoro voice picker", () => {
     await setCampaignVoiceProviders(page, { tts: "huggingface-local" });
     await page.goto(`/settings/${campaignId}`);
     await expect(page.locator("#kokoroVoiceId")).toBeVisible();
+    // Issue #98 added a second "Browse voices" button (the player character's voice, in the
+    // campaign-scoped card) once TTS is Kokoro — scope to the narrator's own card to stay
+    // unambiguous, same fix applied throughout this file.
     await expect(
-      page.getByRole("button", { name: "Browse voices" }),
+      page.getByTestId("global-settings").getByRole("button", { name: "Browse voices" }),
     ).toBeVisible();
   });
 
@@ -173,7 +176,11 @@ test.describe("Kokoro voice picker", () => {
     const campaignId = campaignIdFromUrl(page);
     await page.goto(`/settings/${campaignId}`);
 
-    await page.getByRole("button", { name: "Browse voices" }).click();
+    // Issue #98 added a second, campaign-scoped "Browse voices" button (the player character's
+    // voice) alongside this global/narrator one, so this and the reopen-click below scope to the
+    // narrator's own card to stay unambiguous.
+    const globalSettingsCard = page.getByTestId("global-settings");
+    await globalSettingsCard.getByRole("button", { name: "Browse voices" }).click();
     await expect(
       page.getByRole("dialog", { name: "Choose a Kokoro voice" }),
     ).toBeVisible();
@@ -229,7 +236,7 @@ test.describe("Kokoro voice picker", () => {
     await expect(page.locator("#kokoroVoiceId")).toHaveValue("am_adam");
 
     // Reopening the picker reuses the already-loaded list and shows the new selection.
-    await page.getByRole("button", { name: "Browse voices" }).click();
+    await globalSettingsCard.getByRole("button", { name: "Browse voices" }).click();
     await expect(
       page.getByTestId("kokoro-voice-am_adam").getByText("Selected"),
     ).toBeVisible();
@@ -270,7 +277,9 @@ test.describe("Kokoro voice picker", () => {
     const campaignId = campaignIdFromUrl(page);
     await page.goto(`/settings/${campaignId}`);
 
-    await page.getByRole("button", { name: "Browse voices" }).click();
+    // Issue #98 added a second, campaign-scoped "Browse voices" button (the player character's
+    // voice) alongside this global/narrator one — scope to stay unambiguous.
+    await page.getByTestId("global-settings").getByRole("button", { name: "Browse voices" }).click();
     await expect(
       page.getByRole("dialog", { name: "Choose a Kokoro voice" }),
     ).toBeVisible();
@@ -546,9 +555,13 @@ test.describe("Kokoro voice picker", () => {
     ).toBeVisible();
 
     await page.goto(`/settings/${campaignId}`);
+    // Issue #98 added a second, campaign-scoped "Browse voices" button (the player character's
+    // voice) alongside this global/narrator one, so every click below scopes to the narrator's
+    // own card to stay unambiguous.
+    const globalSettingsCard = page.getByTestId("global-settings");
 
     // Load the picker's voice list once (via the faked kokoro-js module).
-    await page.getByRole("button", { name: "Browse voices" }).click();
+    await globalSettingsCard.getByRole("button", { name: "Browse voices" }).click();
     await expect(
       page.getByRole("dialog", { name: "Choose a Kokoro voice" }),
     ).toBeVisible();
@@ -578,7 +591,7 @@ test.describe("Kokoro voice picker", () => {
 
     // Reopening the picker must reload (a fresh from_pretrained call), not silently reuse the
     // list from the model instance that just got evicted.
-    await page.getByRole("button", { name: "Browse voices" }).click();
+    await globalSettingsCard.getByRole("button", { name: "Browse voices" }).click();
     await expect(
       page.getByRole("dialog", { name: "Choose a Kokoro voice" }),
     ).toBeVisible();
@@ -605,7 +618,9 @@ test.describe("Kokoro voice picker", () => {
     const campaignId = campaignIdFromUrl(page);
     await page.goto(`/settings/${campaignId}`);
 
-    await page.getByRole("button", { name: "Browse voices" }).click();
+    // Issue #98 added a second, campaign-scoped "Browse voices" button (the player character's
+    // voice) alongside this global/narrator one — scope to stay unambiguous.
+    await page.getByTestId("global-settings").getByRole("button", { name: "Browse voices" }).click();
     await expect(
       page.getByText("Couldn't load Kokoro's voice list", { exact: false }),
     ).toBeVisible({ timeout: 20_000 });

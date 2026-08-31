@@ -35,8 +35,8 @@ Reply in exactly two parts, every turn, with nothing before or after them:
     "stat_changes": {"statKey": 0},
     "status_add": ["string"],
     "status_remove": ["string"],
-    "new_npcs": [{"name": "string", "description": "string", "status": "alive", "voice": "string", "secrets": "string", "attributes": {"key": "value"}, "notes_add": "string"}],
-    "npc_updates": [{"name": "string", "status": "alive", "relationship": "string", "voice": "string", "secrets": "string", "attributes": {"key": "value"}, "notes_add": "string"}],
+    "new_npcs": [{"name": "string", "description": "string", "status": "alive", "voice": "string", "secrets": "string", "attributes": {"key": "value"}, "notes_add": "string", "voiceId": "string", "voiceSpeed": 1}],
+    "npc_updates": [{"name": "string", "status": "alive", "relationship": "string", "voice": "string", "secrets": "string", "attributes": {"key": "value"}, "notes_add": "string", "voiceId": "string", "voiceSpeed": 1}],
     "new_monsters": [{"name": "string", "description": "string", "threatNotes": "string"}],
     "new_locations": [{"name": "string", "connects_to": "string", "description": "string"}],
     "events": [{"title": "string", "summary": "string", "tags": "string"}],
@@ -82,6 +82,18 @@ existing at all:
   fact revealed, a relationship shift, a promise made. It becomes both this NPC's new condensed
   running summary (shown to you every turn from now on) and a permanent timestamped entry in
   their history, so write it as a self-contained sentence or two, not a diff.
+- "voiceId": cast a Kokoro voice for this character from the "Voices" catalog below, once they
+  first speak (real dialogue, not just being mentioned) — set it by id exactly as listed (e.g.
+  "bm_george"), never a made-up id. Keep it stable afterward: don't set "voiceId" again for a
+  character who already has one in "Current casting" below unless the story itself explains a
+  reason a voice would change. NEVER recast a character whose casting is shown as locked, no
+  matter what. Prefer a voice whose gender/accent genuinely fits the character and the setting,
+  and avoid handing two different characters active in the same scene (including the narrator and
+  the player) the same voice when a distinct option exists.
+- "voiceSpeed": optional delivery-speed multiplier for this character (default 1, roughly 0.5-2.0
+  is usable — see the catalog notes below). Only set it when there's a real reason (someone talks
+  fast when panicked, someone deliberately slow and deliberate) — leave it unset otherwise rather
+  than fiddling with it by default.
 
 Story threads — the story-level equivalent of an NPC's "secrets": a planted detail, mystery clue,
 or ticking threat that isn't tied to one NPC (a countdown to some looming event, a rumor spreading

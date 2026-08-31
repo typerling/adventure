@@ -1,9 +1,38 @@
 import { appendRows, updateRow } from './sheetsApi'
 import { rowCodecs } from './sheetSchema'
 import { appendNpcDetail } from './npcDetailFile'
-import type { SheetSnapshot } from '@/lib/ai/promptBuilder'
+import { namesFromSnapshot, playerNameFromSnapshot, type SheetSnapshot } from '@/lib/ai/promptBuilder'
+import { extractSpeakingNames } from '@/lib/ai/turnBlocks'
+import { isKnownKokoroVoiceId } from '@/lib/voice/kokoroVoiceCatalog'
+import { deterministicFallbackVoiceId, isValidVoiceSpeed } from '@/lib/voice/voiceCasting'
 import type { StateDelta } from '@/types/turn'
 import type { CharacterRow, InventoryItem, MapNode, Monster, Npc, NpcAttribute, Quest, Thread } from '@/types/sheets'
+
+/** Coerces an AI-supplied `voiceId` to either itself (if it's a real catalog id) or `undefined` —
+ * an unrecognized id is silently discarded rather than ever reaching the sheet, defense-in-depth
+ * alongside validate.ts's warning (a warning alone doesn't block the write). */
+function coerceVoiceId(voiceId: string | undefined): string | undefined {
+  return isKnownKokoroVoiceId(voiceId) ? voiceId : undefined
+}
+
+/** Same defense-in-depth coercion for `voiceSpeed` — see coerceVoiceId's doc comment. */
+function coerceVoiceSpeed(voiceSpeed: number | undefined): number | undefined {
+  return isValidVoiceSpeed(voiceSpeed) ? voiceSpeed : undefined
+}
+
+/** How this app decides an NPC's gender for the deterministic voice-casting fallback (issue #98):
+ * a free-form "Gender" fact in NPCAttributes, if the AI (or a player editing the sheet by hand) has
+ * ever recorded one — never a hard-coded field on Npc itself, per CLAUDE.md's "Genre-agnostic by
+ * design" rule. Absent or unrecognized simply means "cast from the whole catalog," not an error. */
+function genderForNpc(npcId: string, attributes: NpcAttribute[]): 'Male' | 'Female' | undefined {
+  const raw = attributes
+    .find((a) => a.npcId === npcId && a.key.trim().toLowerCase() === 'gender')
+    ?.value.trim()
+    .toLowerCase()
+  if (raw === 'male' || raw === 'm') return 'Male'
+  if (raw === 'female' || raw === 'f') return 'Female'
+  return undefined
+}
 
 function rowNumberOf<T>(rows: T[], predicate: (r: T) => boolean): number | null {
   const idx = rows.findIndex(predicate)
@@ -22,16 +51,31 @@ function clampProgress(progress: number | undefined, progressMax: number): numbe
   return Math.min(Math.max(0, p), progressMax)
 }
 
+/** Narrator/player voice context for the deterministic voice-casting fallback (issue #98) — see
+ * applyStateDelta's own doc comment for how it's used. */
+export interface VoiceCastingContext {
+  narratorVoiceId?: string
+  playerVoiceId?: string
+}
+
 /** Applies an already-validated StateDelta as a batch of Sheets writes. Mutates the passed
  * snapshot in place so callers can re-render immediately without another round trip.
  * `campaignFolderId` is needed only for NPC `notes_add` — appending to that NPC's
- * world/npcs/<slug>.md detail file (see npcDetailFile.ts). */
+ * world/npcs/<slug>.md detail file (see npcDetailFile.ts). `narrative` and `voiceCasting` are
+ * issue #98's addition: `narrative` is this turn's raw prose (including any `{{v:Name}}` speaker
+ * tokens), used purely to figure out which known NPCs actually spoke this turn so a deterministic
+ * fallback voice can be assigned to anyone who spoke but the AI didn't cast — see the "Voice
+ * casting fallback" block at the end of this function. Both are optional so any existing/future
+ * caller that doesn't care about voice casting (e.g. a test exercising unrelated delta fields)
+ * doesn't have to thread them through. */
 export async function applyStateDelta(
   spreadsheetId: string,
   delta: StateDelta,
   snapshot: SheetSnapshot,
   turnNumber: number,
   campaignFolderId: string,
+  narrative = '',
+  voiceCasting: VoiceCastingContext = {},
 ): Promise<void> {
   // Inventory removals — decrement qty, or deactivate the row rather than deleting it (keeps history).
   for (const removal of delta.inventory_remove ?? []) {
@@ -105,6 +149,9 @@ export async function applyStateDelta(
       secrets: n.secrets ?? '',
       notes: n.notes_add ?? '',
       detailFile: undefined,
+      voiceId: coerceVoiceId(n.voiceId) ?? '',
+      voiceSpeed: coerceVoiceSpeed(n.voiceSpeed) ?? 0,
+      voiceLocked: false,
     }
     if (n.notes_add) {
       created.detailFile = await appendNpcDetail(campaignFolderId, created, turnNumber, n.notes_add)
@@ -127,6 +174,9 @@ export async function applyStateDelta(
         secrets: update.secrets ?? '',
         notes: update.notes_add ?? '',
         detailFile: undefined,
+        voiceId: coerceVoiceId(update.voiceId) ?? '',
+        voiceSpeed: coerceVoiceSpeed(update.voiceSpeed) ?? 0,
+        voiceLocked: false,
       }
       if (update.notes_add) {
         created.detailFile = await appendNpcDetail(campaignFolderId, created, turnNumber, update.notes_add)
@@ -153,10 +203,53 @@ export async function applyStateDelta(
       // value here and the permanent entry appended to the detail file above.
       notes: update.notes_add ?? existing.notes,
       detailFile,
+      // A voiceLocked NPC's cast voice/speed must never change regardless of what the AI sent —
+      // issue #98's explicit requirement (see tests/voice-casting.spec.ts's lock-protection test).
+      // An unlocked NPC merges a valid new voiceId/voiceSpeed the same `?? existing` pattern as
+      // every other field above; an invalid one (already discarded by coerceVoiceId/
+      // coerceVoiceSpeed, defense-in-depth alongside validate.ts's warning) keeps the existing
+      // value instead of ever landing on the sheet.
+      voiceId: existing.voiceLocked ? existing.voiceId : (coerceVoiceId(update.voiceId) ?? existing.voiceId),
+      voiceSpeed: existing.voiceLocked
+        ? existing.voiceSpeed
+        : (coerceVoiceSpeed(update.voiceSpeed) ?? existing.voiceSpeed),
     }
     snapshot.NPCs[rowNum - 2] = merged
     await updateRow(spreadsheetId, 'NPCs', rowNum, rowCodecs.NPCs.toRow(merged))
     await upsertNpcAttributes(spreadsheetId, snapshot, merged.id, update.attributes)
+  }
+
+  // Voice casting fallback (issue #98) — runs after every NPC create/update above has landed, so
+  // it sees this turn's freshly-created/updated rows too. Any known NPC who spoke this turn (per
+  // #96's speaker tokens, or the heuristic fallback for a weaker backend/manual paste that never
+  // used them — see turnBlocks.ts's extractSpeakingNames) but still has no voiceId after
+  // everything above (the AI just didn't cast one) gets a deterministic one now, so a later
+  // playback ticket (#66) always has something to switch to. voiceLocked NPCs are skipped
+  // entirely — they already have a voice, by construction (nothing sets voiceLocked without also
+  // setting voiceId today), and even if not, locking means "don't touch this NPC's casting."
+  if (narrative) {
+    const knownNames = namesFromSnapshot(snapshot)
+    const speakingNames = extractSpeakingNames(narrative, knownNames)
+    if (speakingNames.size > 0) {
+      const playerName = playerNameFromSnapshot(snapshot)
+      const reservedVoiceIds = [voiceCasting.narratorVoiceId, voiceCasting.playerVoiceId]
+      for (const speaker of speakingNames) {
+        if (playerName && sameName(speaker, playerName)) continue // the player has their own field, not an NPC row
+        const rowNum = rowNumberOf(snapshot.NPCs, (n) => sameName(n.name, speaker))
+        if (rowNum === null) continue // spoke per the heuristic but isn't a documented NPC — nothing to write to
+        const npc = snapshot.NPCs[rowNum - 2]
+        if (npc.voiceId || npc.voiceLocked) continue
+        const inUseVoiceIds = snapshot.NPCs.filter((n) => n.id !== npc.id && n.voiceId).map((n) => n.voiceId)
+        const fallbackVoiceId = deterministicFallbackVoiceId(npc.name, {
+          reservedVoiceIds,
+          inUseVoiceIds,
+          gender: genderForNpc(npc.id, snapshot.NPCAttributes),
+        })
+        const updated: Npc = { ...npc, voiceId: fallbackVoiceId }
+        snapshot.NPCs[rowNum - 2] = updated
+        await updateRow(spreadsheetId, 'NPCs', rowNum, rowCodecs.NPCs.toRow(updated))
+      }
+    }
   }
 
   // Monsters.

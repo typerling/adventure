@@ -14,6 +14,7 @@ import { getNpcDetailContent } from '@/lib/google/npcDetailFile'
 import { buildTurnPrompt, findMentionedNpcs, type NpcDetailLookup, type SheetSnapshot } from '@/lib/ai/promptBuilder'
 import { parseTurnReply } from '@/lib/ai/parseReply'
 import { validateStateDelta } from '@/lib/ai/validate'
+import { getGlobalSettings } from '@/lib/settings/globalSettings'
 import { getCachedCampaign, setCachedCampaign, type CachedCampaignData } from './campaignCache'
 import type { CampaignFile, CampaignSettings } from '@/types/campaign'
 import type { TurnOption, TurnRecord, ValidationIssue } from '@/types/turn'
@@ -145,6 +146,12 @@ export function useCampaign(folderId: string | undefined) {
         playerAction,
         turnNumber: data.campaign.meta.currentTurn + 1,
         npcDetails,
+        // Issue #98: the narrator's voice is device-global (GlobalSettings, #77), the player's is
+        // per-campaign (CampaignSettings.playerVoiceId, this ticket) — see that field's doc
+        // comment for why. Read fresh each call rather than cached in state since Settings can
+        // change either between turns without this hook re-mounting.
+        narratorVoiceId: getGlobalSettings().kokoroVoiceId,
+        playerVoiceId: data.settings?.playerVoiceId,
       })
     },
     [data, folderId],
@@ -166,7 +173,18 @@ export function useCampaign(folderId: string | undefined) {
       const snapshotCopy: SheetSnapshot = structuredClone(data.snapshot)
 
       try {
-        await applyStateDelta(data.spreadsheetId, parsed.reply.state_delta, snapshotCopy, nextTurn, folderId)
+        await applyStateDelta(
+          data.spreadsheetId,
+          parsed.reply.state_delta,
+          snapshotCopy,
+          nextTurn,
+          folderId,
+          parsed.reply.narrative,
+          {
+            narratorVoiceId: getGlobalSettings().kokoroVoiceId,
+            playerVoiceId: data.settings?.playerVoiceId,
+          },
+        )
 
         await appendTurnToLog(folderId, {
           turn: nextTurn,

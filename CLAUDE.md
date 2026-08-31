@@ -160,6 +160,32 @@ guesses a speaker for quoted dialogue by nearest preceding known name when no re
 present. Nothing consumes the per-speaker split yet — `buildSpokenScript` still hands every TTS
 provider one flattened string, unchanged until a future ticket wires actual voice-switching.
 
+**Voice casting (issue #98, epic #36 continued).** `new_npcs`/`npc_updates` also carry optional
+`voiceId`/`voiceSpeed` — a Kokoro voice id (e.g. `bm_george`) and delivery-speed multiplier, cast
+by the AI under the same "real interaction" gate as `voice`/`secrets`/`attributes`, from a compact
+catalog `promptBuilder.ts` renders every turn (`src/lib/voice/kokoroVoiceCatalog.ts`'s
+`KOKORO_VOICE_CATALOG` — a static, checked-in mirror of kokoro-js's own 28-voice metadata, not a
+live read, since reaching the real thing would mean statically importing `kokoro-js`'s
+`@huggingface/transformers` dependency into the main bundle; kept in sync by
+`tests/kokoro-voice-catalog.spec.ts`, which imports the real package in Node and diffs against it).
+The same prompt section lists current casting — the narrator's (`GlobalSettings.kokoroVoiceId`),
+the player's (`CampaignSettings.playerVoiceId`, new this ticket — per-campaign since a player
+character is a property of the campaign, not the device, mirroring why `summarizationCadence`
+stayed there post-#77), and every already-cast NPC — so the AI avoids duplicate casting within a
+scene and never recasts an NPC whose `voiceLocked` is true (set via a future Codex override, #100).
+An unrecognized `voiceId`/out-of-range `voiceSpeed` is a coercing warning in `validate.ts`, never a
+blocking error — a miscast voice must never cost the player their turn — and `applyDelta.ts`
+discards it outright as defense-in-depth, the same "warn here, actually enforce in applyDelta"
+split `new_threads`/`thread_updates`' progress-range checks already use. After every turn's NPC
+writes land, `applyDelta.ts` also runs a deterministic fallback (`src/lib/voice/voiceCasting.ts`):
+any known NPC who spoke this turn (`turnBlocks.ts`'s `extractSpeakingNames`, real tokens or the
+heuristic fallback) but still has no `voiceId` gets one via a stable hash of their name, filtered by
+gender when known (a free-form NPCAttributes "Gender" fact — no hard-coded field, per "Genre-
+agnostic by design" below) and excluding the narrator's/player's voices, with a soft cap
+(`VOICE_CAST_SOFT_CAP = 8`) reusing an already-cast voice once reached rather than growing the
+download list unboundedly (~510KB per voice). This ticket ships no playback change at all — nothing
+consumes a cast `voiceId` yet, that's #66.
+
 ### Direct AI mode (Phase 3: Claude API + local on-device models)
 
 `GlobalSettings.aiMode` (`'manual' | 'api' | 'local'`, `src/lib/settings/globalSettings.ts`) picks
@@ -273,7 +299,10 @@ Everything under `src/lib/google/` is the persistence layer — there is no othe
   every tab (Character, Inventory, Skills, NPCs, NPCAttributes, Monsters, Timeline, Quests,
   Threads, Map, Lore); adding a tab means updating `SHEET_TABS`, `TAB_HEADERS`, `rowCodecs`, and the
   `loadSheetSnapshot` / `SheetSnapshot` type together — **and** addressing backward compatibility
-  with data already in a user's Drive, see immediately below.
+  with data already in a user's Drive, see immediately below. The `NPCs` tab also carries
+  `voiceId`/`voiceSpeed`/`voiceLocked` (issue #98, appended after `detailFile` — never reorder),
+  the machine-resolvable counterpart to the pre-existing human-readable `voice` descriptor column;
+  see the Voice section above for what populates them.
 - **`campaignRepo.ts`** — the repository layer above raw Drive/Sheets calls: bootstrapping the
   root library folder, listing/creating campaigns, reading/writing `campaign.md` and
   `settings.md` frontmatter, reading/writing the rolling summary, and `loadSheetSnapshot` (one

@@ -1,8 +1,29 @@
 import type { StateDelta, ValidationIssue, ValidationResult } from '@/types/turn'
 import type { SheetSnapshot } from './promptBuilder'
+import { isKnownKokoroVoiceId } from '@/lib/voice/kokoroVoiceCatalog'
+import { isValidVoiceSpeed } from '@/lib/voice/voiceCasting'
 
 function issue(severity: ValidationIssue['severity'], path: string, message: string): ValidationIssue {
   return { severity, path, message }
+}
+
+/** A miscast voice must never cost the player their turn (issue #98) — an unrecognized `voiceId`
+ * or an out-of-range `voiceSpeed` is always a warning, never an error, on both `new_npcs` and
+ * `npc_updates`. This only flags the problem; `applyDelta.ts` is what actually discards/coerces
+ * the bad value before it's written (same defense-in-depth split as `new_threads`/`thread_updates`'
+ * progress-range checks below, which similarly warn here and get clamped in applyDelta.ts). */
+function pushVoiceCastingWarnings(
+  issues: ValidationIssue[],
+  path: string,
+  name: string,
+  entry: { voiceId?: string; voiceSpeed?: number },
+): void {
+  if (entry.voiceId !== undefined && !isKnownKokoroVoiceId(entry.voiceId)) {
+    issues.push(issue('warning', path, `"${name}" is cast with an unrecognized voiceId "${entry.voiceId}" — will fall back to a default cast instead.`))
+  }
+  if (entry.voiceSpeed !== undefined && !isValidVoiceSpeed(entry.voiceSpeed)) {
+    issues.push(issue('warning', path, `"${name}" has an out-of-range voiceSpeed (${entry.voiceSpeed}) — will be ignored.`))
+  }
 }
 
 /** Deterministic client-side checks that run before any state_delta is written to the sheet.
@@ -36,10 +57,12 @@ export function validateStateDelta(delta: StateDelta, snapshot: SheetSnapshot): 
 
   for (const npc of delta.new_npcs ?? []) {
     if (!npc.name?.trim()) issues.push(issue('error', 'new_npcs', 'A new NPC is missing a name.'))
+    else pushVoiceCastingWarnings(issues, 'new_npcs', npc.name, npc)
   }
 
   for (const update of delta.npc_updates ?? []) {
     const existing = snapshot.NPCs.find((n) => n.name.trim().toLowerCase() === update.name.trim().toLowerCase())
+    pushVoiceCastingWarnings(issues, 'npc_updates', update.name, update)
     if (!existing) {
       // Profile fields (voice/secrets/attributes/notes_add) attached to an update that names an
       // undocumented NPC get the same "isn't documented yet" warning as any other npc_updates

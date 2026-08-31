@@ -374,10 +374,15 @@ AI Adventure/
         Inventory      # id, name, qty, description, tags, acquired_turn, active(bool)
         Skills         # id, name, rank/level, description
         NPCs           # id, name, description, relationship, status, last_seen_turn, voice,
-                        #   secrets, notes, detail_file.
-                        #   voice: a spoken-style descriptor ("gravelly, clipped sentences") —
-                        #     reserved for real TTS voice-switching in a later ticket, not wired
-                        #     to playback yet.
+                        #   secrets, notes, detail_file, voiceId, voiceSpeed, voiceLocked.
+                        #   voice: a spoken-style descriptor ("gravelly, clipped sentences") the AI
+                        #     writes freely — informs casting but isn't itself machine-resolvable.
+                        #   voiceId/voiceSpeed/voiceLocked (issue #98, epic #36): the actual cast
+                        #     Kokoro voice id (e.g. "bm_george") and delivery-speed multiplier, plus
+                        #     whether a player override (#100) has locked the cast so the AI must
+                        #     never recast it. Populated by the AI (§5) or, failing that, a
+                        #     deterministic stable-hash-of-name fallback once the NPC actually
+                        #     speaks — see §8. Still not wired to playback (#66).
                         #   secrets: GM-only ground truth — never rendered anywhere the player can
                         #     see (Play narrative/options, Codex); exists purely so future turns
                         #     don't contradict a fact the player hasn't discovered yet.
@@ -532,6 +537,16 @@ contract so the app can parse it. **Two-part output:**
   relationships`, ...) via the existing `stat_changes` mechanism (which already sets a
   non-numeric key directly rather than as a delta), so the player's profile keeps developing from
   play instead of staying frozen at campaign setup — no schema change needed for this half.
+- **`npc_updates`/`new_npcs` also carry optional `voiceId`/`voiceSpeed` (issue #98, epic #36)** —
+  under the same real-interaction gate as the profile fields above. `voiceId` names a Kokoro voice
+  from the catalog the prompt renders that turn (§8); the model is instructed to cast once and keep
+  it stable, and to never recast an NPC whose `voiceLocked` is true. An unrecognized `voiceId` or
+  out-of-range `voiceSpeed` never blocks the turn — deterministic validation (below) treats it as a
+  warning, and the write path discards it rather than ever landing on the sheet. Any known NPC who
+  speaks in a turn (per the `{{v:Name}}` tokens above, or the heuristic quote-attribution fallback)
+  but still has no `voiceId` afterward gets one via a deterministic stable-hash-of-name fallback —
+  see §8 — so a later ticket always has a real voice to switch to, even for a turn the AI didn't
+  cast one on itself.
 - **`new_threads`/`thread_updates` (issue #83)** — GM-only foreshadowed threads and ticking
   threats, the story-level equivalent of `npc_updates`/`new_npcs`'s `secrets` field: a planted
   detail, mystery clue, or looming threat that isn't tied to one NPC. Research: TTRPG design has
@@ -668,6 +683,30 @@ interface TTSProvider { speak(text: string, opts?: {voice?: string}): Promise<vo
   for the backward-compatibility work that took (a legacy `sttProvider`/`ttsProvider: elevenlabs`
   value, wherever it's still sitting, is coerced onto a supported provider rather than silently
   resolving to a dead `null` provider).
+
+**Voice casting (issue #98, epic #36).** The data-model/prompt half of teaching the DM to cast a
+distinct Kokoro voice per speaking character, so a later ticket (#66) has something real to switch
+playback to — this ticket makes no audible change. Three voices matter: the narrator's
+(`GlobalSettings.kokoroVoiceId`, device-wide, from #77), the player character's
+(`CampaignSettings.playerVoiceId`, new here — kept per-campaign rather than global, since a player
+character's name/personality is a property of the *campaign*, the same reasoning that already kept
+`summarizationCadence` out of the global store), and every NPC's (`Npc.voiceId`/`voiceSpeed`/
+`voiceLocked`, §4). `promptBuilder.ts` renders kokoro-js's full 28-voice catalog (id, name, gender,
+accent, quality grade, traits) plus current casting every turn, compactly — from a static, checked-
+in mirror (`src/lib/voice/kokoroVoiceCatalog.ts`) rather than a live read through `kokoro-js`
+itself, since `buildTurnPrompt` is synchronous and runs before any Kokoro model has ever loaded (or
+this device even has voice enabled), and reaching the real catalog would mean statically importing
+`kokoro-js`'s `@huggingface/transformers` dependency into the main bundle — exactly what the
+dynamic-import discipline above exists to avoid. Kept honest by
+`tests/kokoro-voice-catalog.spec.ts`, which imports the real installed package in Node and asserts
+the mirror matches. Casting always degrades safely for the player: an AI-supplied `voiceId`/
+`voiceSpeed` that doesn't resolve is a warning, never a validation error that blocks the turn, and
+`src/lib/voice/voiceCasting.ts`'s `deterministicFallbackVoiceId` assigns a real voice — a stable
+hash of the character's name, filtered by gender when a free-form NPCAttributes "Gender" fact
+supplies one, excluding the narrator's/player's own voices — to any known NPC who spoke in a turn
+(per §5's `{{v:Name}}` tokens or the heuristic fallback) but the AI never cast. A soft cap of 8
+distinct fallback-assigned voices per campaign keeps that from becoming an unbounded string of
+~510KB voice downloads; past the cap, a new character reuses one already in play instead.
 
 ---
 

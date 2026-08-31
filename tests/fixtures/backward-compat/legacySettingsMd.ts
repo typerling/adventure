@@ -51,3 +51,18 @@ summarizationCadence: 20
 ---
 
 `
+
+/**
+ * Literal `settings.md` frontmatter in the exact shape `CampaignSettings` had immediately before
+ * issue #98 added `playerVoiceId` — i.e. today's post-#77 shape, where `summarizationCadence` is
+ * the only field left here at all (verified against `src/types/campaign.ts` as it stood at this
+ * PR's base commit). A campaign created any time between #77 and #98 has exactly this settings.md
+ * sitting in its Drive folder — see `tests/backward-compat-frontmatter.spec.ts` for the assertion
+ * that `loadSettings`'s `{ ...DEFAULT_SETTINGS, ...parsed }` merge still defaults `playerVoiceId`
+ * to `undefined` rather than throwing or coercing to some stray value.
+ */
+export const PRE_PLAYER_VOICE_SETTINGS_MD = `---
+summarizationCadence: 25
+---
+
+`
