@@ -37,6 +37,17 @@
  * `navigator.storage.persist()` in particular is Window-only, which is why kokoroTts.ts calls it on
  * the main thread before asking for a load, same as localModel.ts does for the text models.
  *
+ * **Per-chunk voice/speed (issue #66).** `speak()`/`speakStream()` no longer take one job-wide
+ * `voice` — each chunk in `chunks` (KokoroWorkerChunk, kokoroWorkerProtocol.ts) carries its own
+ * resolved voice and an optional `speed`, so one turn's job can switch between the narrator's/
+ * player's/several NPCs' voices chunk to chunk. `generateChunks` below resolves each chunk's own
+ * voice independently; nothing about the WebGPU-fallback restart or the streaming/superseded-job
+ * bookkeeping above changes, since both already operate purely in terms of chunk *indices* — the
+ * `chunks` array itself (voice/speed included) is simply resent unchanged on a restart, so the same
+ * index always regenerates with the same voice/speed it had the first time. `doSpeakStream` also
+ * kicks off a best-effort voice-file prefetch (`prefetchVoices`) for every distinct voice `chunks`
+ * names, in parallel with the model load — see that function's doc comment.
+ *
  * **WebGPU backend (issue #51).** Kokoro originally ran WASM-only, deliberately — see this
  * repo's git history / CLAUDE.md for why that was a feature (no hard support gate, unlike the
  * local text models). WebGPU is now a selectable, opt-in-in-Settings alternative
@@ -47,8 +58,15 @@
  */
 
 import { createProgressAggregator } from '@/lib/modelDownloadProgress'
-import { KOKORO_MODEL_ID, DEFAULT_VOICE, KOKORO_WASM_DTYPE, KOKORO_WEBGPU_DTYPE, type KokoroDevice } from './kokoroConstants'
-import type { KokoroWorkerRequest, KokoroWorkerResponse, KokoroWorkerVoice } from './kokoroWorkerProtocol'
+import {
+  KOKORO_MODEL_ID,
+  KOKORO_VOICES_CACHE_NAME,
+  DEFAULT_VOICE,
+  KOKORO_WASM_DTYPE,
+  KOKORO_WEBGPU_DTYPE,
+  type KokoroDevice,
+} from './kokoroConstants'
+import type { KokoroWorkerChunk, KokoroWorkerRequest, KokoroWorkerResponse, KokoroWorkerVoice } from './kokoroWorkerProtocol'
 
 // Typed view of the worker global rather than a `/// <reference lib="webworker" />`, which would
 // pull the WorkerGlobalScope lib into a project otherwise compiled against the DOM lib and produce
@@ -136,6 +154,68 @@ async function loadWithFallback(preferred: KokoroDevice): Promise<{ tts: unknown
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function resolveVoice(tts: any, voice: string): string {
   return voice && voice in tts.voices ? voice : DEFAULT_VOICE
+}
+
+/** The same URL kokoro-js@1.2.1's own (unexported) per-voice fetch helper builds internally —
+ * verified against the installed package's bundled source (`voices/<id>.bin` under this model's
+ * `resolve/main/` tree) — kept as a plain string template here rather than importing anything from
+ * kokoro-js itself, since the whole point of this file's `prefetchVoices` (issue #66) is to warm
+ * the *same* Cache Storage entry kokoro-js's own fetch will later look for, without needing a
+ * loaded model (or even the kokoro-js module) to do it. */
+function voiceFileUrl(voiceId: string): string {
+  return `https://huggingface.co/${KOKORO_MODEL_ID}/resolve/main/voices/${voiceId}.bin`
+}
+
+/**
+ * Best-effort prefetch of every distinct voice `chunks` will need, run in parallel with the model
+ * load itself (see doSpeakStream/doSpeak) rather than serialized after it — issue #66's "falling
+ * behind" concern: each voice is a separate ~510KB download kokoro-js's own `generate_from_ids`
+ * otherwise only fetches lazily, mid-turn, the first time that voice is actually used, which is
+ * exactly the kind of stall issue #62's streaming design was built to avoid for the model weights
+ * themselves. This warms the *same* 'kokoro-voices' Cache Storage bucket kokoro-js's own internal
+ * fetch reads from (see voiceFileUrl's doc comment) — a real network fetch this app controls
+ * ahead of time, not a guess or a no-op — so that internal fetch finds a cache hit instead of
+ * blocking generation on a live download.
+ *
+ * Deliberately best-effort per voice: a single voice's fetch failing (offline, a bad id, a CDN
+ * hiccup) must not block the others or the turn overall — kokoro-js's own lazy fetch inside
+ * `generate_from_ids` is still there as the real fallback if this didn't manage to warm the cache,
+ * exactly as if this function didn't exist at all. `onProgress` fires once up front (0/total) and
+ * once per voice as it settles (success or failure alike count toward `completed`), letting
+ * kokoroTts.ts reflect this in the same progress plumbing a model download uses instead of leaving
+ * a silent stall — see kokoroWorkerProtocol.ts's 'voicePrefetch' response.
+ */
+async function prefetchVoices(voiceIds: string[], onProgress: (completed: number, total: number) => void): Promise<void> {
+  const distinct = [...new Set(voiceIds.filter(Boolean))]
+  if (distinct.length === 0) return
+  let completed = 0
+  onProgress(0, distinct.length)
+  await Promise.all(
+    distinct.map(async (id) => {
+      try {
+        if (typeof caches !== 'undefined') {
+          const cache = await caches.open(KOKORO_VOICES_CACHE_NAME)
+          const url = voiceFileUrl(id)
+          const cached = await cache.match(url)
+          if (!cached) {
+            const res = await fetch(url)
+            // Cache Storage entries are consumed once (the body stream), so this stores a real
+            // Response object same as kokoro-js's own internal helper does — nothing here reads
+            // the body itself; the whole point is to have it sitting in cache for kokoro-js's own
+            // later fetch to find, not to use the bytes ourselves.
+            if (res.ok) await cache.put(url, res)
+          }
+        }
+      } catch {
+        // Cache Storage unavailable (plain HTTP — see kokoroTts.ts's caching caveat), or the
+        // network fetch itself failed — either way, kokoro-js's own lazy fetch inside
+        // generate_from_ids is the real fallback; this was only ever trying to get ahead of it.
+      } finally {
+        completed++
+        onProgress(completed, distinct.length)
+      }
+    }),
+  )
 }
 
 /**
@@ -243,17 +323,19 @@ async function generateChunks(
   requestId: number,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   tts: any,
-  chunks: string[],
-  voice: string,
+  chunks: KokoroWorkerChunk[],
   onChunk?: (index: number, audio: Float32Array, samplingRate: number) => void,
 ): Promise<{ audio: Float32Array; sampling_rate: number }[] | null> {
-  const resolvedVoice = resolveVoice(tts, voice)
   const generated: { audio: Float32Array; sampling_rate: number }[] = []
   for (let i = 0; i < chunks.length; i++) {
     // Superseded mid-generation — stop after whatever chunk is already in flight rather than
     // grinding through the rest of a turn nothing will play.
     if (requestId !== currentSpeakRequestId) return null
-    const audio = await tts.generate(chunks[i], { voice: resolvedVoice })
+    const chunk = chunks[i]
+    // Each chunk resolves its *own* voice (issue #66) rather than one job-wide voice — a turn can
+    // mix narrator/player/several NPCs' voices in one job. speed undefined lets Kokoro use its own
+    // default (1); kokoroTts.ts always supplies one for a real turn (see kokoroConstants.ts).
+    const audio = await tts.generate(chunk.text, { voice: resolveVoice(tts, chunk.voice), speed: chunk.speed })
     generated.push({ audio: audio.audio, sampling_rate: audio.sampling_rate })
     onChunk?.(i, audio.audio, audio.sampling_rate)
   }
@@ -274,7 +356,7 @@ async function generateChunks(
  * splicing dtypes/backends mid-clip, mirroring localModel.worker.ts's generate(), which restarts
  * the whole reply on the CPU rather than trying to resume where the GPU left off.
  */
-async function doSpeak(requestId: number, chunks: string[], voice: string, preferredDevice: KokoroDevice): Promise<void> {
+async function doSpeak(requestId: number, chunks: KokoroWorkerChunk[], preferredDevice: KokoroDevice): Promise<void> {
   // Every bail-out below posts 'done' (a plain no-payload response, same as 'load'/'evict' use)
   // rather than just returning — kokoroTts.ts's pending Map is keyed by requestId and only cleaned
   // up when *some* response arrives for it; silently returning here would leave that entry (and
@@ -288,7 +370,7 @@ async function doSpeak(requestId: number, chunks: string[], voice: string, prefe
   const { tts, device } = await loadWithFallback(preferredDevice)
   let generated: { audio: Float32Array; sampling_rate: number }[] | null
   try {
-    generated = await generateChunks(requestId, tts, chunks, voice)
+    generated = await generateChunks(requestId, tts, chunks)
   } catch (err) {
     if (device !== 'webgpu' || !isWebgpuFailure(err)) throw err
     ttsPromises.delete('webgpu')
@@ -297,7 +379,7 @@ async function doSpeak(requestId: number, chunks: string[], voice: string, prefe
     // loadWithFallback's identical fix, and localModel.worker.ts's pattern this mirrors) — not
     // before attempting it, so a second, genuine failure on WASM propagates as a normal error
     // instead of a UI that already claims the fallback backend is in use.
-    generated = await generateChunks(requestId, wasmTts, chunks, voice)
+    generated = await generateChunks(requestId, wasmTts, chunks)
     post({ kind: 'backend', device: 'wasm' })
   }
   if (generated === null) {
@@ -323,31 +405,39 @@ async function doSpeak(requestId: number, chunks: string[], voice: string, prefe
  * that keeps already-heard chunks from playing twice lives on the *main thread*
  * (kokoroTts.ts's nextExpectedChunkIndex) — this worker has no visibility into playback at all, so
  * it can't be the one to skip a resend.
+ *
+ * Also kicks off prefetchVoices (issue #66) for every distinct voice `chunks` names, in parallel
+ * with loadWithFallback rather than serialized before or after it — the model load is already the
+ * dominant wait on a cold start, so overlapping the (much smaller, ~510KB-per-voice) prefetch with
+ * it costs nothing extra in the common case, and on a warm model load (already resident from an
+ * earlier turn) the prefetch alone is what stands between "instant" and "stalls on the first line
+ * of a new character's dialogue."
  */
-async function doSpeakStream(
-  requestId: number,
-  chunks: string[],
-  voice: string,
-  preferredDevice: KokoroDevice,
-): Promise<void> {
+async function doSpeakStream(requestId: number, chunks: KokoroWorkerChunk[], preferredDevice: KokoroDevice): Promise<void> {
   // Same "always settle the request" reasoning as doSpeak.
   if (requestId !== currentSpeakRequestId) {
     post({ kind: 'done', requestId })
     return
   }
-  const { tts, device } = await loadWithFallback(preferredDevice)
+  const [{ tts, device }] = await Promise.all([
+    loadWithFallback(preferredDevice),
+    prefetchVoices(
+      chunks.map((c) => c.voice),
+      (completed, total) => post({ kind: 'voicePrefetch', requestId, completed, total }),
+    ),
+  ])
   const postChunk = (index: number, audio: Float32Array, samplingRate: number) => {
     // Transfers the sample buffer rather than structured-cloning it — a chunk can be a few hundred
     // KB of Float32 samples, and nothing on this side reads it again after posting.
     post({ kind: 'chunkAudio', requestId, index, total: chunks.length, audio, samplingRate }, [audio.buffer])
   }
   try {
-    await generateChunks(requestId, tts, chunks, voice, postChunk)
+    await generateChunks(requestId, tts, chunks, postChunk)
   } catch (err) {
     if (device !== 'webgpu' || !isWebgpuFailure(err)) throw err
     ttsPromises.delete('webgpu')
     const wasmTts = await loadTts('wasm')
-    await generateChunks(requestId, wasmTts, chunks, voice, postChunk)
+    await generateChunks(requestId, wasmTts, chunks, postChunk)
     // Posted only once the WASM retry has actually produced a result — see doSpeak's identical fix.
     post({ kind: 'backend', device: 'wasm' })
   }
@@ -357,14 +447,14 @@ async function doSpeakStream(
   post({ kind: 'done', requestId })
 }
 
-function speak(requestId: number, chunks: string[], voice: string, device: KokoroDevice): Promise<void> {
+function speak(requestId: number, chunks: KokoroWorkerChunk[], device: KokoroDevice): Promise<void> {
   currentSpeakRequestId = requestId
-  return runSpeakJob(() => doSpeak(requestId, chunks, voice, device))
+  return runSpeakJob(() => doSpeak(requestId, chunks, device))
 }
 
-function speakStream(requestId: number, chunks: string[], voice: string, device: KokoroDevice): Promise<void> {
+function speakStream(requestId: number, chunks: KokoroWorkerChunk[], device: KokoroDevice): Promise<void> {
   currentSpeakRequestId = requestId
-  return runSpeakJob(() => doSpeakStream(requestId, chunks, voice, device))
+  return runSpeakJob(() => doSpeakStream(requestId, chunks, device))
 }
 
 ctx.addEventListener('message', (event) => {
@@ -386,10 +476,10 @@ ctx.addEventListener('message', (event) => {
       listVoices(message.requestId, message.device).catch(fail)
       break
     case 'speak':
-      speak(message.requestId, message.chunks, message.voice, message.device).catch(fail)
+      speak(message.requestId, message.chunks, message.device).catch(fail)
       break
     case 'speakStream':
-      speakStream(message.requestId, message.chunks, message.voice, message.device).catch(fail)
+      speakStream(message.requestId, message.chunks, message.device).catch(fail)
       break
     case 'evict':
       // Drops every loaded backend's reference so the next load/speak starts genuinely fresh —

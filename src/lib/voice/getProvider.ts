@@ -33,6 +33,9 @@ export interface GetTtsProviderOptions {
    * for a whole turn's audio to finish generating before playback can start (issue #44). The
    * browser's built-in synthesis has no equivalent wait. */
   onKokoroGenerateProgress?: (completed: number, total: number) => void
+  /** Only Kokoro prefetches per-voice files ahead of generation (issue #66) — see kokoroTts.ts's
+   * "Voice-file prefetch and 'falling behind'" doc comment. */
+  onKokoroVoicePrefetchProgress?: (completed: number, total: number) => void
 }
 
 /** Same as getSttProvider, for TTS. */
@@ -42,6 +45,7 @@ export function getTtsProvider(kind: TtsProviderKind, opts: GetTtsProviderOption
     return createKokoroTtsProvider({
       onLoadProgress: opts.onKokoroLoadProgress,
       onGenerateProgress: opts.onKokoroGenerateProgress,
+      onVoicePrefetchProgress: opts.onKokoroVoicePrefetchProgress,
     })
   }
   return null

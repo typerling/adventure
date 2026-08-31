@@ -382,7 +382,7 @@ AI Adventure/
                         #     whether a player override (#100) has locked the cast so the AI must
                         #     never recast it. Populated by the AI (§5) or, failing that, a
                         #     deterministic stable-hash-of-name fallback once the NPC actually
-                        #     speaks — see §8. Still not wired to playback (#66).
+                        #     speaks — see §8, now wired all the way to playback (#66).
                         #   secrets: GM-only ground truth — never rendered anywhere the player can
                         #     see (Play narrative/options, Codex); exists purely so future turns
                         #     don't contradict a fact the player hasn't discovered yet.
@@ -669,11 +669,17 @@ Two small provider interfaces, swappable independently and per-function in Setti
 
 ```ts
 interface STTProvider { start(): void; stop(): void; onResult(cb: (text: string) => void): void; }
-interface TTSProvider { speak(text: string, opts?: {voice?: string}): Promise<void>; stop(): void; }
+interface TTSProvider {
+  // segments/narratorVoice (issue #66) are additive: a provider with no per-segment voice-
+  // switching capability (browser) ignores both and just reads `text` in one `voice`, unchanged.
+  speak(text: string, opts?: {voice?: string; segments?: {text: string; voice?: string; speed?: number}[]; narratorVoice?: string}): Promise<void>
+  stop(): void
+}
 ```
 
 - `browser` STT/TTS: `webkitSpeechRecognition` / `speechSynthesis` — zero config, works
-  offline-ish, quality varies by OS/browser.
+  offline-ish, quality varies by OS/browser. No multi-voice capability at all — always reads a
+  turn as one flat string in one voice, regardless of how many characters spoke in it.
 - `huggingface-local` TTS: Kokoro, a small distilled model run fully client-side via
   `kokoro-js`/`transformers.js`. Free, private, no key — but a multi-hundred-MB model download on
   first use and noticeably slower/lower quality on a phone than a hosted API would be. This is the
@@ -682,11 +688,12 @@ interface TTSProvider { speak(text: string, opts?: {voice?: string}): Promise<vo
   voices on rather than two to maintain in parallel — see CLAUDE.md's "Removing ElevenLabs" note
   for the backward-compatibility work that took (a legacy `sttProvider`/`ttsProvider: elevenlabs`
   value, wherever it's still sitting, is coerced onto a supported provider rather than silently
-  resolving to a dead `null` provider).
+  resolving to a dead `null` provider). It's also the one provider that actually switches voices
+  per speaker within a turn — see "Multi-voice playback" below.
 
 **Voice casting (issue #98, epic #36).** The data-model/prompt half of teaching the DM to cast a
-distinct Kokoro voice per speaking character, so a later ticket (#66) has something real to switch
-playback to — this ticket makes no audible change. Three voices matter: the narrator's
+distinct Kokoro voice per speaking character, so a later ticket (#66, now shipped — see "Multi-voice
+playback" below) has something real to switch playback to. Three voices matter: the narrator's
 (`GlobalSettings.kokoroVoiceId`, device-wide, from #77), the player character's
 (`CampaignSettings.playerVoiceId`, new here — kept per-campaign rather than global, since a player
 character's name/personality is a property of the *campaign*, the same reasoning that already kept
@@ -707,6 +714,28 @@ supplies one, excluding the narrator's/player's own voices — to any known NPC 
 (per §5's `{{v:Name}}` tokens or the heuristic fallback) but the AI never cast. A soft cap of 8
 distinct fallback-assigned voices per campaign keeps that from becoming an unbounded string of
 ~510KB voice downloads; past the cap, a new character reuses one already in play instead.
+
+**Multi-voice playback (issue #66, epic #36's playback half).** A turn's narrative
+(`turnBlocks.ts`'s `buildSpokenSegments`, from #96) is mapped to concrete voices by
+`src/lib/voice/resolveSegmentVoices.ts` — a pure function, unit-tested directly, that stays free of
+any Kokoro/worker dependency: `speaker: null` → the narrator's voice, the player's own name → the
+player's voice, a known NPC's name → that NPC's cast `voiceId`, and anything else (an unresolved
+speaker — issue #105's caveat about an AI name paraphrase producing a duplicate NPC row) degrades to
+the narrator's voice rather than crashing or dropping that segment's audio. `kokoroTts.ts`/
+`kokoroTts.worker.ts` carry each resolved segment's own voice *and speed* per chunk all the way
+through generation (`KokoroWorkerChunk`), so the same WebGPU-fallback restart described above always
+regenerates a chunk with the exact voice it had the first time — the restart resends the identical
+`chunks` array, so per-chunk voice consistency falls out of chunk identity for free, no extra
+bookkeeping needed. Narration and dialogue speak at two different (close, deliberately narrow)
+speed multipliers, and a pause is inserted whenever a scheduled chunk's voice differs from the
+previous one — pure arithmetic on the existing playback-cursor timestamp, no extra model call.
+Kokoro's `voices/<id>.bin` style files are ~510KB, fetched lazily on first use by kokoro-js itself —
+a turn now best-effort prefetches every voice it will need in parallel with the model load, so a
+newly-cast character's first line is less likely to stall mid-turn than before this shipped (a
+narrowed, not eliminated, risk — see CLAUDE.md's Voice section for the full mechanism). None of the
+speed/pause constants chosen here are verified by ear in this development sandbox (no real audio
+output device) — they're a conservative starting point pending the project owner's real listen test,
+the same honesty bar issues #39/#45 established for anything only a real device can confirm.
 
 ---
 

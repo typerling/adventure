@@ -18,10 +18,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import type { TurnOption, TurnRecord, ValidationIssue } from '@/types/turn'
+import type { SpokenSegment, TurnOption, TurnRecord, ValidationIssue } from '@/types/turn'
 import { getSttProvider, getTtsProvider, isSttProviderAvailable, isTtsProviderAvailable } from '@/lib/voice/getProvider'
 import type { SttProvider, TtsProvider } from '@/lib/voice/types'
-import { describeKokoroGenerateProgress, describeKokoroProgress } from '@/lib/voice/kokoroTts'
+import {
+  describeKokoroGenerateProgress,
+  describeKokoroProgress,
+  describeKokoroVoicePrefetchProgress,
+} from '@/lib/voice/kokoroTts'
+import { resolveSegmentVoices } from '@/lib/voice/resolveSegmentVoices'
 import {
   clearMediaSession,
   setMediaSessionHandlers,
@@ -30,7 +35,8 @@ import {
 } from '@/lib/voice/mediaSession'
 import { generateClaudeReply } from '@/lib/ai/claudeProvider'
 import { describeLocalModelProgress, generateLocalReply } from '@/lib/ai/localModel'
-import { buildSpokenScript, splitNarrativeIntoBlocks } from '@/lib/ai/turnBlocks'
+import { buildSpokenSegments, splitNarrativeIntoBlocks } from '@/lib/ai/turnBlocks'
+import { playerNameFromSnapshot } from '@/lib/ai/promptBuilder'
 import { TurnPager, type TurnPagerPage } from '@/components/TurnPager'
 import { buildRecapSummary, getActiveQuests } from '@/lib/recap'
 
@@ -54,8 +60,17 @@ function blocksForTurn(turn: TurnRecord, interactive: boolean, optionsOverride?:
 export function Play() {
   const { campaignId } = useParams<{ campaignId: string }>()
   const data = useCampaign(campaignId)
-  const { status, errorMessage, campaign, snapshot, rollingSummary, recentTurns, buildPromptForAction, submitReply } =
-    data
+  const {
+    status,
+    errorMessage,
+    campaign,
+    settings,
+    snapshot,
+    rollingSummary,
+    recentTurns,
+    buildPromptForAction,
+    submitReply,
+  } = data
   // AI mode, model choices, STT/TTS provider, and voice IDs are all global (device-scoped,
   // localStorage — issue #77), not per-campaign, so unlike the rest of `data` above they don't
   // come from useCampaign's Drive-backed settings.md read at all. Read once per mount — Settings
@@ -101,7 +116,7 @@ export function Play() {
   /** The text/turn most recently handed to speakText() — lets the OS-level Media Session "play"
    * control (see mediaSession.ts) restart narration after a "pause", since no TtsProvider
    * implementation can genuinely resume mid-utterance. */
-  const lastSpokenRef = useRef<{ text: string; turn?: number } | null>(null)
+  const lastSpokenRef = useRef<{ text: string; turn?: number; segments?: SpokenSegment[] } | null>(null)
   /** Always the current render's speakText — see the useEffect below that keeps it in sync. The
    * Media Session's onPlay handler (registered inside speakText itself, see below) calls through
    * this ref rather than self-referencing speakText by name directly: speakText is a useCallback
@@ -109,7 +124,7 @@ export function Play() {
    * over *that* call's specific closure — if any of those deps change while a turn sits paused,
    * calling speakText by name from within its own old closure would still run with the stale
    * values, not the current ones. Reading through this ref instead always gets the latest. */
-  const speakTextRef = useRef<((text: string, turn?: number) => void) | null>(null)
+  const speakTextRef = useRef<((text: string, turn?: number, segments?: SpokenSegment[]) => void) | null>(null)
   /** Bumped on every speakText() call; a pending speak() promise's `finally` only clears the Media
    * Session if it's still the most recent call — otherwise it would wipe out a session that
    * actually belongs to a newer, still-playing turn (one playback pre-empting another). */
@@ -241,14 +256,20 @@ export function Play() {
   /** Speaks arbitrary turn text — used both for the auto-narrate-new-turns effect below and the
    * per-turn "play this turn" button, so a turn missed the first time (read-aloud was off, or you
    * weren't listening) can always be replayed on demand. `turn`, if given, drives which turn's
-   * button shows a stop icon while this plays.
+   * button shows a stop icon while this plays. `segments` (issue #66), when given, is the same
+   * turn's per-speaker breakdown (turnBlocks.ts's buildSpokenSegments) — text and segments must
+   * describe the same content; `text` is what a provider with no multi-voice capability (browser)
+   * reads, `segments` is what Kokoro switches voices on. Optional so a caller with only flat text
+   * (there are none left after this ticket, but the parameter stays optional rather than required —
+   * keeping this function's own contract additive, the same posture TtsProvider.speak itself takes)
+   * still works, narrated entirely in the narrator's voice via the single-segment fallback below.
    *
    * Also drives the OS-level Media Session (see mediaSession.ts) for whichever provider is
    * speaking — real `navigator.mediaSession` metadata/action handlers, not a parallel mechanism,
    * so Android's "Now Playing" notification/lock-screen controls work the same way for `browser`/
    * `huggingface-local` alike. */
   const speakText = useCallback(
-    (text: string, turn?: number) => {
+    (text: string, turn?: number, segments?: SpokenSegment[]) => {
       const kind = globalSettings.ttsProvider
       // Reuse the existing instance for the same provider kind — a fresh instance per call would
       // have its own private "currently playing" state, so stop() could never reach audio a
@@ -265,6 +286,11 @@ export function Play() {
               // model download would.
               onKokoroGenerateProgress: (completed, total) =>
                 setVoiceLoadMessage(describeKokoroGenerateProgress(completed, total)),
+              // A turn casting a character for the first time downloads that voice's ~510KB file
+              // (issue #66) — without this, that download reads as the same kind of silent stall
+              // the two callbacks above already guard against for the model itself.
+              onKokoroVoicePrefetchProgress: (completed, total) =>
+                setVoiceLoadMessage(describeKokoroVoicePrefetchProgress(completed, total)),
             })
       if (!provider) {
         toast.error("Text-to-speech isn't available — check Settings or your browser's support.")
@@ -272,7 +298,7 @@ export function Play() {
       }
       ttsProviderRef.current = { kind, provider }
       setPlayingTurn(turn ?? null)
-      lastSpokenRef.current = { text, turn }
+      lastSpokenRef.current = { text, turn, segments }
       pendingStopModeRef.current = 'hard'
       const mediaSessionToken = ++mediaSessionTokenRef.current
       setMediaSessionMetadata({
@@ -284,14 +310,30 @@ export function Play() {
       setMediaSessionHandlers({
         onPlay: () => {
           const last = lastSpokenRef.current
-          if (last) speakTextRef.current?.(last.text, last.turn)
+          if (last) speakTextRef.current?.(last.text, last.turn, last.segments)
         },
         onPause: pausePlayback,
         onStop: stopPlayback,
       })
+      // Kokoro is the one provider that can actually switch voices per segment (issue #66) — the
+      // browser provider ignores `segments`/`narratorVoice` entirely (see TtsProvider.speak's own
+      // doc comment), so there's no reason to spend the resolution work for it.
       const voice = kind === 'huggingface-local' ? globalSettings.kokoroVoiceId : undefined
+      const resolvedVoices =
+        kind === 'huggingface-local' && segments && segments.length > 0
+          ? resolveSegmentVoices(segments, {
+              narratorVoiceId: globalSettings.kokoroVoiceId,
+              playerVoiceId: settings?.playerVoiceId,
+              playerName: snapshot ? playerNameFromSnapshot(snapshot) : null,
+              npcs: snapshot?.NPCs ?? [],
+            })
+          : undefined
       provider
-        .speak(text, { voice })
+        .speak(text, {
+          voice,
+          segments: resolvedVoices?.segments,
+          narratorVoice: resolvedVoices?.narratorVoice,
+        })
         .catch((err) => {
           toast.error(err instanceof Error ? err.message : 'Failed to read this aloud.')
         })
@@ -311,7 +353,7 @@ export function Play() {
           }
         })
     },
-    [globalSettings, campaignName, turnLabel, stopPlayback, pausePlayback],
+    [globalSettings, settings, snapshot, campaignName, turnLabel, stopPlayback, pausePlayback],
   )
 
   // Keeps speakTextRef current — see its own doc comment for why onPlay reads through it instead
@@ -321,7 +363,7 @@ export function Play() {
   }, [speakText])
 
   /** Reads a logged turn aloud on demand — the spoken script covers prose *and*, for the
-   * currently-live turn, its options read out in order (see turnBlocks.ts's buildSpokenScript),
+   * currently-live turn, its options read out in order (see turnBlocks.ts's buildSpokenSegments),
    * so voice-only play can select an option by ear. */
   function toggleTurnPlayback(turn: TurnRecord) {
     if (playingTurn === turn.turn) {
@@ -332,8 +374,12 @@ export function Play() {
     const override = isLive && pendingSpokenOptionsRef.current?.turn === turn.turn
       ? pendingSpokenOptionsRef.current.options
       : undefined
-    const script = buildSpokenScript(blocksForTurn(turn, isLive, override))
-    speakText(script, turn.turn)
+    // segments (issue #66) and the flat script are built from the same blocks in one pass — see
+    // speakText's own doc comment for why both are handed through (Kokoro switches voices per
+    // segment; the browser provider still just reads the flat script).
+    const segments = buildSpokenSegments(blocksForTurn(turn, isLive, override))
+    const script = segments.map((s) => s.text).join(' ')
+    speakText(script, turn.turn, segments)
   }
 
   // Gated on isOnLatestPage, not just a new lastTurn existing — TurnPager auto-advances to the
@@ -349,7 +395,12 @@ export function Play() {
     spokenTurnRef.current = lastTurn.turn
     const override =
       pendingSpokenOptionsRef.current?.turn === lastTurn.turn ? pendingSpokenOptionsRef.current.options : undefined
-    speakText(buildSpokenScript(blocksForTurn(lastTurn, true, override)), lastTurn.turn)
+    const segments = buildSpokenSegments(blocksForTurn(lastTurn, true, override))
+    speakText(
+      segments.map((s) => s.text).join(' '),
+      lastTurn.turn,
+      segments,
+    )
   }, [lastTurn, readAloud, ttsAvailable, speakText, isOnLatestPage])
 
   useEffect(() => {

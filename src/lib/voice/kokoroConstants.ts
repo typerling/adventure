@@ -91,9 +91,46 @@ export const PREVIEW_TEXT = 'Hello, this is a preview of my voice.'
  */
 export const MAX_CHUNK_CHARS = 320
 
+/** kokoro-js's own hardcoded Cache Storage bucket for per-voice style files (voices/<id>.bin) —
+ * named separately from CACHE_NAMES below so kokoroTts.worker.ts's voice-prefetch (issue #66) can
+ * target it directly without importing the whole array just for its first element. Verified against
+ * the installed kokoro-js@1.2.1 source: its internal (unexported) per-voice fetch helper opens
+ * exactly this bucket name before falling back to a live `fetch()` — see kokoroTts.worker.ts's
+ * `prefetchVoices` doc comment for why replicating that same fetch+cache.put ourselves, ahead of
+ * time, is a genuine prefetch and not just a duplicate download. */
+export const KOKORO_VOICES_CACHE_NAME = 'kokoro-voices'
+
 /** Cache Storage buckets kokoro-js and its bundled transformers write into — cleared together by
  * removeKokoroModel(). 'kokoro-voices' is kokoro's own hardcoded per-voice cache; the other is
  * its transformers copy's default model cache (env.cacheKey). Cache Storage is a per-origin store
  * shared between the main thread and any Worker on that origin, so these buckets are the same
  * whether the download happened via the worker (kokoroTts.worker.ts) or were seeded any other way. */
-export const CACHE_NAMES = ['kokoro-voices', 'transformers-cache']
+export const CACHE_NAMES = [KOKORO_VOICES_CACHE_NAME, 'transformers-cache']
+
+/**
+ * Default Kokoro `speed` multipliers for narration vs. dialogue (issue #66, item 3/4 of the
+ * multi-voice-playback ask: "calmer narration, more expressive dialogue"). `generate(text, {voice,
+ * speed})`'s `speed` is a bare float32 multiplier fed straight into the model with no documented
+ * safe range (see contract.ts's/voiceCasting.ts's research notes) — kept deliberately close to
+ * Kokoro's own default of 1 (a narrow band, per the issue's explicit warning that an aggressive
+ * value distorts audio) rather than a dramatic swing.
+ *
+ * **Not verified by ear in this sandbox** — this environment has no real audio output device (see
+ * this file's KOKORO_WEBGPU_DTYPE doc comment for the identical limitation blocking a WebGPU audio
+ * listen test), so these two values are a conservative starting point pending the project owner's
+ * real listen test (this ticket's own Definition of Done), not a tuned-by-ear final answer. Easy to
+ * adjust here alone if that test finds the gap too subtle or too much.
+ */
+export const KOKORO_NARRATION_SPEED = 0.95
+export const KOKORO_DIALOGUE_SPEED = 1.05
+
+/**
+ * Silence inserted between consecutive chunks whose resolved voice differs (issue #66) — arithmetic
+ * on kokoroTts.ts's own `nextStartTime` playback cursor, no model call needed (per the issue's own
+ * suggestion). Asymmetric per the issue's suggestion ("consider a slightly longer beat entering
+ * dialogue than leaving it"): entering a non-narrator voice gets the longer beat,
+ * returning to the narrator's voice gets the shorter one. Same "not verified by ear" caveat as the
+ * speed constants above.
+ */
+export const KOKORO_ENTER_DIALOGUE_PAUSE_SEC = 0.35
+export const KOKORO_EXIT_DIALOGUE_PAUSE_SEC = 0.2

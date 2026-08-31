@@ -23,6 +23,12 @@ Reply in exactly two parts, every turn, with nothing before or after them:
    everything else (narration, description, unvoiced thought) untagged. Every opening tag needs
    its own closing tag around just that line of dialogue; don't nest one inside another or wrap
    more than the spoken words themselves.
+
+   Punctuation is heard, not just read — the text-to-speech voice reading this aloud genuinely
+   pauses longer on an em dash or ellipsis than a comma, and longer on a comma than nothing at
+   all. Use ordinary punctuation to shape delivery (a hesitation, an interruption, a trailing-off
+   line) rather than describing the pause in prose — "she pauses, then says" reads aloud as
+   narration *about* a pause, not as one.
 2. A single fenced block at the very end, opened with \`\`\`state and closed with \`\`\`,
    containing one JSON object with this shape (omit keys that don't apply this turn; never
    invent keys):
