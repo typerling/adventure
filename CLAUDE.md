@@ -500,10 +500,11 @@ took:
   `close()`s it, so its async iterator blocks forever.
 
   **Streaming playback (issue #62).** Real turn narration plays continuously as it generates:
-  playback of chunk 1 starts as soon as it's ready, while `kokoroTts.worker.ts` keeps generating
-  chunks 2+ in the background — not (as originally shipped, issue #44) waiting for the whole turn to
-  generate and stitching one continuous clip before any audio plays at all. The worker streams each
-  chunk's *raw* PCM samples back the moment it's done (`speakStream`/`chunkAudio` in
+  playback starts as soon as the first chunks are ready (originally chunk 1 alone; see issue #68
+  below for why that became a small buffer), while `kokoroTts.worker.ts` keeps generating chunks
+  beyond the buffer in the background — not (as originally shipped, issue #44) waiting for the
+  whole turn to generate and stitching one continuous clip before any audio plays at all. The
+  worker streams each chunk's *raw* PCM samples back the moment it's done (`speakStream`/`chunkAudio` in
   `kokoroWorkerProtocol.ts`); `kokoroTts.ts`'s playback engine schedules them on a Web Audio API
   `AudioContext` with `AudioBufferSourceNode`s timed back-to-back (sample-accurate, unlike
   sequential `<audio>` elements, which reliably gap) rather than waiting to build one `<audio>`-
@@ -552,6 +553,46 @@ took:
   parallel with the model load, reported through `describeKokoroVoicePrefetchProgress` via the same
   `voiceLoadMessage` status line the model-download/generation progress already use — narrowing,
   not eliminating, the "falling behind" stall risk a new character's first line introduces.
+
+  **Startup playback buffer (issue #68, reconciled onto the multi-voice chunk model above).**
+  Reported playback artifacts led to investigating "falling behind" more concretely: real (unfaked)
+  Kokoro CPU inference (kokoro-js's Node build on `onnxruntime-node`'s `cpu` device — a documented
+  conservative lower bound on real in-browser WASM cost, not literally WASM) found every generated
+  chunk already has a clean, near-silent taper at both ends with no real discontinuity at a chunk
+  boundary — ruling out an in-model boundary defect — while generation speed relative to each
+  chunk's own playback duration measured inconsistently across three separate real-CPU-inference
+  runs on three different (shared, noisy) sandboxes over this issue's history, two of the three
+  landing clearly on the *slower*-than-real-time side (see `kokoroConstants.ts`'s
+  `KOKORO_PLAYBACK_BUFFER_CHUNKS` doc comment for all three figures). `speak()` now buffers the
+  first `KOKORO_PLAYBACK_BUFFER_CHUNKS` (2) generated-but-not-yet-scheduled chunks before starting
+  playback, instead of scheduling chunk 0 the instant it arrives, so generation gets a real head
+  start over playback before the race begins; a turn with fewer chunks than the buffer still plays
+  as soon as it's fully ready (`bufferTarget = min(KOKORO_PLAYBACK_BUFFER_CHUNKS, chunks.length)` —
+  `chunks.length` is known up front, so no message round trip is needed to learn a short turn will
+  never fill the buffer), and a generation failure before the buffer ever fills still flushes and
+  plays whatever chunks did complete rather than discarding them. This was originally written
+  (PR #79) against a flat, single-voice chunk model that predates #66's per-chunk voice/pause
+  model above, and was **not** ported onto the current architecture mechanically — three
+  interactions were re-derived and verified directly (`tests/kokoro-streaming-playback.spec.ts`):
+  de-duplication (`nextExpectedChunkIndex`) still happens strictly at chunk *arrival*, before any
+  buffering decision, so a chunk still sitting unscheduled in the buffer when a WebGPU-fallback
+  restart resends it is dropped exactly like an already-scheduled one, and the
+  restart-reproducibility guarantee (a resent chunk regenerates with the same voice/speed) still
+  comes from chunk *identity* in the resent array, unaffected by whether a chunk happened to be
+  buffered; a voice change spanning the buffer (e.g. chunk 0 narrator, chunk 1 the first NPC line)
+  still gets `pauseForVoiceChange`'s pause inserted correctly, because pause computation runs at
+  *schedule* time (inside `scheduleChunk`, sequentially, when the buffer flushes) rather than at
+  arrival time; and a voice-change pause between two buffered chunks only *adds* to generation's
+  real-time margin before the chunk after them is needed, so buffering and pausing compound in the
+  same helpful direction rather than working against each other. Also true, and worth stating
+  plainly rather than glossing over: a device on which generation runs *chronically* slower than
+  real-time (not just momentarily, on the zero-margin first chunk) still falls behind eventually no
+  matter how large this buffer is — buffering narrows the exposure window, it doesn't change the
+  underlying generation-vs-playback race for a device that genuinely can't keep up. What it
+  reliably fixes is the zero-margin-on-chunk-0 case, which is strictly worse than any buffer ≥2
+  regardless of a given device's steady-state ratio. Same caveat every other Kokoro audio-quality
+  question in this file already carries: whether this actually resolves what a real listener hears
+  needs the project owner's own device/ears to confirm.
 
   **Cross-origin isolation for multi-threaded WASM.** ONNX Runtime Web's WASM backend (what
   `kokoroTts.worker.ts` runs on) can use `SharedArrayBuffer` to run multi-threaded, which speeds up

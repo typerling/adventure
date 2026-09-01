@@ -134,3 +134,48 @@ export const KOKORO_DIALOGUE_SPEED = 1.05
  */
 export const KOKORO_ENTER_DIALOGUE_PAUSE_SEC = 0.35
 export const KOKORO_EXIT_DIALOGUE_PAUSE_SEC = 0.2
+
+/**
+ * How many chunks kokoroTts.ts's speak() buffers (generated but not yet scheduled) before starting
+ * playback of a turn — issue #68's follow-up to #62's "start on chunk 1" design, a deliberate
+ * middle ground between #44's "wait for the whole turn" and #62's "wait for nothing." See
+ * kokoroTts.ts's "Startup playback buffer" doc comment section for the full reasoning, including
+ * the real (unfaked) generation-speed measurement this value is based on and how it was
+ * re-verified against the multi-voice chunk model (issue #66) this constant now operates inside of.
+ *
+ * 2, not more: issue #68's own probe (real Kokoro CPU inference via kokoro-js's Node build on
+ * onnxruntime-node — a *conservative lower bound* on in-browser WASM's real cost, not literally
+ * WASM; see kokoroTts.worker.ts's doc comment for that same caveat elsewhere in this file) has now
+ * been measured three separate times across this ticket's history, on three different (shared,
+ * noisy) sandboxes, landing on both sides of real-time: the original PR's own run found generation
+ * at ~0.7x of each chunk's own audio duration (a thin ~30% margin); an independent reviewer's
+ * re-run found the opposite, ~1.2x-2.4x (slower than real-time), under a sandbox they reported as
+ * heavily loaded (`uptime` load average 9-11 on a shared 4-core box); this reconciliation's own
+ * fresh re-run (three chunks, two voices, verifying the multi-voice chunk shape specifically) found
+ * ~1.45x-1.77x (mean 1.62x — also slower than real-time). None of the three pins down a
+ * device-independent number — this is a measurement of shared, noisy sandboxes, not a real device
+ * — but two of three runs landing clearly on the *slower*-than-real-time side, not just close to
+ * parity, is itself informative: it means "falling behind" isn't a marginal, easily-avoided risk on
+ * this backend, it's the default outcome, and only real device hardware (a strict upgrade from a
+ * shared CI sandbox running other work) plus real in-browser WASM (rather than this conservative
+ * native-CPU stand-in) can be expected to do better. A margin that thin and inconsistent — genuinely
+ * behind real-time on this backend more often than not — is still the most plausible explanation
+ * this investigation could find for reported playback artifacts, once real generated audio ruled
+ * out a chunk-boundary silence-padding defect (see kokoroTts.ts). One chunk of head
+ * start (today's implicit buffer of 1, since nothing plays before chunk 0 finishes) leaves no
+ * margin at all for chunk 1 to keep up with chunk 0's own playback; 2 buffered chunks means chunk 2
+ * has an entire chunk 0 playback duration's worth of extra generation time before it's needed,
+ * without reintroducing anything close to #44's tens-of-seconds full-turn wait. Buffering interacts
+ * *well*, not adversarially, with issue #66's voice-change pauses above: a pause inserted between
+ * two differently-voiced buffered chunks only adds to the real-time margin generation gets before
+ * the next chunk is needed, never subtracts from it.
+ *
+ * Worth being honest about what this does and doesn't fix, given the measurements above: a device
+ * on which generation runs *chronically* slower than real-time (not just momentarily, on the first
+ * chunk) will still fall behind eventually no matter how large this buffer is — buffering delays
+ * and narrows the exposure window, it doesn't change the underlying generation-vs-playback race for
+ * a device that genuinely can't keep up. What it reliably fixes is the *zero-margin first chunk*
+ * case (today's real starting point, buffer-of-1), which is strictly worse than any buffer ≥2
+ * regardless of a given device's steady-state ratio.
+ */
+export const KOKORO_PLAYBACK_BUFFER_CHUNKS = 2
