@@ -11,6 +11,12 @@ full architecture/data model/rationale and `README.md` for setup. Read `DESIGN.m
 any structural change — it's the source of truth for the data model and turn contract, and is
 kept in sync with the implementation.
 
+**Possible future direction, not yet scoped:** the project owner is considering multiplayer
+support, which the current Drive-only/single-owner model doesn't support — see DESIGN.md §2's
+"Possible future direction: a hosted backend for multiplayer" note for what that would likely
+require (a proper hosted database in place of Sheets/Drive, a hosted Kokoro instance in place of
+the in-browser `kokoro-js` setup). Nothing to act on yet; noted so it's on record.
+
 Phase 1 (MVP, implemented): campaign setup wizard, manual copy/paste DM turn loop, deterministic
 state validator, Codex/Dashboard/Settings screens. Phase 2 is in progress: voice is implemented
 for both TTS providers (browser and on-device Kokoro) and the one STT provider (browser) — an
